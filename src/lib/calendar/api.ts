@@ -94,6 +94,28 @@ export async function apiDeleteEvent(
 	});
 }
 
+export interface ImportBatchResult {
+	imported: number;
+	failed: number;
+	firstDay: string | null;
+}
+
+export async function apiImportEvents(calendarId: string, ics: string): Promise<ImportBatchResult> {
+	let res: Response;
+	try {
+		res = await fetch('/api/calendar/import', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ calendarId, ics })
+		});
+	} catch {
+		throw new Error('Network error');
+	}
+	const data = (await res.json().catch(() => ({}))) as Partial<ImportBatchResult> & { error?: string };
+	if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+	return { imported: data.imported ?? 0, failed: data.failed ?? 0, firstDay: data.firstDay ?? null };
+}
+
 export async function apiCreateCalendar(name: string, color: string): Promise<ApiResult> {
 	return jsonFetch('/api/calendar/calendars', {
 		method: 'POST',

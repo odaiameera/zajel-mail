@@ -12,12 +12,14 @@
 		calendars,
 		selected,
 		weekStart,
-		onSelectDate
+		onSelectDate,
+		onImport
 	}: {
 		calendars: CalendarInfo[];
 		selected: Date;
 		weekStart: WeekStart;
 		onSelectDate: (date: Date) => void;
+		onImport: () => void;
 	} = $props();
 
 	let modalOpen = $state(false);
@@ -55,8 +57,12 @@
 <svelte:window onclick={closeMenus} />
 
 <!-- Rendered in the shell's left column, so it sits on the chrome like the
-     mail sidebar. New event is in the corner's + menu. -->
+     mail sidebar. New event is in the corner's + menu; Import sits where
+     Contacts keeps its own. -->
 <div class="h-full w-full flex flex-col overflow-y-auto">
+	<div class="px-3 pt-1.5 pb-1 shrink-0">
+		<button type="button" class="btn btn-secondary w-full" onclick={onImport}>Import</button>
+	</div>
 	<div class="p-3">
 		<MiniMonth {selected} {weekStart} onSelect={onSelectDate} />
 	</div>
