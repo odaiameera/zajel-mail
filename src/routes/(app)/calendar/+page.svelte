@@ -19,7 +19,7 @@
 	import { apiCreateEvent, apiDeleteEvent, apiUpdateEvent } from '$lib/calendar/api';
 	import { showToast } from '$lib/stores/toast';
 	import CalendarPanel from '$lib/components/calendar/CalendarPanel.svelte';
-	import { hostAppPanel } from '$lib/app-panel';
+	import { appDrawerCloser, hostAppPanel } from '$lib/app-panel';
 	import { newRequest } from '$lib/stores/create';
 	import { untrack } from 'svelte';
 	import MonthView from '$lib/components/calendar/MonthView.svelte';
@@ -27,6 +27,8 @@
 	import EventModal from '$lib/components/calendar/EventModal.svelte';
 	import EventPopover from '$lib/components/calendar/EventPopover.svelte';
 	import ScopeDialog from '$lib/components/calendar/ScopeDialog.svelte';
+	import ImportEventsModal from '$lib/components/calendar/ImportEventsModal.svelte';
+	import type { ImportBatchResult } from '$lib/calendar/api';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -227,7 +229,7 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (modalOpen || scopeOpen) return;
+		if (modalOpen || scopeOpen || importOpen) return;
 		const target = e.target as HTMLElement | null;
 		if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -262,6 +264,23 @@
 		}
 	}
 
+	// ----- import -------------------------------------------------------
+
+	let importOpen = $state(false);
+	const closeDrawer = appDrawerCloser();
+
+	function openImport() {
+		closeDrawer();
+		importOpen = true;
+	}
+
+	async function afterImport(result: ImportBatchResult) {
+		// A single event (an invitation or a booking saved as .ics) is shown
+		// where it landed; a whole calendar leaves the view where it was.
+		await invalidateAll();
+		if (result.imported === 1 && result.firstDay) navigate(data.view, fromDayKey(result.firstDay));
+	}
+
 	// The mini-month and the calendar list live in the shell's left column
 	// (the drawer on phones), where Mail keeps its folders.
 	hostAppPanel(calendarPanel);
@@ -280,6 +299,7 @@
 		selected={selectedDate}
 		{weekStart}
 		onSelectDate={(date) => navigate(data.view, date)}
+		onImport={openImport}
 	/>
 {/snippet}
 
@@ -422,3 +442,10 @@
 {/if}
 
 <ScopeDialog open={scopeOpen} action={scopeAction} onResolve={resolveScope} />
+
+<ImportEventsModal
+	open={importOpen}
+	calendars={data.calendars}
+	onClose={() => (importOpen = false)}
+	onImported={afterImport}
+/>
