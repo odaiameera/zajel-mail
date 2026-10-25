@@ -2,6 +2,7 @@ import { browser } from '$app/environment';
 import { invalidateAll, goto } from '$app/navigation';
 import { showToast } from './toast';
 import { wasTouchedRecently } from '$lib/calendar/api';
+import { canNotify, showNotification } from '$lib/notifications';
 
 /**
  * Calendar notification engine. Polls `/api/calendar/poll` (CalDAV
@@ -48,6 +49,8 @@ interface ChangedEvent {
 export interface CalendarNotifyOptions {
 	newEvents: boolean;
 	reminders: boolean;
+	/** This device gets reminders by push, so only the in-app toast shows here. */
+	remindersByPush?: boolean;
 }
 
 function readJson<T>(key: string, fallback: T): T {
@@ -65,10 +68,6 @@ function writeJson(key: string, value: unknown): void {
 	} catch {
 		// Best-effort.
 	}
-}
-
-function canNotify(): boolean {
-	return typeof Notification !== 'undefined' && Notification.permission === 'granted';
 }
 
 function formatStart(start: string, allDay: boolean): string {
@@ -108,10 +107,11 @@ function createCalendarNotify() {
 					? `in ${item.minutesBefore} min`
 					: formatStart(item.start, item.allDay);
 		const title = item.title || '(untitled event)';
-		if (canNotify()) {
-			new Notification(`${title} — ${when}`, {
+		if (canNotify() && !options.remindersByPush) {
+			void showNotification(`${title} — ${when}`, {
 				body: formatStart(item.start, item.allDay),
-				tag: `ameera-cal-reminder-${item.key}`
+				tag: `ameera-cal-reminder-${item.key}`,
+				url: '/calendar'
 			});
 		}
 		showToast({
@@ -143,9 +143,10 @@ function createCalendarNotify() {
 		for (const ev of fresh.slice(0, 5)) {
 			const when = formatStart(ev.start, ev.allDay);
 			if (canNotify()) {
-				new Notification(`Calendar: ${ev.title}`, {
+				void showNotification(`Calendar: ${ev.title}`, {
 					body: when ? `New or updated event · ${when}` : 'New or updated event',
-					tag: `ameera-cal-event-${ev.uid}`
+					tag: `ameera-cal-event-${ev.uid}`,
+					url: '/calendar'
 				});
 			}
 		}

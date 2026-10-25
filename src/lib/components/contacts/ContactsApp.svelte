@@ -475,7 +475,7 @@
 						{#if canMutate}
 							<button
 								type="button"
-								class="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text hover:bg-surface-hover opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer {listMenuFor === list.id ? 'opacity-100' : ''}"
+								class="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text hover:bg-surface-hover opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer {listMenuFor === list.id ? 'opacity-100' : ''}"
 								aria-label="List options for {list.name}"
 								onclick={(e) => { e.stopPropagation(); listMenuFor = listMenuFor === list.id ? null : list.id; }}
 							>

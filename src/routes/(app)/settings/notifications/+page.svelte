@@ -4,11 +4,19 @@
 	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
+	import { canNotify, notificationSupport, subscribePush, unsubscribePush } from '$lib/notifications';
+	import { onMount } from 'svelte';
 	import type { LayoutData } from '../$types';
 
 	let { data }: { data: LayoutData } = $props();
 
 	let enabled = $state(data.notificationsEnabled);
+	// Notifications are on for the account, but each device needs its own
+	// permission: on one that hasn't given it (a phone added later), the
+	// switch reads off so turning it on asks there.
+	let deviceAllowed = $state(true);
+	onMount(() => { deviceAllowed = canNotify(); });
+	const on = $derived(enabled && deviceAllowed);
 	let selectedFolders = $state<Set<string>>(new Set(data.notificationFolders));
 	let calendarEvents = $state(data.notifyCalendarEvents);
 	let eventReminders = $state(data.notifyEventReminders);
@@ -38,16 +46,35 @@
 
 	async function toggleEnabled(next: boolean) {
 		permissionError = '';
-		if (next && typeof Notification !== 'undefined') {
+		if (next) {
+			const support = notificationSupport();
+			if (support !== 'supported') {
+				permissionError =
+					support === 'needs-home-screen'
+						? 'On iPhone and iPad, add Zajel Mail to your Home Screen and turn notifications on there.'
+						: 'This browser can’t show notifications.';
+				states.enabled = 'error';
+				enabled = false;
+				return;
+			}
+			// Asked first, straight from the tap: Safari only shows the prompt
+			// for a user gesture.
 			const perm = await Notification.requestPermission();
 			if (perm !== 'granted') {
 				permissionError = 'Browser denied notification permission. Adjust it in your browser settings, then try again.';
+				states.enabled = 'error';
 				enabled = false;
 				return;
 			}
 		}
+		if (next) deviceAllowed = true;
 		enabled = next;
 		await save({ enabled: next }, 'enabled');
+		// This device: subscribe for push so notifications arrive while the
+		// app is closed, or stop them. Without push they still show while the
+		// app is open.
+		if (next) await subscribePush().catch(() => false);
+		else await unsubscribePush();
 	}
 
 	function toggleFolder(id: string, checked: boolean) {
@@ -75,7 +102,7 @@
 <header class="mb-6">
 	<h1 class="text-xl font-semibold text-text">Notifications</h1>
 	<p class="text-sm text-text-tertiary mt-1">
-		Browser notifications for new mail and calendar activity. Notifications work while Zajel Mail is open in a browser tab.
+		New mail and calendar activity.
 	</p>
 </header>
 
@@ -87,7 +114,7 @@
 		errorMessage={permissionError}
 	>
 		{#snippet control()}
-			<Toggle checked={enabled} onChange={toggleEnabled} />
+			<Toggle checked={on} onChange={toggleEnabled} />
 		{/snippet}
 	</SettingRow>
 
@@ -99,7 +126,7 @@
 				<label class="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface-hover/50 border border-border/60 cursor-pointer hover:bg-surface-hover transition-colors">
 					<input
 						type="checkbox"
-						disabled={!enabled}
+						disabled={!on}
 						checked={selectedFolders.has(mb.id)}
 						onchange={(e) => toggleFolder(mb.id, (e.currentTarget as HTMLInputElement).checked)}
 						class="w-3.5 h-3.5 rounded-md border-border accent-accent cursor-pointer disabled:cursor-not-allowed"
@@ -124,8 +151,8 @@
 	>
 		{#snippet control()}
 			<Toggle
-				checked={calendarEvents && enabled}
-				disabled={!enabled}
+				checked={calendarEvents && on}
+				disabled={!on}
 				onChange={(next) => {
 					calendarEvents = next;
 					save({ calendarEvents: next }, 'calendarEvents');
@@ -141,8 +168,8 @@
 	>
 		{#snippet control()}
 			<Toggle
-				checked={eventReminders && enabled}
-				disabled={!enabled}
+				checked={eventReminders && on}
+				disabled={!on}
 				onChange={(next) => {
 					eventReminders = next;
 					save({ eventReminders: next }, 'eventReminders');

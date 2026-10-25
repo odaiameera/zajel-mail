@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { writePreferences } from '$lib/server/preferences';
+import { refreshPushWatchers } from '$lib/server/push/worker';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.user) error(401, 'Not signed in');
@@ -28,5 +29,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		patch.notify_event_reminders = body.eventReminders ? 'on' : 'off';
 	}
 	writePreferences(locals.user.id, patch);
+	// Turning notifications on or off starts or stops the push watchers now
+	// rather than at the next reconcile.
+	if (patch.notifications) refreshPushWatchers();
 	return json({ success: true });
 };

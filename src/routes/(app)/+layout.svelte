@@ -10,7 +10,7 @@
 	import SearchInput from '$lib/components/SearchInput.svelte';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
-	import { isPhone } from '$lib/stores/viewport';
+	import { sidebarIsDrawer } from '$lib/stores/viewport';
 	import { composer, openCompose, setMode } from '$lib/stores/compose';
 	import { onMount, setContext, untrack, type Snippet } from 'svelte';
 	import { APP_PANEL, type AppPanelContext } from '$lib/app-panel';
@@ -18,6 +18,7 @@
 	import { profilePhoto } from '$lib/stores/profilePhoto';
 	import { realtime } from '$lib/stores/realtime';
 	import { calendarNotify } from '$lib/stores/calendarNotify';
+	import { canNotify, showNotification, subscribePush } from '$lib/notifications';
 	import { showToast } from '$lib/stores/toast';
 	import { loadUserState } from '$lib/stores/userState';
 	import { AI_ASSISTANT_CONTEXT, type AIAssistantContext } from '$lib/types/assistant';
@@ -107,14 +108,17 @@
 	const panelKind = $derived<'mail' | 'app' | 'none'>(
 		inMail ? 'mail' : appPanel || panelRoute ? 'app' : 'none'
 	);
-	const railCollapsed = $derived(panelKind === 'mail' && sidebarCollapsed);
+	const railCollapsed = $derived(panelKind === 'mail' && sidebarCollapsed && !$sidebarIsDrawer);
 	// Only the mail sidebar collapses to an icon strip; app panels are
 	// always full width.
 	const sidebarWidth = $derived(
 		panelKind === 'mail' ? (sidebarCollapsed ? '48px' : '224px') : panelKind === 'app' ? '224px' : '8px'
 	);
+	// Settings on a phone opens on its own section list (/settings), with a
+	// way back to it from every section, so the drawer has nothing to add.
+	const settingsRoute = $derived(page.url.pathname.startsWith('/settings'));
 
-	// Phone layout: the left column becomes a drawer opened from the header,
+	// Below `lg` the left column becomes a drawer opened from the header,
 	// and it closes itself once you pick somewhere to go.
 	let drawerOpen = $state(false);
 	afterNavigate(() => { drawerOpen = false; });
@@ -180,20 +184,37 @@
 		};
 	});
 
+	// A device with a push subscription gets new mail and reminders from the
+	// server (see $lib/server/push), so the open app leaves those system
+	// notifications to it rather than showing each one twice. Each load
+	// renews the subscription, which also re-links it after a new sign-in.
+	let pushActive = $state(false);
+	// A primitive, so the effect below runs when notifications are turned on
+	// or off, not on every data refresh.
+	const notificationsOn = $derived(data.notificationsEnabled);
+	$effect(() => {
+		if (!notificationsOn || !canNotify()) {
+			pushActive = false;
+			return;
+		}
+		subscribePush()
+			.then((ok) => { pushActive = ok; })
+			.catch(() => { pushActive = false; });
+	});
+
 	// Calendar push: poll CalDAV change tokens + VALARM reminders while any
 	// notification channel is on. Reacts to settings changes live.
 	$effect(() => {
 		const wantsCalendar =
 			data.notificationsEnabled && (data.notifyCalendarEvents || data.notifyEventReminders);
+		const options = {
+			newEvents: data.notifyCalendarEvents,
+			reminders: data.notifyEventReminders,
+			remindersByPush: pushActive
+		};
 		if (wantsCalendar) {
-			calendarNotify.start({
-				newEvents: data.notifyCalendarEvents,
-				reminders: data.notifyEventReminders
-			});
-			calendarNotify.setOptions({
-				newEvents: data.notifyCalendarEvents,
-				reminders: data.notifyEventReminders
-			});
+			calendarNotify.start(options);
+			calendarNotify.setOptions(options);
 		} else {
 			calendarNotify.stop();
 		}
@@ -226,15 +247,12 @@
 				});
 			}
 
-			if (
-				data.notificationsEnabled &&
-				typeof Notification !== 'undefined' &&
-				Notification.permission === 'granted'
-			) {
-				new Notification(
-					delta === 1 ? 'New message' : `${delta} new messages`,
-					{ body: 'Your inbox has new mail.', tag: 'ameera-mail-new', silent: false }
-				);
+			if (data.notificationsEnabled && !pushActive) {
+				void showNotification(delta === 1 ? 'New message' : `${delta} new messages`, {
+					body: 'Your inbox has new mail.',
+					tag: 'ameera-mail-new',
+					url: '/inbox'
+				});
 			}
 		}
 
@@ -252,7 +270,10 @@
 	}
 </script>
 
-<svelte:window onclick={handleClickOutside} />
+<svelte:window
+	onclick={handleClickOutside}
+	onkeydown={(e) => { if (e.key === 'Escape' && drawerOpen) drawerOpen = false; }}
+/>
 
 <!--
 	Two layouts from one grid. From `md` up: header across the top, then
@@ -262,9 +283,20 @@
 	full-width. The desktop columns ride in a custom property so the same
 	element can drop them below `md` — an inline grid-template-columns would
 	win over any class.
+
+	Between `md` and `lg` (phones in landscape, tablets in portrait) the
+	desktop layout keeps everything but the left column, which is the
+	drawer there too: a 224px column left the mail list and reading pane a
+	sliver each at those widths.
+
+	Added to the Home Screen on iOS, the page runs under the status bar
+	(black-translucent, viewport-fit=cover), so the shell pads itself by the
+	safe-area insets: the chrome colour runs up behind the clock and the
+	header starts below it. In a browser tab the insets are 0.
 -->
 <div
-	class="h-dvh overflow-hidden bg-surface grid grid-cols-1 grid-rows-[auto_1fr_auto] md:grid-rows-[auto_1fr] md:[grid-template-columns:var(--shell-cols)]"
+	class="h-dvh overflow-hidden bg-surface grid grid-cols-1 grid-rows-[auto_1fr_auto] md:grid-rows-[auto_1fr] md:[grid-template-columns:8px_minmax(0,1fr)_0px_52px] lg:[grid-template-columns:var(--shell-cols)]
+		pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:pb-[env(safe-area-inset-bottom)]"
 	class:density-compact={data.density === 'compact'}
 	style="--shell-cols: {sidebarWidth} minmax(0, 1fr) 0px 52px; transition: grid-template-columns 0.3s ease;
 		{accountColor ? `border-top: 2px solid ${accountColor};` : ''}"
@@ -274,13 +306,13 @@
 		<button
 			type="button"
 			onclick={() => { drawerOpen = true; }}
-			class="md:hidden w-10 h-10 shrink-0 flex items-center justify-center rounded-lg text-text-secondary hover:text-text hover:bg-surface-hover transition-colors cursor-pointer {panelKind === 'none' ? 'invisible' : ''}"
+			class="lg:hidden w-10 h-10 shrink-0 flex items-center justify-center rounded-lg text-text-secondary hover:text-text hover:bg-surface-hover transition-colors cursor-pointer {panelKind === 'none' ? 'invisible' : settingsRoute ? 'max-md:invisible' : ''}"
 			aria-label="Open menu"
 			aria-expanded={drawerOpen}
 		>
 			<Icon name="menu" size={20} />
 		</button>
-		<h1 class="max-md:hidden text-lg font-bold text-text tracking-tight leading-none shrink-0 {railCollapsed ? 'w-4' : 'w-[192px]'} transition-all duration-200 overflow-hidden whitespace-nowrap">
+		<h1 class="max-md:hidden text-lg font-bold text-text tracking-tight leading-none shrink-0 {railCollapsed ? 'lg:w-4' : 'lg:w-[192px]'} transition-all duration-200 overflow-hidden whitespace-nowrap">
 			{railCollapsed ? '' : 'zajel.'}
 		</h1>
 		<SearchInput bind:value={searchQuery} onSubmit={submitSearch} mailboxes={data.mailboxes} />
@@ -337,39 +369,40 @@
 
 	<!-- Row 2, Col 1: the open app's navigation — after <main> in the DOM so
 	     the page has registered its panel (if any) before this renders; grid
-	     placement puts it back on the left. `md:contents` keeps the panel
-	     itself as the grid item on desktop; on phones this wrapper is the
-	     drawer. The mail sidebar's collapse button closes the drawer there,
-	     since a 48px icon strip makes no sense as an overlay. -->
+	     placement puts it back on the left. `lg:contents` keeps the panel
+	     itself as the grid item on wide screens; below `lg` this wrapper is
+	     the drawer. The mail sidebar's collapse button closes the drawer
+	     there, since a 48px icon strip makes no sense as an overlay. -->
 	{#if drawerOpen}
 		<button
 			type="button"
-			class="md:hidden fixed inset-0 z-40 bg-black/50 animate-compose-backdrop-in cursor-default"
+			class="lg:hidden fixed inset-0 z-40 bg-black/50 animate-compose-backdrop-in cursor-default"
 			aria-label="Close menu"
 			onclick={() => { drawerOpen = false; }}
 		></button>
 	{/if}
 	{#if panelKind !== 'none'}
 		<div
-			class="md:contents max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:w-[280px] max-md:max-w-[85vw] max-md:bg-surface max-md:shadow-2xl max-md:transition-[transform,visibility] max-md:duration-200
-				{drawerOpen ? '' : 'max-md:-translate-x-full max-md:invisible'}"
+			class="lg:contents max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[280px] max-lg:max-w-[85vw] max-lg:bg-surface max-lg:shadow-2xl max-lg:transition-[transform,visibility] max-lg:duration-200
+				max-lg:pt-[env(safe-area-inset-top)] max-lg:pb-[env(safe-area-inset-bottom)] max-lg:pl-[env(safe-area-inset-left)]
+				{drawerOpen ? '' : 'max-lg:-translate-x-full max-lg:invisible'}"
 		>
-			<div class="md:col-start-1 md:row-start-2 h-full min-h-0 overflow-hidden">
+			<div class="lg:col-start-1 lg:row-start-2 h-full min-h-0 overflow-hidden">
 				{#if panelKind === 'mail'}
 					<Sidebar
 						mailboxes={data.mailboxes}
 						labels={data.labels ?? []}
 						folderExpanded={data.folderExpanded ?? {}}
-						hideHeader={!$isPhone}
-						collapsed={sidebarCollapsed && !$isPhone}
+						hideHeader={!$sidebarIsDrawer}
+						collapsed={sidebarCollapsed && !$sidebarIsDrawer}
 						onToggleCollapse={() => {
-							if ($isPhone) drawerOpen = false;
+							if ($sidebarIsDrawer) drawerOpen = false;
 							else sidebarCollapsed = !sidebarCollapsed;
 						}}
 					/>
 				{:else if appPanel}
 					<div class="h-full flex flex-col bg-surface">
-						{#if $isPhone}
+						{#if $sidebarIsDrawer}
 							<div class="px-4 py-3"><span class="text-lg font-bold text-text tracking-tight leading-none">zajel.</span></div>
 						{/if}
 						{@render appPanel()}
@@ -401,7 +434,7 @@
 {#if profileOpen}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div bind:this={profileCardEl} class="fixed z-50 top-14 right-2 md:right-16" onclick={(e) => e.stopPropagation()}>
+	<div bind:this={profileCardEl} class="fixed z-50 top-[calc(3.5rem+env(safe-area-inset-top))] right-2 md:right-16" onclick={(e) => e.stopPropagation()}>
 		<ProfileCard
 			displayName={data.displayName}
 			email={data.userEmail}
