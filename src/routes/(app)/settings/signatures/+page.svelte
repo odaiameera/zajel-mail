@@ -179,7 +179,7 @@
 	</button>
 </header>
 
-<div class="grid grid-cols-[220px_1fr] gap-6">
+<div class="grid grid-cols-[220px_1fr] max-md:grid-cols-1 gap-6">
 	<!-- List -->
 	<aside class="flex flex-col gap-1">
 		{#if signatures.length === 0 && !isNew}

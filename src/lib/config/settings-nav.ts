@@ -44,3 +44,14 @@ export const SETTINGS_GROUP_ORDER: SettingsNavGroup[] = [
 	'Organization',
 	'Advanced'
 ];
+
+/** The nav items under their group headings, in display order. */
+export function groupedSettingsNav(): (readonly [SettingsNavGroup, SettingsNavItem[]])[] {
+	const map = new Map<SettingsNavGroup, SettingsNavItem[]>();
+	for (const item of SETTINGS_NAV) {
+		const list = map.get(item.group) ?? [];
+		list.push(item);
+		map.set(item.group, list);
+	}
+	return SETTINGS_GROUP_ORDER.filter((g) => map.has(g)).map((g) => [g, map.get(g)!] as const);
+}

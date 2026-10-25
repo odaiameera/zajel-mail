@@ -19,8 +19,10 @@
 	} = $props();
 </script>
 
-<div class="flex items-start gap-6 py-4 border-b border-border last:border-b-0">
-	<div class="flex-1 min-w-0">
+<!-- A control too wide to sit beside its label (an input, a menu on a phone)
+     wraps underneath it; toggles stay on the same line. -->
+<div class="flex flex-wrap items-start gap-x-6 gap-y-3 py-4 border-b border-border last:border-b-0">
+	<div class="flex-1 min-w-[12rem]">
 		<p class="text-sm font-medium text-text">{title}</p>
 		{#if description}
 			<p class="text-xs text-text-tertiary mt-1">{description}</p>

@@ -13,12 +13,26 @@ import { browser } from '$app/environment';
  */
 export const PHONE_QUERY = '(max-width: 767.98px)';
 
-export const isPhone = readable(false, (set) => {
-	// jsdom (the component tests) has no matchMedia.
-	if (!browser || typeof window.matchMedia !== 'function') return;
-	const mq = window.matchMedia(PHONE_QUERY);
-	set(mq.matches);
-	const onChange = (e: MediaQueryListEvent) => set(e.matches);
-	mq.addEventListener('change', onChange);
-	return () => mq.removeEventListener('change', onChange);
-});
+function mediaStore(query: string) {
+	return readable(false, (set) => {
+		// jsdom (the component tests) has no matchMedia.
+		if (!browser || typeof window.matchMedia !== 'function') return;
+		const mq = window.matchMedia(query);
+		set(mq.matches);
+		const onChange = (e: MediaQueryListEvent) => set(e.matches);
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
+}
+
+export const isPhone = mediaStore(PHONE_QUERY);
+
+/**
+ * Below Tailwind's `lg` (1024px) — phones, phones in landscape, tablets in
+ * portrait — every app's left column is a slide-in drawer rather than a
+ * column, so the content keeps the width. Kept in step with the `max-lg:` /
+ * `lg:` classes on the shell.
+ */
+export const DRAWER_QUERY = '(max-width: 1023.98px)';
+
+export const sidebarIsDrawer = mediaStore(DRAWER_QUERY);

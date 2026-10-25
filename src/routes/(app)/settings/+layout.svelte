@@ -2,35 +2,23 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { page } from '$app/state';
 	import { pageTitle } from '$lib/utils/title';
-	import {
-		SETTINGS_NAV,
-		SETTINGS_GROUP_ORDER,
-		type SettingsNavGroup,
-		type SettingsNavItem
-	} from '$lib/config/settings-nav';
+	import { groupedSettingsNav } from '$lib/config/settings-nav';
 	import { hostAppPanel } from '$lib/app-panel';
 	import type { Snippet } from 'svelte';
 
 	let { children }: { children: Snippet } = $props();
 
-	const grouped = $derived.by(() => {
-		const map = new Map<SettingsNavGroup, SettingsNavItem[]>();
-		for (const item of SETTINGS_NAV) {
-			const list = map.get(item.group) ?? [];
-			list.push(item);
-			map.set(item.group, list);
-		}
-		return SETTINGS_GROUP_ORDER
-			.filter((g) => map.has(g))
-			.map((g) => [g, map.get(g)!] as const);
-	});
+	const grouped = groupedSettingsNav();
+	// /settings itself is the section list phones open on (see its page).
+	const onIndex = $derived(page.url.pathname === '/settings');
 
 	function isActive(slug: string): boolean {
 		return page.url.pathname === `/settings/${slug}`;
 	}
 
 	// The section list lives in the shell's left column — in place of the
-	// mail folders, not beside them — and in the drawer on phones.
+	// mail folders, not beside them — and in the drawer below `lg`. Phones
+	// get it as a page of its own instead (/settings).
 	const hosted = hostAppPanel(settingsNav);
 </script>
 
@@ -70,7 +58,16 @@
 		<aside class="w-[224px] shrink-0 border-r border-border flex flex-col">{@render settingsNav()}</aside>
 	{/if}
 	<section class="flex-1 min-h-0 overflow-y-auto">
-		<div class="px-8 py-6 max-md:px-4 max-md:py-4 max-w-3xl">
+		<div class="px-8 py-6 max-md:px-4 max-md:py-4 max-md:pb-28 max-w-3xl">
+			{#if !onIndex}
+				<a
+					href="/settings"
+					class="md:hidden -ml-1.5 mb-2 inline-flex items-center gap-0.5 h-9 pr-2 text-sm text-accent-fg"
+				>
+					<Icon name="previous" size={20} />
+					<span>Settings</span>
+				</a>
+			{/if}
 			{@render children()}
 		</div>
 	</section>

@@ -28,6 +28,7 @@
 		"@types/node-cron": "^3.0.11",
 		"@types/papaparse": "^5.5.2",
 		"@types/sanitize-html": "^2.16.1",
+		"@types/web-push": "^3.6.4",
 		"jsdom": "29.0.0",
 		"svelte": "^5.55.2",
 		"svelte-check": "^4.4.6",
@@ -70,6 +71,7 @@
 		"node-cron": "^3.0.3",
 		"papaparse": "^5.5.4",
 		"sanitize-html": "^2.17.3",
+		"web-push": "^3.6.7",
 		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
 	}
 }

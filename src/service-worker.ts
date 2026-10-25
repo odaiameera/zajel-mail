@@ -112,6 +112,84 @@ sw.addEventListener('fetch', (event) => {
 	//    it always hits the network and is never cached.
 });
 
+// Web Push (see $lib/server/push): every message becomes a notification.
+// Safari revokes a subscription whose pushes show nothing, so there is no
+// "app is open, stay quiet" path here; the open app instead leaves new-mail
+// notifications to push on a device that has a subscription.
+sw.addEventListener('push', (event) => {
+	let data: { title?: string; body?: string; tag?: string; url?: string } = {};
+	try {
+		data = event.data?.json() ?? {};
+	} catch {
+		data = { body: event.data?.text() };
+	}
+	event.waitUntil(
+		sw.registration.showNotification(data.title || 'Zajel Mail', {
+			body: data.body,
+			tag: data.tag,
+			icon: '/icon-192.png',
+			data: { url: data.url || '/inbox' }
+		})
+	);
+});
+
+// Open the app where the notification points: an open window if there is
+// one, else a new one.
+sw.addEventListener('notificationclick', (event) => {
+	event.notification.close();
+	const target = new URL(event.notification.data?.url || '/inbox', sw.location.origin);
+	if (target.origin !== sw.location.origin) return;
+	event.waitUntil(
+		(async () => {
+			const windows = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+			const open = windows.find((w) => new URL(w.url).origin === sw.location.origin);
+			if (open) {
+				await open.focus();
+				await open.navigate(target.href).catch(() => {});
+				return;
+			}
+			await sw.clients.openWindow(target.href);
+		})()
+	);
+});
+
+// The browser replaced the subscription (keys rotated, or it expired): hand
+// the server the new one so pushes keep arriving.
+sw.addEventListener('pushsubscriptionchange', (event) => {
+	const change = event as Event & {
+		oldSubscription?: PushSubscription | null;
+		newSubscription?: PushSubscription | null;
+		waitUntil(p: Promise<unknown>): void;
+	};
+	change.waitUntil(
+		(async () => {
+			let sub = change.newSubscription ?? null;
+			if (!sub) {
+				const res = await fetch('/api/push');
+				if (!res.ok) return;
+				const { publicKey } = (await res.json()) as { publicKey: string };
+				const raw = atob(publicKey.replace(/-/g, '+').replace(/_/g, '/'));
+				sub = await sw.registration.pushManager.subscribe({
+					userVisibleOnly: true,
+					applicationServerKey: Uint8Array.from(raw, (c) => c.charCodeAt(0))
+				});
+			}
+			if (change.oldSubscription) {
+				await fetch('/api/push', {
+					method: 'DELETE',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ endpoint: change.oldSubscription.endpoint })
+				}).catch(() => {});
+			}
+			await fetch('/api/push', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(sub.toJSON())
+			});
+		})()
+	);
+});
+
 async function avatarCacheFirst(request: Request): Promise<Response> {
 	const cache = await caches.open(AVATAR_CACHE);
 	const hit = await cache.match(request);

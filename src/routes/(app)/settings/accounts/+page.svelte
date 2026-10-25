@@ -347,7 +347,7 @@
 
 			<!-- Row actions: quiet until the row is hovered -->
 			<div
-				class="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
+				class="flex items-center gap-1 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 focus-within:opacity-100 transition-opacity"
 				class:opacity-100={confirmRemoveId === account.id || colorPickerId === account.id}
 			>
 				<div class="flex flex-col mr-1">

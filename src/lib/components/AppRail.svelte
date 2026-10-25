@@ -2,6 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import type { IconName } from '$lib/icons';
 	import { page } from '$app/state';
+	import { isPhone } from '$lib/stores/viewport';
 
 	type RailItem = {
 		id: string;
@@ -14,7 +15,9 @@
 		comingSoon?: boolean;
 	};
 
-	const SETTINGS_HREF = '/settings/account';
+	// Phones open Settings on its section list; wider screens have that list
+	// in the left column, so they start on the first section.
+	const settingsHref = $derived($isPhone ? '/settings' : '/settings/account');
 
 	// The three built surfaces in the order they get used (Zajel, the AI mail
 	// agent, lives in the bottom-right corner, beside Compose). Unbuilt apps (Tasks)
@@ -88,7 +91,7 @@
 
 	<!-- Settings -->
 	<a
-		href={SETTINGS_HREF}
+		href={settingsHref}
 		data-sveltekit-preload-data="hover"
 		title="Settings"
 		aria-label="Settings"

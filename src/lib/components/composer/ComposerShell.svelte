@@ -1250,6 +1250,10 @@
 			max-height: none;
 			transform: none;
 			border-radius: 0;
+			/* Clear of the status bar and home indicator when run from the
+			   Home Screen (0 in a browser tab). */
+			padding-top: env(safe-area-inset-top);
+			padding-bottom: env(safe-area-inset-bottom);
 		}
 		/* Just above the tab bar, clear of the corner buttons above it. */
 		.composer--minimized {

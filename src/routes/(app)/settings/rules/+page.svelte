@@ -517,7 +517,7 @@
 							<button
 								onclick={(e) => { e.stopPropagation(); deleteRule(rule.id); }}
 								title="Delete rule"
-								class="opacity-0 group-hover:opacity-100 text-text-tertiary hover:text-danger p-1 rounded-md cursor-pointer transition-opacity"
+								class="opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 text-text-tertiary hover:text-danger p-1 rounded-md cursor-pointer transition-opacity"
 							>
 								<Icon name="close" size={14} />
 							</button>

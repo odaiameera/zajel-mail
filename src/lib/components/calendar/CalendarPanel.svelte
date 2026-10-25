@@ -91,7 +91,7 @@
 				<span class="text-sm text-text flex-1 truncate" class:opacity-50={cal.hidden}>{cal.name}</span>
 				<button
 					type="button"
-					class="w-5 h-5 rounded-md flex items-center justify-center text-text-tertiary hover:text-text opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+					class="w-5 h-5 pointer-coarse:w-8 pointer-coarse:h-8 rounded-md flex items-center justify-center text-text-tertiary hover:text-text opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer"
 					aria-label="Calendar options"
 					onclick={(e) => {
 						e.stopPropagation();
