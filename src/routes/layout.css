@@ -492,6 +492,34 @@ html:not(.light) body {
 }
 
 /*
+ * Switching apps on a phone (see onNavigate in (app)/+layout.svelte): the
+ * old app's content fades out, then the new one fades in rising a few
+ * pixels; everything else (header, tab bar, the tray behind the content)
+ * changes in place. `.app-switching` is on <html> only for the length of
+ * the transition, which is the only time the content carries a
+ * view-transition-name.
+ */
+.app-switching .app-content {
+	view-transition-name: app-content;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation: none;
+}
+::view-transition-old(app-content) {
+	animation: app-fade-out 120ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+::view-transition-new(app-content) {
+	animation: app-fade-in 240ms cubic-bezier(0, 0, 0.2, 1) 80ms both;
+}
+@keyframes app-fade-out {
+	to { opacity: 0; }
+}
+@keyframes app-fade-in {
+	from { opacity: 0; transform: translateY(6px); }
+}
+
+/*
  * Density overrides — applied to any `.email-row` anywhere inside the
  * app layout when the grid has `.density-compact`. Compact mode trims
  * vertical padding and hides the one-line preview; comfortable mode is

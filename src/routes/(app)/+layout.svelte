@@ -8,9 +8,9 @@
 	import ProfileCard from '$lib/components/ProfileCard.svelte';
 	import ToastContainer from '$lib/components/ToastContainer.svelte';
 	import SearchInput from '$lib/components/SearchInput.svelte';
-	import { goto, afterNavigate } from '$app/navigation';
+	import { goto, afterNavigate, onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
-	import { sidebarIsDrawer } from '$lib/stores/viewport';
+	import { PHONE_QUERY, sidebarIsDrawer } from '$lib/stores/viewport';
 	import { composer, openCompose, setMode } from '$lib/stores/compose';
 	import { onMount, setContext, untrack, type Snippet } from 'svelte';
 	import { APP_PANEL, type AppPanelContext } from '$lib/app-panel';
@@ -122,6 +122,104 @@
 	// and it closes itself once you pick somewhere to go.
 	let drawerOpen = $state(false);
 	afterNavigate(() => { drawerOpen = false; });
+
+	// Dragging the open drawer (or the dimmed page beside it) to the left
+	// moves it with the finger. Let go past a third of its width, or with a
+	// flick, and it closes; otherwise it springs back. Touch and pen only —
+	// a mouse closes it with a click.
+	let drawerEl = $state<HTMLDivElement | undefined>(undefined);
+	let dragX = $state(0);
+	let dragWidth = $state(280);
+	let dragging = $state(false);
+	let drag: { x: number; y: number; axis: 'x' | 'y' | null; lastX: number; lastT: number; vx: number } | null = null;
+	let suppressClick = false;
+
+	function onDrawerPointerDown(e: PointerEvent) {
+		if (!drawerOpen || !$sidebarIsDrawer || e.pointerType === 'mouse') return;
+		drag = { x: e.clientX, y: e.clientY, axis: null, lastX: e.clientX, lastT: e.timeStamp, vx: 0 };
+	}
+
+	function onDrawerPointerMove(e: PointerEvent) {
+		if (!drag) return;
+		const dx = e.clientX - drag.x;
+		if (!drag.axis) {
+			const dy = e.clientY - drag.y;
+			if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+			// Mostly vertical: a scroll, not a drag.
+			if (Math.abs(dy) >= Math.abs(dx)) {
+				drag = null;
+				return;
+			}
+			drag.axis = 'x';
+			dragWidth = drawerEl?.offsetWidth || 280;
+			dragging = true;
+			try {
+				(e.currentTarget as Element).setPointerCapture(e.pointerId);
+			} catch {
+				// The pointer is already gone.
+			}
+		}
+		const dt = Math.max(1, e.timeStamp - drag.lastT);
+		drag.vx = 0.8 * ((e.clientX - drag.lastX) / dt) + 0.2 * drag.vx;
+		drag.lastX = e.clientX;
+		drag.lastT = e.timeStamp;
+		dragX = Math.min(0, dx);
+	}
+
+	function onDrawerPointerEnd(e: PointerEvent) {
+		const ended = drag;
+		drag = null;
+		if (!ended?.axis) return;
+		// px/ms, and only if the finger was still moving when it lifted.
+		const flick = e.type === 'pointerup' && e.timeStamp - ended.lastT < 100 && ended.vx < -0.4;
+		if (e.type === 'pointerup' && (dragX < -dragWidth / 3 || flick)) drawerOpen = false;
+		dragging = false;
+		dragX = 0;
+		// The lifted finger can still produce a click on whatever is under
+		// it; a drag isn't a tap.
+		suppressClick = true;
+		setTimeout(() => { suppressClick = false; }, 50);
+	}
+
+	function onDrawerClickCapture(e: MouseEvent) {
+		if (!suppressClick) return;
+		e.preventDefault();
+		e.stopPropagation();
+	}
+
+	// Moving between apps on a phone (Mail, Calendar, Contacts, Settings),
+	// the page content fades out and the next app fades in; the header and
+	// tab bar stay put. Uses the View Transitions API where there is one
+	// (Safari 18, Chrome); elsewhere the switch is instant, as it is on
+	// wider screens and with reduced motion. The name that picks out the
+	// content is set only for the transition (see .app-switching in
+	// layout.css): permanently, it would make the content a stacking context
+	// and trap the pages' own modals beneath the tab bar.
+	function appOf(pathname: string): string {
+		if (/^\/(inbox|folder|email|search|flagged)(\/|$)/.test(pathname)) return 'mail';
+		return pathname.split('/')[1] ?? '';
+	}
+
+	onNavigate((navigation) => {
+		if (!navigation.from || !navigation.to) return;
+		if (appOf(navigation.from.url.pathname) === appOf(navigation.to.url.pathname)) return;
+		if (
+			typeof document.startViewTransition !== 'function' ||
+			!window.matchMedia(PHONE_QUERY).matches ||
+			window.matchMedia('(prefers-reduced-motion: reduce)').matches
+		) {
+			return;
+		}
+		const root = document.documentElement;
+		root.classList.add('app-switching');
+		return new Promise<void>((resolve) => {
+			const transition = document.startViewTransition(async () => {
+				resolve();
+				await navigation.complete.catch(() => {});
+			});
+			transition.finished.finally(() => root.classList.remove('app-switching')).catch(() => {});
+		});
+	});
 	// Mail lists, where the phone layout floats a Compose button. Not an open
 	// message: there the button would sit on top of the text being read.
 	const onMailRoute = $derived(
@@ -364,7 +462,10 @@
 		corners alone separate them.
 	-->
 	<main class="row-start-2 md:col-start-2 md:mb-2 overflow-hidden min-w-0 min-h-0 bg-bg md:rounded-xl">
-		{@render children()}
+		<!-- What fades when switching apps on a phone; the tray behind it stays. -->
+		<div class="app-content h-full">
+			{@render children()}
+		</div>
 	</main>
 
 	<!-- Row 2, Col 1: the open app's navigation — after <main> in the DOM so
@@ -372,20 +473,41 @@
 	     placement puts it back on the left. `lg:contents` keeps the panel
 	     itself as the grid item on wide screens; below `lg` this wrapper is
 	     the drawer. The mail sidebar's collapse button closes the drawer
-	     there, since a 48px icon strip makes no sense as an overlay. -->
-	{#if drawerOpen}
+	     there, since a 48px icon strip makes no sense as an overlay.
+	     The drawer slides on the `translate` property (what Tailwind's
+	     translate utilities set), with iOS's sheet curve: quick to start,
+	     long to settle, and a little quicker out than in. The backdrop stays
+	     in the DOM so it can fade out as well as in. -->
+	{#if panelKind !== 'none'}
 		<button
 			type="button"
-			class="lg:hidden fixed inset-0 z-40 bg-black/50 animate-compose-backdrop-in cursor-default"
+			class="lg:hidden fixed inset-0 z-40 bg-black/50 cursor-default touch-none transition-opacity ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none
+				{drawerOpen ? 'opacity-100 duration-[320ms]' : 'opacity-0 pointer-events-none duration-[240ms]'}"
+			style={dragging ? `opacity: ${Math.max(0, 1 + dragX / dragWidth)}; transition: none;` : undefined}
 			aria-label="Close menu"
+			aria-hidden={!drawerOpen}
+			tabindex={drawerOpen ? 0 : -1}
 			onclick={() => { drawerOpen = false; }}
+			onpointerdown={onDrawerPointerDown}
+			onpointermove={onDrawerPointerMove}
+			onpointerup={onDrawerPointerEnd}
+			onpointercancel={onDrawerPointerEnd}
 		></button>
-	{/if}
-	{#if panelKind !== 'none'}
+		<!-- The drag is a touch shortcut; Escape and the backdrop close it otherwise. -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
-			class="lg:contents max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[280px] max-lg:max-w-[85vw] max-lg:bg-surface max-lg:shadow-2xl max-lg:transition-[transform,visibility] max-lg:duration-200
+			bind:this={drawerEl}
+			class="lg:contents max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[280px] max-lg:max-w-[85vw] max-lg:bg-surface
+				max-lg:transition-[translate,visibility,box-shadow] max-lg:ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none
+				max-lg:touch-pan-y max-lg:[&_*]:touch-pan-y
 				max-lg:pt-[env(safe-area-inset-top)] max-lg:pb-[env(safe-area-inset-bottom)] max-lg:pl-[env(safe-area-inset-left)]
-				{drawerOpen ? '' : 'max-lg:-translate-x-full max-lg:invisible'}"
+				{drawerOpen ? 'max-lg:shadow-2xl max-lg:duration-[320ms]' : 'max-lg:-translate-x-full max-lg:invisible max-lg:duration-[240ms]'}"
+			style={dragging ? `translate: ${dragX}px 0; transition: none;` : undefined}
+			onpointerdown={onDrawerPointerDown}
+			onpointermove={onDrawerPointerMove}
+			onpointerup={onDrawerPointerEnd}
+			onpointercancel={onDrawerPointerEnd}
+			onclickcapture={onDrawerClickCapture}
 		>
 			<div class="lg:col-start-1 lg:row-start-2 h-full min-h-0 overflow-hidden">
 				{#if panelKind === 'mail'}
