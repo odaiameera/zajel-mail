@@ -23,7 +23,8 @@ vi.mock('$lib/server/identity-resolve', () => ({
 import { POST } from './+server';
 
 const ONE_CLICK = {
-	'header:list-unsubscribe:asText': '<mailto:leave@news.test>, <https://news.test/u/abc>',
+	// Raw form, as the mail server returns it: the space after the colon and a folded line.
+	'header:list-unsubscribe': ' <mailto:leave@news.test>,\r\n <https://news.test/u/abc>',
 	'header:list-unsubscribe-post:asText': 'List-Unsubscribe=One-Click'
 };
 
@@ -86,7 +87,7 @@ describe('POST /api/email/[id]/unsubscribe', () => {
 	});
 
 	it('refuses one-click when the email does not offer it', async () => {
-		mailServer({ 'header:list-unsubscribe:asText': '<https://news.test/u/abc>' });
+		mailServer({ 'header:list-unsubscribe': ' <https://news.test/u/abc>' });
 		const res = await call({ mode: 'one-click', url: 'https://news.test/u/abc' });
 		expect(res.status).toBe(400);
 		expect(mocks.safeFetch).not.toHaveBeenCalled();
@@ -96,7 +97,7 @@ describe('POST /api/email/[id]/unsubscribe', () => {
 		// safeFetch answers null for a host that resolves to a private address.
 		mailServer({
 			...ONE_CLICK,
-			'header:list-unsubscribe:asText': '<https://internal.news.test/u>'
+			'header:list-unsubscribe': ' <https://internal.news.test/u>'
 		});
 		mocks.safeFetch.mockResolvedValue(null);
 		const res = await call({ mode: 'one-click', url: 'https://internal.news.test/u' });
@@ -112,7 +113,7 @@ describe('POST /api/email/[id]/unsubscribe', () => {
 	});
 
 	it('only sends the unsubscribe email to the address the header names', async () => {
-		mailServer({ 'header:list-unsubscribe:asText': '<mailto:leave@news.test?subject=stop>' });
+		mailServer({ 'header:list-unsubscribe': ' <mailto:leave@news.test?subject=stop>' });
 		mocks.sendEmail.mockResolvedValue({ success: true });
 
 		expect((await call({ mode: 'mailto', mailto: 'mailto:victim@elsewhere.test' })).status).toBe(400);
@@ -131,5 +132,18 @@ describe('POST /api/email/[id]/unsubscribe', () => {
 	it('404s when the email is gone', async () => {
 		mailServer(null);
 		expect((await call({ mode: 'one-click', url: 'https://news.test/u/abc' })).status).toBe(404);
+	});
+
+	it('asks the mail server for List-Unsubscribe in raw form, which Stalwart 1.0 accepts', async () => {
+		// RFC 8621 allows no Text form for this RFC 2369 header; `:asText` makes
+		// Stalwart 1.0 reject the whole Email/get.
+		mailServer(ONE_CLICK);
+		mocks.safeFetch.mockResolvedValue({ bytes: Buffer.from(''), contentType: null, status: 200 });
+		await call({ mode: 'one-click', url: 'https://news.test/u/abc' });
+		const get = mocks.request.mock.calls
+			.flatMap((args) => args[0] as [string, { properties?: string[] }, string][])
+			.find(([name]) => name === 'Email/get');
+		expect(get?.[1].properties).toContain('header:list-unsubscribe');
+		expect(get?.[1].properties).not.toContain('header:list-unsubscribe:asText');
 	});
 });

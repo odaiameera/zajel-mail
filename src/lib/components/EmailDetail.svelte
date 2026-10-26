@@ -147,7 +147,7 @@
 	// a mailto, a page to open, or nothing. See $lib/utils/list-unsubscribe.
 	const unsubInfo = $derived<UnsubInfo>(
 		parseListUnsubscribe(
-			email['header:list-unsubscribe:asText'],
+			email['header:list-unsubscribe'],
 			email['header:list-unsubscribe-post:asText']
 		)
 	);

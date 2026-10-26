@@ -37,7 +37,7 @@ export function headerFacts(
 	const localPart = senderAddress(email).split('@')[0] ?? '';
 	return {
 		addressed_to_you_directly: (email.to ?? []).some((a) => normalizeAddress(a.email) === me),
-		has_list_unsubscribe: !!email['header:list-unsubscribe:asText']?.trim(),
+		has_list_unsubscribe: !!email['header:list-unsubscribe']?.trim(),
 		list_id: email['header:list-id:asText']?.trim() || null,
 		bulk_precedence: ['bulk', 'list', 'junk'].includes(precedence),
 		auto_submitted: autoSubmitted !== '' && autoSubmitted !== 'no',

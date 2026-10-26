@@ -141,7 +141,8 @@ export interface Email {
 	htmlBody?: Array<{ partId: string; blobId: string; type: string; name: string | null }>;
 	textBody?: Array<{ partId: string; blobId: string; type: string; name: string | null }>;
 	attachments?: EmailAttachment[];
-	'header:list-unsubscribe:asText'?: string | null;
+	/** Raw List-Unsubscribe value; RFC 8621 allows no Text form for this RFC 2369 header. */
+	'header:list-unsubscribe'?: string | null;
 	'header:list-unsubscribe-post:asText'?: string | null;
 	/** Spam classifier status set by the server, typically `Yes, ...` or `No, ...`. */
 	'header:x-spam-status:asText'?: string | null;

@@ -29,7 +29,7 @@ describe('headerFacts', () => {
 				from: [{ name: 'Shop', email: 'no-reply@shop.example' }],
 				to: [{ name: null, email: 'list@shop.example' }],
 				cc: [{ name: null, email: 'me@example.test' }],
-				'header:list-unsubscribe:asText': '<https://shop.example/u>',
+				'header:list-unsubscribe': ' <https://shop.example/u>',
 				'header:list-id:asText': ' deals.shop.example ',
 				'header:precedence:asText': 'Bulk',
 				'header:auto-submitted:asText': 'auto-generated'

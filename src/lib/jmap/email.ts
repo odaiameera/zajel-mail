@@ -126,7 +126,12 @@ export async function getEmailDetail(
 					'messageId', 'inReplyTo', 'references', 'replyTo',
 					// A draft's Bcc, so editing it keeps them.
 					'bcc',
-					'header:list-unsubscribe:asText',
+					// Raw form: RFC 8621 only allows the Text form for headers RFC 5322
+					// and RFC 2369 don't define, and List-Unsubscribe is an RFC 2369
+					// header. Stalwart 1.0 rejects `:asText` here (0.15 let it pass).
+					// parseListUnsubscribe only reads the <...> entries, so the raw
+					// value's leading space and folded lines don't matter.
+					'header:list-unsubscribe',
 					'header:list-unsubscribe-post:asText',
 					'header:x-spam-status:asText',
 					'header:x-spam-score:asText',
