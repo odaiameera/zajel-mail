@@ -37,12 +37,13 @@ Kept as options (for example a theme-matched or user-selectable app icon). Same 
 
 | File | Size | Notes |
 | --- | --- | --- |
-| `icon.svg` | vector | Master, rounded tile; also served as the SVG favicon |
+| `icon.svg` | vector | Master, rounded tile |
 | `icon-512.png`, `icon-192.png` | 512, 192 | Manifest `purpose: any` |
 | `icon-maskable-512.png` | 512 | Full-bleed background, bird scaled to 82% to sit inside the maskable safe zone |
 | `apple-touch-icon.png` | 180 | Square, no rounding (iOS applies its own mask) |
-| `favicon-48.png`, `favicon-32.png` | 48, 32 | Browser tab |
+| `favicon.svg` | vector | Small-size cut: bird at 1.2×. Served as the SVG favicon |
+| `favicon-48.png`, `favicon-32.png`, `favicon-16.png` | 48, 32, 16 | Small-size cut. Browser tab; 32 and 48 are also in the manifest so the Windows taskbar and title bar use them |
 
 ## Geometry
 
-All variants are drawn on a 512 × 512 grid with a 114 px corner radius. The bird is 10 polygons, offset by `translate(-14 26)` so it sits optically centred. Coordinates are in the SVG masters in `icons/`; change those to regenerate every size.
+All variants are drawn on a 512 × 512 grid with a 114 px corner radius. The bird is 10 polygons, offset by `translate(-14 26)` so it sits optically centred. At 48 px and below the bird is drawn at `scale(1.2)` (`favicon.svg`) so it keeps its shape: at 1.0 it is only 12 px wide in a 16 px tab; 1.3 touches the tile edge. Coordinates are in the SVG masters in `icons/`; change those to regenerate every size.
