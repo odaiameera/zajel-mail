@@ -10,9 +10,55 @@
  */
 :root {
 	--corner-window-right: 68px;
-	--corner-window-bottom: 76px;
+	--corner-window-bottom: calc(76px - var(--app-under));
 	--corner-window-width: 480px;
-	--corner-window-height: min(640px, calc(100dvh - 148px));
+	--corner-window-height: min(640px, calc(var(--app-height) - 148px));
+}
+
+/*
+ * The screen's height, and how far short of it fixed positioning falls.
+ *
+ * Opened from the Home Screen on iOS 26 and later, with the status bar
+ * `black-translucent` and `viewport-fit=cover` (app.html), WebKit lays the
+ * page out one status bar short: `100dvh`, `100%`, `innerHeight` and the box
+ * `position: fixed` measures against all come out 47-62pt under the screen,
+ * which left a band below the tab bar until a drag made iOS measure again.
+ * `100lvh` is the full screen there from the start (with no toolbar to
+ * collapse, it has nothing else to mean), and `100dvh` plus the top inset is
+ * the screen once iOS has measured again, so the smaller of the two is right
+ * in both states. In a browser tab `lvh` is taller than what's visible, hence
+ * the scoping: `-webkit-touch-callout` exists only in iOS WebKit.
+ *
+ * --app-under is the shortfall, 0 once iOS has measured again (and
+ * everywhere else). Bottom-anchored fixed elements subtract it to sit where
+ * they would on a correctly sized screen.
+ */
+:root {
+	--app-height: 100dvh;
+	--app-under: 0px;
+}
+@supports (-webkit-touch-callout: none) {
+	@media (display-mode: standalone) {
+		:root {
+			--app-height: min(100lvh, calc(100dvh + env(safe-area-inset-top)));
+			--app-under: calc(var(--app-height) - 100dvh);
+		}
+
+		/* Full-screen overlays (dimmers, click-catchers) are `fixed inset-0`;
+		   stretch them over the short band too, so a dialog dims all of it. */
+		.fixed.inset-0 {
+			bottom: calc(0px - var(--app-under));
+		}
+	}
+}
+
+/*
+ * The app shell's chrome colour as the page background, for the edges of the
+ * screen: iOS Safari colours its bars from it when nothing fixed sits at an
+ * edge, and it shows wherever the page bounces past the shell.
+ */
+html:has(.app-shell) {
+	background-color: var(--color-surface);
 }
 
 @theme {

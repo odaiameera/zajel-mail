@@ -846,7 +846,7 @@
 
 {#if savedToast}
 	<div
-		class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-surface border border-border rounded-full px-4 py-2 text-sm text-text shadow-lg z-50"
+		class="fixed bottom-[calc(1.5rem-var(--app-under))] left-1/2 -translate-x-1/2 bg-surface border border-border rounded-full px-4 py-2 text-sm text-text shadow-lg z-50"
 		transition:fly={{ y: 12, duration: 200 }}
 	>
 		Saved
