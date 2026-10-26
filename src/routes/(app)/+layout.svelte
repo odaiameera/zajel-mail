@@ -390,10 +390,29 @@
 	Added to the Home Screen on iOS, the page runs under the status bar
 	(black-translucent, viewport-fit=cover), so the shell pads itself by the
 	safe-area insets: the chrome colour runs up behind the clock and the
-	header starts below it. In a browser tab the insets are 0.
+	header starts below it. In a browser tab the insets are 0. Its height is
+	--app-height, not 100dvh, which iOS reports a status bar short there
+	until something is dragged (see layout.css).
+-->
+<!--
+	Behind the status bar on the Home Screen: a fixed, opaque strip in the
+	chrome colour. iOS 27 blurs the top of an installed web app unless it
+	finds a fixed element along the top edge to take the colour from. WebKit
+	(LocalFrameView::fixedContainerEdges) hit-tests the middle of the top
+	edge 4px down and wants a fixed or sticky box at least 90% of the width,
+	over 10px tall and mostly opaque. The shell itself isn't fixed, so
+	without this the blur smeared the account-colour border into a fade. Not
+	pointer-events-none: when the closed drawer's dimmer (invisible, above
+	this) is hit first, WebKit retries honouring pointer-events and must land
+	here. Under the dimmer and the drawer so both still cover it; 0 tall in a
+	browser tab.
 -->
 <div
-	class="h-dvh overflow-hidden bg-surface grid grid-cols-1 grid-rows-[auto_1fr_auto] md:grid-rows-[auto_1fr] md:[grid-template-columns:8px_minmax(0,1fr)_0px_52px] lg:[grid-template-columns:var(--shell-cols)]
+	aria-hidden="true"
+	class="fixed inset-x-0 top-0 z-[38] h-[env(safe-area-inset-top)] bg-surface"
+></div>
+<div
+	class="app-shell h-[var(--app-height)] overflow-hidden bg-surface grid grid-cols-1 grid-rows-[auto_1fr_auto] md:grid-rows-[auto_1fr] md:[grid-template-columns:8px_minmax(0,1fr)_0px_52px] lg:[grid-template-columns:var(--shell-cols)]
 		pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:pb-[env(safe-area-inset-bottom)]"
 	class:density-compact={data.density === 'compact'}
 	style="--shell-cols: {sidebarWidth} minmax(0, 1fr) 0px 52px; transition: grid-template-columns 0.3s ease;
@@ -497,7 +516,7 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			bind:this={drawerEl}
-			class="lg:contents max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[280px] max-lg:max-w-[85vw] max-lg:bg-surface
+			class="lg:contents max-lg:fixed max-lg:inset-y-0 max-lg:-bottom-[var(--app-under)] max-lg:left-0 max-lg:z-50 max-lg:w-[280px] max-lg:max-w-[85vw] max-lg:bg-surface
 				max-lg:transition-[translate,visibility,box-shadow] max-lg:ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none
 				max-lg:touch-pan-y max-lg:[&_*]:touch-pan-y
 				max-lg:pt-[env(safe-area-inset-top)] max-lg:pb-[env(safe-area-inset-bottom)] max-lg:pl-[env(safe-area-inset-left)]

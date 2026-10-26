@@ -383,7 +383,7 @@
 	inert={!open}
 	class="fixed z-[35] overflow-hidden bg-bg origin-bottom-right transition-[opacity,transform] will-change-[opacity,transform]
 		md:right-[var(--corner-window-right)] md:bottom-[var(--corner-window-bottom)] md:w-[var(--corner-window-width)] md:max-w-[calc(100vw-96px)] md:h-[var(--corner-window-height)] md:rounded-xl md:border md:border-border md:shadow-[0_16px_48px_rgba(0,0,0,0.5)]
-		max-md:inset-x-0 max-md:top-[calc(3.5rem+env(safe-area-inset-top))] max-md:bottom-[calc(3.5rem+env(safe-area-inset-bottom))] max-md:border-t max-md:border-border
+		max-md:inset-x-0 max-md:top-[calc(3.5rem+env(safe-area-inset-top))] max-md:bottom-[calc(3.5rem+env(safe-area-inset-bottom)-var(--app-under))] max-md:border-t max-md:border-border
 		{open
 			? 'opacity-100 scale-100 duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]'
 			: 'opacity-0 scale-95 pointer-events-none duration-[140ms] ease-[cubic-bezier(0.16,1,0.3,1)]'}"

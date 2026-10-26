@@ -14,7 +14,7 @@
 </script>
 
 <!-- Above the tab bar on phones. -->
-<div class="fixed bottom-4 right-4 max-md:left-4 max-md:bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
+<div class="fixed bottom-[calc(1rem-var(--app-under))] right-4 max-md:left-4 max-md:bottom-[calc(4.5rem+env(safe-area-inset-bottom)-var(--app-under))] z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
 	{#each $toasts as toast (toast.id)}
 		<div
 			role="status"

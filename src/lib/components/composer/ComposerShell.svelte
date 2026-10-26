@@ -1231,7 +1231,7 @@
 	/* Beside the corner buttons, on their row: 68px rail gap + two 48px
 	   circles and the 10px between them + 12px. */
 	.composer--minimized {
-		bottom: 24px;
+		bottom: calc(24px - var(--app-under));
 		right: 186px;
 		width: 280px;
 		height: 40px;
@@ -1245,7 +1245,8 @@
 		.composer--fullscreen {
 			inset: 0;
 			width: 100%;
-			height: 100dvh;
+			/* Not 100dvh: short by a status bar from the Home Screen (layout.css). */
+			height: var(--app-height);
 			max-width: none;
 			max-height: none;
 			transform: none;
@@ -1258,7 +1259,7 @@
 		/* Just above the tab bar, clear of the corner buttons above it. */
 		.composer--minimized {
 			right: 8px;
-			bottom: calc(3.5rem + env(safe-area-inset-bottom) + 8px);
+			bottom: calc(3.5rem + env(safe-area-inset-bottom) + 8px - var(--app-under));
 			width: calc(100vw - 16px);
 		}
 	}

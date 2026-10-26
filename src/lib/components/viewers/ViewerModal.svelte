@@ -42,7 +42,7 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div
-	class="fixed inset-4 md:inset-8 max-md:top-[calc(1rem+env(safe-area-inset-top))] max-md:bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 bg-surface border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden animate-compose-modal-in"
+	class="fixed inset-4 md:inset-8 md:bottom-[calc(2rem-var(--app-under))] max-md:top-[calc(1rem+env(safe-area-inset-top))] max-md:bottom-[calc(1rem+env(safe-area-inset-bottom)-var(--app-under))] z-50 bg-surface border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden animate-compose-modal-in"
 	onclick={(e) => e.stopPropagation()}
 >
 	<div class="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0 bg-surface">
