@@ -18,12 +18,7 @@
 				padding: 24px;
 			}
 			.card { max-width: 360px; }
-			.mark {
-				width: 56px; height: 56px; border-radius: 14px;
-				background: #18181b; color: #6366f1;
-				display: flex; align-items: center; justify-content: center;
-				font-size: 30px; font-weight: 700; margin: 0 auto 20px;
-			}
+			.mark { display: block; width: 56px; height: 56px; margin: 0 auto 20px; }
 			h1 { font-size: 18px; font-weight: 700; margin: 0 0 8px; }
 			p { font-size: 14px; line-height: 1.5; color: #a1a1aa; margin: 0 0 20px; }
 			button {
@@ -36,7 +31,7 @@
 	</head>
 	<body>
 		<div class="card">
-			<div class="mark">a</div>
+			<img class="mark" src="/icon-192.png" alt="Zajel" />
 			<h1>You're offline</h1>
 			<p>Zajel Mail needs a connection to load your mail. Check your network and try again.</p>
 			<button type="button" onclick="location.reload()">Retry</button>
