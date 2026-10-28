@@ -80,7 +80,8 @@ const JEV_EMAIL_PROPERTIES = [
 	'from', 'to', 'cc', 'subject', 'receivedAt', 'preview',
 	'size', 'hasAttachment',
 	'textBody', 'htmlBody', 'bodyValues',
-	'header:list-unsubscribe:asText',
+	// Raw form: Stalwart 1.0 rejects `:asText` for this RFC 2369 header.
+	'header:list-unsubscribe',
 	'header:list-id:asText',
 	'header:precedence:asText',
 	'header:auto-submitted:asText',

@@ -29,6 +29,12 @@ describe('parseListUnsubscribe', () => {
 		});
 	});
 
+	it('reads the raw header form, with its leading space and folded lines', () => {
+		expect(
+			parseListUnsubscribe(' <mailto:leave@news.test>,\r\n\t<https://news.test/u/abc>', 'List-Unsubscribe=One-Click')
+		).toEqual({ mode: 'one-click', url: 'https://news.test/u/abc' });
+	});
+
 	it('reports nothing usable as none', () => {
 		expect(parseListUnsubscribe(null, null)).toEqual({ mode: 'none' });
 		expect(parseListUnsubscribe('', 'List-Unsubscribe=One-Click')).toEqual({ mode: 'none' });

@@ -157,7 +157,9 @@ async function listHeaders(
 			{
 				accountId,
 				ids: [emailId],
-				properties: ['id', 'header:list-unsubscribe:asText', 'header:list-unsubscribe-post:asText']
+				// List-Unsubscribe in raw form: RFC 8621 allows no Text form for it,
+				// and Stalwart 1.0 rejects `:asText`. See getEmailDetail.
+				properties: ['id', 'header:list-unsubscribe', 'header:list-unsubscribe-post:asText']
 			},
 			'0'
 		]
@@ -168,7 +170,7 @@ async function listHeaders(
 	const email = result?.list?.[0];
 	if (!email) return null;
 	return {
-		list: email['header:list-unsubscribe:asText'] ?? null,
+		list: email['header:list-unsubscribe'] ?? null,
 		post: email['header:list-unsubscribe-post:asText'] ?? null
 	};
 }

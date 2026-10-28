@@ -43,7 +43,7 @@ interface FakeEmail {
 	subject: string;
 	receivedAt: string;
 	preview: string;
-	'header:list-unsubscribe:asText'?: string;
+	'header:list-unsubscribe'?: string;
 	'header:x-spam-status:asText'?: string;
 	'header:authentication-results:asText:all'?: string[];
 }
@@ -180,7 +180,7 @@ describe('sortNewMail', () => {
 		updateJevSettings(ACCT, { jevEnabled: false });
 		updateJevSettings(ACCT, { jevEnabled: true }, T0);
 		getDb().prepare('UPDATE jev_settings SET sort_cursor = NULL').run();
-		fake.add('old', -60, { 'header:list-unsubscribe:asText': '<x>' });
+		fake.add('old', -60, { 'header:list-unsubscribe': ' <x>' });
 
 		await sortNewMail(ACCT, ME, auth, at(5));
 
@@ -189,12 +189,12 @@ describe('sortNewMail', () => {
 	});
 
 	it('sorts what arrived since sorting was switched on, and nothing else', async () => {
-		fake.add('old', -10, { 'header:list-unsubscribe:asText': '<x>' });
-		fake.add('news', 1, { 'header:list-unsubscribe:asText': '<x>', subject: 'Issue 212' });
-		fake.add('promo', 2, { 'header:list-unsubscribe:asText': '<x>', subject: '48 hours: 30% off' });
+		fake.add('old', -10, { 'header:list-unsubscribe': ' <x>' });
+		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>', subject: 'Issue 212' });
+		fake.add('promo', 2, { 'header:list-unsubscribe': ' <x>', subject: '48 hours: 30% off' });
 		fake.add('person', 3, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
 		// You moved this to Updates before Jev got to it: it stays there.
-		fake.add('moved', 4, { 'header:list-unsubscribe:asText': '<x>', keywords: { $cat_updates: true } });
+		fake.add('moved', 4, { 'header:list-unsubscribe': ' <x>', keywords: { $cat_updates: true } });
 
 		await sortNewMail(ACCT, ME, auth, at(10));
 
@@ -216,7 +216,7 @@ describe('sortNewMail', () => {
 
 	it('does nothing while the tabs are off', async () => {
 		updateJevSettings(ACCT, { inboxTabs: false });
-		fake.add('news', 1, { 'header:list-unsubscribe:asText': '<x>' });
+		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
 		await sortNewMail(ACCT, ME, auth, at(10));
 		expect(getDecision(ACCT, 'news')).toBeNull();
 	});
@@ -227,7 +227,7 @@ describe('sortNewMail', () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 500 }));
 		vi.stubGlobal('fetch', fetchMock);
-		fake.add('news', 1, { 'header:list-unsubscribe:asText': '<x>' });
+		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
 
 		await sortNewMail(ACCT, ME, auth, at(10));
 		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'pending', attempts: 1 });
@@ -387,7 +387,7 @@ describe('sortNewMail', () => {
 		};
 		setRules(ME, [markAll]);
 		// Older than the cursor: only a backfill reaches these.
-		fake.add('oldNews', -60, { 'header:list-unsubscribe:asText': '<x>', subject: 'Your invoice digest' });
+		fake.add('oldNews', -60, { 'header:list-unsubscribe': ' <x>', subject: 'Your invoice digest' });
 		fake.add('oldPinned', -50, { from: [{ name: 'Shop', email: 'deals@shop.example' }] });
 		fake.add('oldSorted', -40, { keywords: { $cat_updates: true } });
 		setPin(ACCT, '@shop.example', 'promotions');
