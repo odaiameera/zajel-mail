@@ -56,6 +56,31 @@
 
 	let decision = $state<Decision | null>(null);
 	let open = $state(false);
+	let rootEl = $state<HTMLElement>();
+	let chipEl = $state<HTMLButtonElement>();
+
+	// The card floats over the message, so it closes the way other popovers
+	// do: Escape, a click anywhere else, or its close button.
+	function onWindowKeydown(e: KeyboardEvent) {
+		if (!open || e.key !== 'Escape') return;
+		const focusInside = rootEl?.contains(document.activeElement) ?? false;
+		open = false;
+		if (focusInside) chipEl?.focus();
+	}
+
+	function onWindowPointerDown(e: PointerEvent) {
+		if (open && !rootEl?.contains(e.target as Node)) open = false;
+	}
+
+	// A click in the message body lands inside its iframe, and the page never
+	// hears it. Focus moving into the iframe is the signal; the window losing
+	// focus for any other reason (switching apps) leaves the card open.
+	function onWindowBlur() {
+		if (!open) return;
+		setTimeout(() => {
+			if (document.activeElement?.tagName === 'IFRAME') open = false;
+		});
+	}
 
 	$effect(() => {
 		const id = emailId;
@@ -183,12 +208,21 @@
 	});
 </script>
 
+<svelte:window onkeydown={onWindowKeydown} onpointerdown={onWindowPointerDown} onblur={onWindowBlur} />
+
 {#if decision}
-	<div class="flex flex-col items-end">
+	<!-- The card floats over the message. In the header's flow it made the
+	     header as tall as the card and pushed the message body down.
+	     Desktop: it hangs under the chip. Phones: this wrapper isn't
+	     positioned, so the card takes its width from the message view and
+	     its top from where the chip's line ends. -->
+	<div bind:this={rootEl} class="md:relative md:flex md:flex-col md:items-end">
 		<button
+			bind:this={chipEl}
 			type="button"
 			onclick={() => (open = !open)}
 			aria-expanded={open}
+			aria-haspopup="dialog"
 			title="Why is this here?"
 			class="inline-flex items-center gap-1 text-2xs px-2 py-0.5 rounded-full cursor-pointer bg-accent/10 text-accent-fg hover:bg-accent/15"
 		>
@@ -197,10 +231,22 @@
 		</button>
 
 		{#if open}
-			<div class="mt-1 w-72 rounded-lg border border-border bg-surface p-3 text-xs text-left shadow-xl">
-				{#if summary}
-					<p class="text-text">{summary}</p>
-				{/if}
+			<div
+				role="dialog"
+				aria-label="Why is this here?"
+				class="absolute z-20 mt-1 md:right-0 md:top-full max-md:inset-x-4 w-72 max-md:w-auto max-h-[min(30rem,60dvh)] max-md:max-h-[50dvh] overflow-y-auto overscroll-contain rounded-lg border border-border bg-surface p-3 text-xs text-left shadow-xl"
+			>
+				<div class="flex items-start justify-between gap-2">
+					<p class={summary ? 'text-text' : 'text-text-secondary'}>{summary || 'Why is this here?'}</p>
+					<button
+						type="button"
+						onclick={() => (open = false)}
+						aria-label="Close"
+						class="-mr-1 -mt-0.5 shrink-0 p-0.5 rounded-md cursor-pointer text-text-tertiary hover:text-text hover:bg-surface-hover"
+					>
+						<Icon name="close" size={12} />
+					</button>
+				</div>
 				{#if decision.mock}
 					<p class="mt-1 text-warning">
 						Mock answer: worked out locally from the facts below. Jev wasn’t asked.
