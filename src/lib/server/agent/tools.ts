@@ -10,13 +10,13 @@ import {
 import { ensureArchiveMailbox, ensureRemindMeLaterMailbox, getMailboxes } from '$lib/jmap/mailbox';
 import { categoryOf, INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
 import { labelMailboxIds } from '$lib/types/labels';
-import { getEventsInRange } from '$lib/server/calendar/service';
 import { parseWallClock, wallClockToUtc } from '$lib/server/calendar/tz';
 import { scheduleReminder } from '$lib/server/db/queries/reminders';
 import { getDecision } from '$lib/server/db/queries/jev-decisions';
 import { htmlToPromptText } from '$lib/server/ai/extract-event';
 import { createPendingAction, type AgentSource, type PendingAction, type ToolTier } from './store';
 import { composeReply, saveComposedDraft, type ComposeRequest } from './compose';
+import { CALENDAR_TOOLS } from './calendar-tools';
 
 /**
  * The agent's tools. Every tool declares a tier and the server enforces it,
@@ -249,28 +249,6 @@ const inboxTriage: AgentTool = {
 	}
 };
 
-const searchCalendar: AgentTool = {
-	name: 'search_calendar',
-	tier: 'read',
-	description: 'Events between two ISO dates or instants (after inclusive, before exclusive).',
-	input_schema: schema({ after: { type: 'string' }, before: { type: 'string' } }),
-	async run(ctx, input) {
-		const from = Date.parse(str(input.after, 40));
-		const to = Date.parse(str(input.before, 40));
-		if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
-			return { content: 'after and before must be dates with after first', isError: true };
-		}
-		const { events, partial } = await getEventsInRange(ctx.auth, ctx.userEmail, from, Math.min(to, from + 366 * 86_400_000));
-		if (events.length === 0) return { content: partial ? 'No events found (some calendars failed to load).' : 'No events.' };
-		return {
-			content: events
-				.slice(0, 60)
-				.map((e) => untrusted('event', e.id, `${e.title} | ${e.start} – ${e.end}${e.location ? ` | ${e.location}` : ''}`))
-				.join('\n')
-		};
-	}
-};
-
 // --- self: reversible, your own mailbox ---------------------------------------
 
 function keywordTool(name: string, description: string, field: string, keyword: string, on: string, off: string): AgentTool {
@@ -473,7 +451,7 @@ export const AGENT_TOOLS: AgentTool[] = [
 	readEmail,
 	listFolders,
 	inboxTriage,
-	searchCalendar,
+	...CALENDAR_TOOLS,
 	markRead,
 	flag,
 	archive,

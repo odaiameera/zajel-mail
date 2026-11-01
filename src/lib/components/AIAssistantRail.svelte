@@ -42,14 +42,16 @@
 		destination: 'todoist' | 'linear' | 'notion' | null;
 	};
 
-	/** Something the agent prepared that only runs on a click (sending). */
+	/** Something the agent prepared that only runs on a click (sending, invitations, deletes). */
 	type PendingCard = {
 		id: string;
 		kind: string;
-		to?: string[];
-		cc?: string[];
-		subject?: string;
-		text?: string;
+		label: string;
+		title: string;
+		lines: string[];
+		body: string | null;
+		confirmLabel: string;
+		danger: boolean;
 		state?: 'working' | 'done' | 'cancelled' | 'failed';
 	};
 
@@ -536,17 +538,18 @@
 							</ul>
 						{/if}
 						{#each message.pending ?? [] as card (card.id)}
-							<!-- Shows exactly what will be sent; nothing goes until Send. -->
-							<div class="mt-3 rounded-xl border border-border bg-bg p-3 text-text">
-								<p class="text-3xs font-semibold uppercase tracking-wider text-accent-fg">Send email</p>
-								<p class="mt-1 text-xs text-text-secondary">To {card.to?.join(', ')}</p>
-								{#if card.cc?.length}
-									<p class="text-xs text-text-secondary">Cc {card.cc.join(', ')}</p>
+							<!-- Shows exactly what will run; nothing happens until the button. -->
+							<div class="mt-3 rounded-xl border p-3 text-text {card.danger ? 'border-danger/40 bg-danger/5' : 'border-border bg-bg'}">
+								<p class="text-3xs font-semibold uppercase tracking-wider {card.danger ? 'text-danger' : 'text-accent-fg'}">{card.label}</p>
+								<p class="mt-1 font-medium">{card.title}</p>
+								{#each card.lines as line, i (i)}
+									<p class="mt-0.5 text-xs text-text-secondary">{line}</p>
+								{/each}
+								{#if card.body}
+									<p class="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-xs text-text-secondary">{card.body}</p>
 								{/if}
-								<p class="mt-1 font-medium">{card.subject}</p>
-								<p class="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-xs text-text-secondary">{card.text}</p>
 								{#if card.state === 'done'}
-									<p class="mt-3 text-xs font-medium text-accent-fg">Sent</p>
+									<p class="mt-3 text-xs font-medium text-accent-fg">Done</p>
 								{:else if card.state === 'cancelled'}
 									<p class="mt-3 text-xs text-text-tertiary">Cancelled</p>
 								{:else}
@@ -555,9 +558,9 @@
 											type="button"
 											disabled={card.state === 'working'}
 											onclick={() => decidePending(message.id, card.id, 'confirm')}
-											class="btn btn-primary btn-sm flex-1"
+											class="btn btn-sm flex-1 {card.danger ? 'btn-danger-solid' : 'btn-primary'}"
 										>
-											{card.state === 'working' ? 'Sending…' : card.state === 'failed' ? 'Try again' : 'Send'}
+											{card.state === 'working' ? 'Working…' : card.state === 'failed' ? 'Try again' : card.confirmLabel}
 										</button>
 										<button
 											type="button"
