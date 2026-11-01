@@ -12,6 +12,7 @@ vi.mock('$lib/server/trash-retention', () => ({ startTrashRetentionScheduler: vi
 vi.mock('$lib/server/jev/worker', () => ({ startJevScheduler: vi.fn(), sortNewMailSafe: vi.fn() }));
 vi.mock('$lib/server/scheduled-send', () => ({ startScheduledSendWorker: vi.fn() }));
 vi.mock('$lib/server/push/worker', () => ({ startPushWorker: vi.fn() }));
+vi.mock('$lib/server/telegram/worker', () => ({ startTelegramWorker: vi.fn() }));
 vi.mock('$lib/server/auth/crypto', () => ({ assertCryptoReady: vi.fn() }));
 vi.mock('$lib/server/auth/app-session', () => ({ getAppSession: () => mocks.session, verifiedAtMs: () => null }));
 vi.mock('$lib/server/auth/user', () => ({

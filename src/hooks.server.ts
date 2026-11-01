@@ -9,6 +9,7 @@ import { startTrashRetentionScheduler } from '$lib/server/trash-retention';
 import { startJevScheduler, sortNewMailSafe } from '$lib/server/jev/worker';
 import { startScheduledSendWorker } from '$lib/server/scheduled-send';
 import { startPushWorker } from '$lib/server/push/worker';
+import { startTelegramWorker } from '$lib/server/telegram/worker';
 import { getAppSession, verifiedAtMs } from '$lib/server/auth/app-session';
 import { getUserById, hasAppUser } from '$lib/server/auth/user';
 import { authStateForAccount, listAccounts, toPublic } from '$lib/server/auth/accounts';
@@ -88,6 +89,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 		startJevScheduler();
 		startScheduledSendWorker();
 		startPushWorker();
+		startTelegramWorker();
 		migrated = true;
 	}
 

@@ -32,6 +32,10 @@ services:
       # - ANTHROPIC_MODEL=claude-opus-5-5
       # - ANTHROPIC_FAST_MODEL=claude-haiku-5-5
       # - AI_PROVIDER=anthropic
+      # The agent's Telegram bot: create one with @BotFather and put its
+      # token here, then link your chat in Settings → Notifications. It
+      # sends urgent mail (judged by Jev) and reminders to that one chat.
+      # - TELEGRAM_BOT_TOKEN=<token from @BotFather>
       # OpenAI, when its key is set (OPENAI_MODEL defaults to gpt-5.6-terra):
       # - OPENAI_API_KEY=sk-...
       # - OPENAI_MODEL=gpt-5.6-luna
