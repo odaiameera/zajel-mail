@@ -14,13 +14,16 @@ export interface SieveContext {
 	mailboxByName: Map<string, Mailbox>;
 	/** id of the "Labels" container, so applyLabel can verify its target. */
 	labelsParentId: string | null;
+	/** Where "Move to trash" files mail; null leaves the action out. */
+	trash: Mailbox | null;
 }
 
 export function buildSieveContext(mailboxes: Mailbox[]): SieveContext {
 	return {
 		mailboxById: new Map(mailboxes.map((m) => [m.id, m])),
 		mailboxByName: new Map(mailboxes.map((m) => [m.name, m])),
-		labelsParentId: findLabelsParentId(mailboxes)
+		labelsParentId: findLabelsParentId(mailboxes),
+		trash: mailboxes.find((m) => m.role === 'trash') ?? null
 	};
 }
 
@@ -210,7 +213,10 @@ function compileAction(a: RuleAction, ctx: SieveContext): string {
 			const all = Object.values(CATEGORY_KEYWORDS).map((k) => `"${k}"`).join(', ');
 			return `removeflag [${all}];${on.length ? ` addflag "${on[0]}";` : ''}`;
 		}
-		case 'delete':         return `discard; stop;`;
+		case 'delete':
+			// Never `discard`: that destroys the message at delivery. Filing it
+			// into Trash matches the app's own engine, which doesn't stop either.
+			return ctx.trash ? `fileinto "${escSieve(mailboxImapPath(ctx.trash, ctx))}";` : '';
 		case 'stopProcessing': return `stop;`;
 		default:               return '';
 	}

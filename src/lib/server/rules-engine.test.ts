@@ -129,3 +129,31 @@ describe('guards against dropping a Jev condition', () => {
 		expect(script).toContain('removeflag ["$cat_updates", "$cat_newsletters", "$cat_promotions"]; addflag "$cat_newsletters";');
 	});
 });
+
+describe('Move to trash in Sieve', () => {
+	const trashIt = rule('trash', { conditions: [fromShop], actions: [{ type: 'delete' }, { type: 'markRead' }] });
+	const box = (id: string, name: string, role: string | null) => ({
+		id,
+		name,
+		role,
+		parentId: null,
+		sortOrder: 0,
+		totalEmails: 0,
+		unreadEmails: 0
+	});
+
+	it('files the message into Trash instead of discarding it', () => {
+		const script = compileRulesToSieve([trashIt], buildSieveContext([box('in', 'Inbox', 'inbox'), box('tr', 'Deleted Items', 'trash')]));
+		expect(script).not.toContain('discard');
+		expect(script).toContain('fileinto "Deleted Items";');
+		// Like the app's own engine, it doesn't stop the rule's later actions.
+		expect(script).toContain('addflag "\\\\Seen";');
+		expect(script).not.toContain('stop;');
+	});
+
+	it('drops the action when the account has no Trash', () => {
+		const script = compileRulesToSieve([trashIt], buildSieveContext([box('in', 'Inbox', 'inbox')]));
+		expect(script).not.toContain('discard');
+		expect(script).not.toMatch(/^\s*fileinto /m);
+	});
+});
