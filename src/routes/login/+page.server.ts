@@ -25,7 +25,7 @@ export const actions: Actions = {
 		// Anyone can post this form; no real address is longer, so don't spend
 		// a password check or a rate-limit row on it, or echo it back.
 		if (email.length > MAX_EMAIL_LENGTH) {
-			return fail(400, { error: 'Invalid email or password' });
+			return fail(400, { error: 'Invalid email or password', email: '' });
 		}
 
 		const ip = getClientAddress();

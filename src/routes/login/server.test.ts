@@ -43,7 +43,7 @@ describe('login', () => {
 	it('turns away an email longer than any address, before checking anything', async () => {
 		const result = await login('x'.repeat(255));
 		expect(result.status).toBe(400);
-		expect(result.data.email).toBeUndefined();
+		expect(result.data.email).toBe('');
 		expect(mocks.verifyUserPassword).not.toHaveBeenCalled();
 		expect(mocks.recordFailure).not.toHaveBeenCalled();
 	});
