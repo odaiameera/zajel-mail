@@ -219,6 +219,12 @@ export function contactPatchFromInput(input: ContactFormInput, existing: Contact
 	if (Object.keys(mergedName).length === 0 && !emails && !phones && !organizations) {
 		throw new ContactValidationError('Enter a name, email address, phone number, or organization');
 	}
+	// Written whole, never as a `keywords/favorite` pointer: most cards have no
+	// keywords (only vCard CATEGORIES create them), and a pointer into a
+	// missing property is rejected (RFC 8620 §5.3), which failed every save.
+	const keywords = { ...(existing.keywords ?? {}) };
+	if (favorite) keywords.favorite = true;
+	else delete keywords.favorite;
 
 	return {
 		name: Object.keys(mergedName).length > 0 ? mergedName : null,
@@ -226,7 +232,7 @@ export function contactPatchFromInput(input: ContactFormInput, existing: Contact
 		phones: phones ?? null,
 		organizations: organizations ?? null,
 		notes: mergedNotes ?? null,
-		'keywords/favorite': favorite ? true : null,
+		keywords: Object.keys(keywords).length > 0 ? keywords : null,
 		addressBookIds: parseAddressBookIds(input.addressBookIds)
 	};
 }

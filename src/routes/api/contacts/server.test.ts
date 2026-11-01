@@ -459,7 +459,7 @@ describe('POST /api/contacts', () => {
 				phones: null,
 				organizations: null,
 				notes: null,
-				'keywords/favorite': null,
+				keywords: null,
 				addressBookIds: { 'book-1': true }
 			}
 		);
