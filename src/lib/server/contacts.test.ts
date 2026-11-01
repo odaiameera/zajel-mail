@@ -276,8 +276,41 @@ describe('contactPatchFromInput', () => {
 				note1: { note: 'Edited note', author: 'CardDAV' },
 				note2: { note: 'Preserve this note' }
 			},
-			'keywords/favorite': null,
+			keywords: null,
 			addressBookIds: { 'book-1': true }
+		});
+	});
+
+	describe('favourite', () => {
+		const card = (keywords?: Record<string, boolean>): ContactCard => ({
+			id: 'contact-1',
+			'@type': 'Card',
+			version: '1.0',
+			uid: 'urn:uuid:contact-1',
+			addressBookIds: { 'book-1': true },
+			name: { full: 'Dana' },
+			...(keywords && { keywords })
+		});
+		const save = (existing: ContactCard, favorite: boolean) =>
+			contactPatchFromInput(
+				{ name: 'Dana', emails: [], phones: [], organization: '', notes: '', favorite, addressBookIds: ['book-1'] },
+				existing
+			);
+
+		// Stalwart rejects a `keywords/favorite` pointer into a card that has no
+		// keywords (invalidPatch), so keywords always go as a whole property.
+		it('never patches through a keywords/ pointer', () => {
+			for (const patch of [save(card(), true), save(card(), false), save(card({ favorite: true }), false)]) {
+				expect(Object.keys(patch).some((key) => key.startsWith('keywords/'))).toBe(false);
+			}
+		});
+
+		it('adds and removes the favourite and keeps other categories', () => {
+			expect(save(card(), true).keywords).toEqual({ favorite: true });
+			expect(save(card(), false).keywords).toBeNull();
+			expect(save(card({ work: true }), true).keywords).toEqual({ work: true, favorite: true });
+			expect(save(card({ work: true, favorite: true }), false).keywords).toEqual({ work: true });
+			expect(save(card({ favorite: true }), false).keywords).toBeNull();
 		});
 	});
 });

@@ -33,6 +33,9 @@ const INITIAL: RealtimeState = {
 const INVALIDATE_DEBOUNCE_MS = 300;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const DISCONNECT_GRACE_MS = 2_000;
+// Shown again after this long hidden, the app refreshes: a phone can keep
+// a stream that died in the background looking open.
+const HIDDEN_REFRESH_MS = 60_000;
 
 function createRealtimeStore() {
 	const { subscribe, set, update } = writable<RealtimeState>(INITIAL);
@@ -42,6 +45,20 @@ function createRealtimeStore() {
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let changeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	// Stalwart sends nothing when a stream opens, only on the next change, so
+	// mail that arrived while the stream was down would stay unseen. Every
+	// open after the first refreshes for that reason.
+	let opened = false;
+	let hiddenAt: number | null = null;
+
+	function onVisibilityChange() {
+		if (document.visibilityState === 'hidden') {
+			hiddenAt = Date.now();
+			return;
+		}
+		if (hiddenAt !== null && Date.now() - hiddenAt > HIDDEN_REFRESH_MS) scheduleInvalidation();
+		hiddenAt = null;
+	}
 
 	function scheduleInvalidation() {
 		if (changeDebounceTimer) clearTimeout(changeDebounceTimer);
@@ -90,6 +107,9 @@ function createRealtimeStore() {
 			delete tokens[key];
 		}
 
+		document.removeEventListener('visibilitychange', onVisibilityChange);
+		document.addEventListener('visibilitychange', onVisibilityChange);
+
 		const startedAt = Date.now();
 		console.log(`[realtime] connecting at ${new Date(startedAt).toISOString()}`);
 		source = new EventSource('/api/events');
@@ -102,6 +122,8 @@ function createRealtimeStore() {
 				disconnectTimer = null;
 			}
 			update((s) => ({ ...s, connected: true, reconnectAttempts: 0 }));
+			if (opened) scheduleInvalidation();
+			opened = true;
 		};
 
 		// Stalwart emits `event: state` per RFC 8620 §7.3, so listen for
@@ -160,6 +182,9 @@ function createRealtimeStore() {
 			source.close();
 			source = null;
 		}
+		if (browser) document.removeEventListener('visibilitychange', onVisibilityChange);
+		opened = false;
+		hiddenAt = null;
 		if (reconnectTimer) {
 			clearTimeout(reconnectTimer);
 			reconnectTimer = null;
