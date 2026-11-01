@@ -1,5 +1,5 @@
 import { redirect } from '@sveltejs/kit';
-import { mailAssistantConfigured } from '$lib/server/ai/mail-assistant';
+import { assistantConfigured } from '$lib/server/ai/chat';
 import type { LayoutServerLoad } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
@@ -151,7 +151,7 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			jevReads: activeAccount ? getJevSettings(activeAccount.id).jevEnabled : false,
 			// "Create event from email" (LLM extraction) only renders when an
 			// Ollama endpoint is configured server-side.
-			aiEnabled: mailAssistantConfigured()
+			aiEnabled: assistantConfigured()
 		};
 	} catch (err) {
 		if (err instanceof JMAPAuthError) {
