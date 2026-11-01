@@ -144,6 +144,10 @@ function prepareStmts() {
 			`UPDATE jev_decisions SET status = 'skipped', decided_at = ?
 			 WHERE account_id = ? AND backfill = 1 AND status = 'pending'`
 		),
+		dropQueue: db.prepare(
+			`UPDATE jev_decisions SET status = 'skipped', decided_at = ?
+			 WHERE account_id = ? AND status = 'pending'`
+		),
 		done: db.prepare(
 			`UPDATE jev_decisions SET
 			   status = 'done', last_error = NULL, attempts = attempts + 1,
@@ -267,6 +271,15 @@ export function knownEmailIds(accountId: string, emailIds: string[]): Set<string
 /** Stop sorting existing mail: what is still queued is dropped. */
 export function cancelBackfill(accountId: string, now = Date.now()): void {
 	stmts().cancelBackfill.run(now, accountId);
+}
+
+/**
+ * Withdraw everything still queued, new arrivals and existing mail alike.
+ * Done whenever Jev is switched off or on, so mail queued before the
+ * switch is never sent once it has moved.
+ */
+export function dropQueue(accountId: string, now = Date.now()): void {
+	stmts().dropQueue.run(now, accountId);
 }
 
 export function recordDecision(

@@ -405,6 +405,55 @@ describe('sortNewMail', () => {
 		expect(getDecision(ACCT, 'oldSorted')).toMatchObject({ status: 'done', model: null });
 	});
 
+	describe('switching Jev off', () => {
+		const MONTH = 30 * 24 * 60;
+
+		it('withdraws what was queued, so switching it back on sends only new mail', async () => {
+			fake.add('oldNews', -60, { 'header:list-unsubscribe': ' <x>' });
+			fake.add('arrived', 1, { 'header:list-unsubscribe': ' <x>' });
+			enqueueEmails(ACCT, ['oldNews'], T0.getTime(), true); // a backfill under way
+			enqueueEmails(ACCT, ['arrived'], at(1).getTime()); // a new arrival not yet judged
+			updateJevSettings(ACCT, { jevEnabled: false }, at(2));
+
+			// A month later, switched on again for new mail.
+			updateJevSettings(ACCT, { jevEnabled: true }, at(MONTH));
+			fake.add('fresh', MONTH + 1, { 'header:list-unsubscribe': ' <x>' });
+			await sortNewMail(ACCT, ME, auth, at(MONTH + 10));
+
+			expect(getDecision(ACCT, 'oldNews')?.status).toBe('skipped');
+			expect(getDecision(ACCT, 'arrived')?.status).toBe('skipped');
+			expect(fake.emails.get('oldNews')!.keywords).toEqual({});
+			expect(fake.emails.get('arrived')!.keywords).toEqual({});
+			expect(getDecision(ACCT, 'fresh')).toMatchObject({ status: 'done', applied: 'newsletters' });
+		});
+
+		it('stops a pass that is already running', async () => {
+			fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
+			// Switched off just after the pass queued what had arrived.
+			const request = fake.request.bind(fake);
+			let switched = false;
+			fake.request = async (calls) => {
+				const result = await request(calls);
+				if (!switched && calls.some(([name]) => name === 'Email/query')) {
+					switched = true;
+					updateJevSettings(ACCT, { jevEnabled: false }, at(5));
+				}
+				return result;
+			};
+
+			await sortNewMail(ACCT, ME, auth, at(10));
+			expect(fake.emails.get('news')!.keywords).toEqual({});
+			expect(getDecision(ACCT, 'news')?.status).not.toBe('done');
+
+			// Nor does it go out once Jev is back on.
+			updateJevSettings(ACCT, { jevEnabled: true }, at(MONTH));
+			await sortNewMail(ACCT, ME, auth, at(MONTH + 10));
+			expect(fake.emails.get('news')!.keywords).toEqual({});
+			expect(getDecision(ACCT, 'news')?.status).toBe('skipped');
+			expect(getJevSettings(ACCT).sortCursor).toBe(at(MONTH + 10).toISOString());
+		});
+	});
+
 	describe('spam checks', () => {
 		const flagged = { 'header:x-spam-status:asText': 'Yes, score=8.1' };
 		const lookalike = {

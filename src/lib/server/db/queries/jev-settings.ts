@@ -1,4 +1,5 @@
 import { getDb } from '../index';
+import { dropQueue } from './jev-decisions';
 
 /**
  * Per-account Jev settings. See migrations 011_jev.sql and
@@ -61,6 +62,10 @@ function prepareStmts() {
 			   sort_cursor = excluded.sort_cursor,
 			   spam_mode = excluded.spam_mode,
 			   updated_at = excluded.updated_at`
+		),
+		advanceCursor: db.prepare(
+			`UPDATE jev_settings SET sort_cursor = ?, updated_at = ?
+			 WHERE account_id = ? AND jev_enabled = 1 AND sort_cursor = ?`
 		)
 	};
 }
@@ -84,7 +89,8 @@ export function getJevSettings(accountId: string): JevSettings {
 /**
  * Merge `patch` into the account's settings and persist the result.
  * Switching Jev on starts its cursor at `now`, so Jev only ever sees mail
- * that arrives from then on; switching it off clears the cursor.
+ * that arrives from then on; switching it off clears the cursor. Either
+ * switch also withdraws whatever was still queued.
  */
 export function updateJevSettings(
 	accountId: string,
@@ -95,15 +101,27 @@ export function updateJevSettings(
 	const next = { ...current, ...patch };
 	if (patch.jevEnabled === true && !current.jevEnabled) next.sortCursor = now.toISOString();
 	if (patch.jevEnabled === false) next.sortCursor = null;
-	stmts().upsert.run({
-		accountId,
-		inboxTabs: next.inboxTabs ? 1 : 0,
-		jevEnabled: next.jevEnabled ? 1 : 0,
-		sortCursor: next.sortCursor,
-		spamMode: next.spamMode,
-		now: now.getTime()
-	});
+	getDb().transaction(() => {
+		stmts().upsert.run({
+			accountId,
+			inboxTabs: next.inboxTabs ? 1 : 0,
+			jevEnabled: next.jevEnabled ? 1 : 0,
+			sortCursor: next.sortCursor,
+			spamMode: next.spamMode,
+			now: now.getTime()
+		});
+		if (next.jevEnabled !== current.jevEnabled) dropQueue(accountId, now.getTime());
+	})();
 	return next;
+}
+
+/**
+ * Move the cursor on after a pass, from where that pass read it. If Jev was
+ * switched off, or off and on again, while the pass ran, the switch has
+ * already set the cursor and this leaves it alone.
+ */
+export function advanceSortCursor(accountId: string, from: string, to: string, now = new Date()): void {
+	stmts().advanceCursor.run(to, now.getTime(), accountId, from);
 }
 
 /** Is sorting into tabs live for this account: tabs shown and Jev allowed to read? */
