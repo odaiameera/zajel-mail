@@ -18,5 +18,7 @@ COPY --from=builder /app/node_modules node_modules/
 COPY package.json .
 EXPOSE 3001
 ENV PORT=3001
-ENV BODY_SIZE_LIMIT=1M
+# Attachments go up to 25 MB (api/upload), plus multipart overhead.
+# Signed-out requests are still held to 1 MB in hooks.server.ts.
+ENV BODY_SIZE_LIMIT=30M
 CMD ["node", "build"]

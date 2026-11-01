@@ -39,6 +39,17 @@ const RULES_RUN_INTERVAL_MS = 20 * 1000;
 const lastJevRun = new Map<string, number>();
 const JEV_RUN_INTERVAL_MS = 20 * 1000;
 
+// BODY_SIZE_LIMIT is set high enough for 25 MB attachments (Dockerfile).
+// Nothing a signed-out visitor can post needs more than a form, so they
+// keep the old 1 MB limit.
+const SIGNED_OUT_BODY_LIMIT = 1024 * 1024;
+
+function tooLargeForSignedOut(request: Request): boolean {
+	return Number(request.headers.get('content-length') ?? 0) > SIGNED_OUT_BODY_LIMIT;
+}
+
+const PAYLOAD_TOO_LARGE = () => new Response('Payload Too Large', { status: 413 });
+
 export const handle: Handle = async ({ event, resolve }) => {
 	// Fail fast on a missing/short WEBMAIL_SECRET: without it linked-account
 	// passwords can't be encrypted or decrypted, and the breakage would
@@ -78,6 +89,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 		if (pathname !== '/setup' && !pathname.startsWith('/api')) {
 			redirect(303, '/setup');
 		}
+		if (tooLargeForSignedOut(event.request)) return PAYLOAD_TOO_LARGE();
 		return resolve(event);
 	}
 
@@ -139,5 +151,6 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	}
 
+	if (!event.locals.user && tooLargeForSignedOut(event.request)) return PAYLOAD_TOO_LARGE();
 	return resolve(event);
 };
