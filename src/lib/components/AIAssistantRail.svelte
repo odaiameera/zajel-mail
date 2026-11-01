@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import { tick } from 'svelte';
 
 	type AgentAction =
@@ -349,7 +350,7 @@
 		setState('working');
 		error = '';
 		try {
-			const response = await fetch(`/api/ai/actions/${encodeURIComponent(actionId)}`, {
+			const response = await fetchWithStepUp(`/api/ai/actions/${encodeURIComponent(actionId)}`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ decision })

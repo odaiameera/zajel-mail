@@ -64,6 +64,34 @@ export interface AgentTurnResult {
 	pending: PendingAction[];
 }
 
+/**
+ * Strict tool schemas take `anyOf` but not type arrays, so a nullable
+ * `type: ['string', 'null']` (and its enum) becomes `anyOf` of the two.
+ */
+export function strictSchema(node: unknown): unknown {
+	if (Array.isArray(node)) return node.map(strictSchema);
+	if (!node || typeof node !== 'object') return node;
+	const out: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(node)) {
+		out[key] =
+			key === 'properties'
+				? Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, strictSchema(v)]))
+				: key === 'items'
+					? strictSchema(value)
+					: value;
+	}
+	if (!Array.isArray(out.type)) return out;
+	const { type, enum: values, description, ...rest } = out as { type: string[]; enum?: unknown[]; description?: string };
+	return {
+		...(description ? { description } : {}),
+		anyOf: type.map((t) =>
+			t === 'null'
+				? { type: 'null' }
+				: { type: t, ...rest, ...(values ? { enum: values.filter((v) => v !== null) } : {}) }
+		)
+	};
+}
+
 function textOf(content: Anthropic.Beta.BetaContentBlock[]): string {
 	return content
 		.filter((block): block is Anthropic.Beta.BetaTextBlock => block.type === 'text')
@@ -111,7 +139,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 	const apiTools: Anthropic.Beta.BetaTool[] = tools.map((tool) => ({
 		name: tool.name,
 		description: tool.description,
-		input_schema: tool.input_schema as Anthropic.Beta.BetaTool.InputSchema,
+		input_schema: strictSchema(tool.input_schema) as Anthropic.Beta.BetaTool.InputSchema,
 		strict: true
 	}));
 	const messages: Anthropic.Beta.BetaMessageParam[] = [
