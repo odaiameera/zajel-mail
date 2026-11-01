@@ -1,5 +1,6 @@
-import { authStateForAccount, getAccount } from '$lib/server/auth/accounts';
+import { authStateForAccount, getAccount, type MailAccountRow } from '$lib/server/auth/accounts';
 import { sendComposed, type ComposedMessage } from './compose';
+import { createDraftedEvent, deleteConfirmedEvent, describeWhen, type EventDraft } from './calendar-tools';
 import {
 	claimPendingAction,
 	finishPendingAction,
@@ -34,17 +35,57 @@ function asMessage(payload: Record<string, unknown>): ComposedMessage | null {
 	return valid ? message : null;
 }
 
+/** The account an action was proposed in, if it still belongs to the same login. */
+function ownAccount(action: PendingAction): MailAccountRow | null {
+	const account = getAccount(action.accountId);
+	return account && account.user_id === action.userId ? account : null;
+}
+
+function asEventDraft(payload: Record<string, unknown>): EventDraft | null {
+	const text = (v: unknown) => (typeof v === 'string' ? v : '');
+	const attendees = Array.isArray(payload.attendees) ? payload.attendees.filter((a): a is string => typeof a === 'string') : [];
+	if (!text(payload.calendarId) || !text(payload.title) || !text(payload.start) || !text(payload.end)) return null;
+	if (!attendees.every((a) => ADDRESS.test(a))) return null;
+	return {
+		calendarId: text(payload.calendarId),
+		calendarName: text(payload.calendarName),
+		title: text(payload.title),
+		allDay: payload.allDay === true,
+		start: text(payload.start),
+		end: text(payload.end),
+		timeZone: text(payload.timeZone) || 'UTC',
+		location: text(payload.location),
+		description: text(payload.description),
+		attendees
+	};
+}
+
 const EXECUTORS: Record<string, Executor> = {
 	async send_email(action) {
 		const message = asMessage(action.payload);
-		const account = getAccount(action.accountId);
-		if (!message || !account || account.user_id !== action.userId) {
-			return { success: false, message: 'That message can no longer be sent' };
-		}
+		const account = ownAccount(action);
+		if (!message || !account) return { success: false, message: 'That message can no longer be sent' };
 		const result = await sendComposed(authStateForAccount(account), account.email, message);
 		return result.success
 			? { success: true, message: `Sent to ${message.to.join(', ')}` }
 			: { success: false, message: result.error ?? 'The message could not be sent' };
+	},
+
+	// Stalwart sends the invitations once an event with attendees is saved.
+	async create_event(action) {
+		const draft = asEventDraft(action.payload);
+		const account = ownAccount(action);
+		if (!draft || !account) return { success: false, message: 'That event can no longer be added' };
+		await createDraftedEvent(authStateForAccount(account), account.email, action.userId, draft);
+		return { success: true, message: `Added “${draft.title}” and invited ${draft.attendees.join(', ')}` };
+	},
+
+	async delete_event(action) {
+		const account = ownAccount(action);
+		if (!account || typeof action.payload.eventId !== 'string') {
+			return { success: false, message: 'That event can no longer be deleted' };
+		}
+		return { success: true, message: await deleteConfirmedEvent(authStateForAccount(account), account.email, action.payload) };
 	}
 };
 
@@ -81,16 +122,60 @@ export async function decidePendingAction(
 	}
 }
 
-/** What the card shows: exactly what will run. */
-export function pendingView(action: PendingAction) {
-	return {
-		id: action.id,
-		kind: action.kind,
-		status: action.status,
-		expiresAt: action.expiresAt,
-		to: action.payload.to,
-		cc: action.payload.cc,
-		subject: action.payload.subject,
-		text: action.payload.text
-	};
+export interface PendingView {
+	id: string;
+	kind: string;
+	/** What kind of change, e.g. "Send email". */
+	label: string;
+	title: string;
+	lines: string[];
+	body: string | null;
+	confirmLabel: string;
+	danger: boolean;
+}
+
+/** What the card shows: exactly what will run, from the stored payload. */
+export function pendingView(action: PendingAction): PendingView {
+	const p = action.payload;
+	const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+	const base = { id: action.id, kind: action.kind, body: null, danger: false };
+	switch (action.kind) {
+		case 'send_email':
+			return {
+				...base,
+				label: 'Send email',
+				title: String(p.subject ?? ''),
+				lines: [`To ${list(p.to).join(', ')}`, ...(list(p.cc).length ? [`Cc ${list(p.cc).join(', ')}`] : [])],
+				body: String(p.text ?? ''),
+				confirmLabel: 'Send'
+			};
+		case 'create_event': {
+			const draft = asEventDraft(p);
+			return {
+				...base,
+				label: 'Send invitations',
+				title: String(p.title ?? ''),
+				lines: [
+					...(draft ? [describeWhen(draft)] : []),
+					...(p.location ? [String(p.location)] : []),
+					`Invite ${list(p.attendees).join(', ')}`
+				],
+				confirmLabel: 'Add and invite'
+			};
+		}
+		case 'delete_event':
+			return {
+				...base,
+				label: 'Delete event',
+				title: String(p.title ?? ''),
+				lines: [
+					String(p.when ?? ''),
+					...(p.recurring ? [p.occurrence ? 'This occurrence only' : 'Every occurrence'] : [])
+				],
+				confirmLabel: 'Delete',
+				danger: true
+			};
+		default:
+			return { ...base, label: action.kind, title: '', lines: [], confirmLabel: 'Confirm' };
+	}
 }
