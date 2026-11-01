@@ -2,7 +2,8 @@ import cron from 'node-cron';
 import { listSchedulableAuths, markNeedsReauth } from './auth/accounts';
 import { JMAPAuthError } from '$lib/jmap/client';
 import { createClient } from '$lib/jmap/auth';
-import { ensureRemindMeLaterMailbox } from '$lib/jmap/mailbox';
+import { EmailUpdateError, updateEmailMailboxes } from '$lib/jmap/email';
+import { getMailboxes, REMIND_ME_LATER_NAME } from '$lib/jmap/mailbox';
 import {
 	listDueReminders,
 	deleteReminder,
@@ -63,8 +64,13 @@ export function startReminderScheduler(): void {
 
 /**
  * Process a single due reminder: move the email from the RML mailbox back
- * to its original mailbox, clear the read flag so it looks new again,
- * record the "returned from reminder" marker, then drop the reminders row.
+ * to its original mailbox (the Inbox if that folder has gone since), clear
+ * the read flag so it looks new again, record the "returned from reminder"
+ * marker, then drop the reminders row.
+ *
+ * The row is dropped only once the move has worked, or when the email no
+ * longer exists. A move the server refuses throws, so the row stays and the
+ * next tick tries again.
  */
 async function returnReminder(
 	auth: AuthState,
@@ -72,25 +78,27 @@ async function returnReminder(
 	r: ReminderRow
 ): Promise<void> {
 	const client = createClient(auth);
-	const rmlId = await ensureRemindMeLaterMailbox(client, r.account_id);
-	if (!rmlId) throw new Error('Remind Me Later mailbox missing');
+	const mailboxes = await getMailboxes(client, r.account_id);
+	const rml = mailboxes.find((m) => m.name === REMIND_ME_LATER_NAME && m.parentId === null);
+	const target =
+		mailboxes.find((m) => m.id === r.original_mailbox_id) ?? mailboxes.find((m) => m.role === 'inbox');
+	if (!target) throw new Error('No mailbox to return the reminder to');
 
-	await client.request([
-		[
-			'Email/set',
-			{
-				accountId: r.account_id,
-				update: {
-					[r.jmap_email_id]: {
-						[`mailboxIds/${rmlId}`]: null,
-						[`mailboxIds/${r.original_mailbox_id}`]: true,
-						'keywords/$seen': null
-					}
-				}
-			},
-			'0'
-		]
-	]);
+	try {
+		await updateEmailMailboxes(client, r.account_id, {
+			[r.jmap_email_id]: {
+				add: [target.id],
+				remove: rml && rml.id !== target.id ? [rml.id] : [],
+				keywords: { $seen: false }
+			}
+		});
+	} catch (err) {
+		if (err instanceof EmailUpdateError && err.failures.every((f) => f.type === 'notFound')) {
+			deleteReminder(userEmail, r.jmap_email_id);
+			return;
+		}
+		throw err;
+	}
 
 	markReturned(userEmail, r.jmap_email_id);
 	deleteReminder(userEmail, r.jmap_email_id);
@@ -109,7 +117,13 @@ export async function processDueRemindersForUser(
 	try {
 		const due = listDueReminders(userEmail);
 		for (const r of due) {
-			await returnReminder(auth, userEmail, r);
+			// One refused return shouldn't hold up the others.
+			try {
+				await returnReminder(auth, userEmail, r);
+			} catch (err) {
+				if (err instanceof JMAPAuthError) throw err;
+				console.error('[reminder] on-demand return failed', r.id, err);
+			}
 		}
 	} catch (err) {
 		console.error('[reminder] on-demand return failed', err);
