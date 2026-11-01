@@ -9,6 +9,8 @@ declare global {
 			user?: AppUser;
 			/** The webmail session id backing `user` — used for logout/revoke. */
 			sessionId?: string;
+			/** When this session last proved a second factor (ms), for re-checks. */
+			sessionVerifiedAt?: number | null;
 			/** Linked mail accounts (no secrets), in user-defined order. */
 			accounts?: MailAccountPublic[];
 			/** Which linked account this request acts as. */

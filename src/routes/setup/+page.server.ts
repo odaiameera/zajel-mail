@@ -4,6 +4,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { JMAPAuthError } from '$lib/jmap/client';
 import { createAppUser, hasAppUser } from '$lib/server/auth/user';
 import { createAppSession } from '$lib/server/auth/app-session';
+import { SESSION_COOKIE_OPTIONS } from '$lib/server/auth/sign-in';
 import { describeLinkError, linkAccount, normalizeServerUrl } from '$lib/server/auth/accounts';
 import { DEFAULT_LABEL_COLOR } from '$lib/constants/colors';
 
@@ -47,19 +48,16 @@ export const actions: Actions = {
 			return fail(400, { error: 'Passwords do not match', email });
 		}
 
-		const user = createAppUser(email, password);
+		const user = await createAppUser(email, password);
+		// The password was just chosen, which counts as a fresh re-check, so
+		// a passkey or an authenticator can be added straight away.
 		const sessionId = createAppSession(
 			user.id,
 			request.headers.get('user-agent') ?? undefined,
-			getClientAddress()
+			getClientAddress(),
+			true
 		);
-		cookies.set('session', sessionId, {
-			path: '/',
-			httpOnly: true,
-			secure: true,
-			sameSite: 'strict',
-			maxAge: 30 * 24 * 60 * 60
-		});
+		cookies.set('session', sessionId, SESSION_COOKIE_OPTIONS);
 		// Reload /setup — the load function moves us to the link step.
 		redirect(303, '/setup');
 	},

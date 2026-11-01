@@ -2,15 +2,23 @@ import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { changePassword } from '$lib/server/auth/user';
 import { revokeOtherSessions } from '$lib/server/auth/app-session';
+import { hasSecondFactor } from '$lib/server/auth/mfa';
+import { stepUpRequired } from '$lib/server/auth/step-up';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!locals.user || !locals.sessionId) error(401, 'Not signed in');
+	// The current password below is the re-check when it's all there is;
+	// with a second factor set up, that has to be shown too.
+	if (hasSecondFactor(locals.user.id)) {
+		const refused = stepUpRequired(locals);
+		if (refused) return refused;
+	}
 
 	const { current, next } = (await request.json()) as { current?: string; next?: string };
 	if (!current || !next) error(400, 'Current and new password are required');
 	if (next.length < 8) error(400, 'New password must be at least 8 characters');
 
-	if (!changePassword(locals.user.id, current, next)) {
+	if (!(await changePassword(locals.user.id, current, next))) {
 		error(403, 'Current password is incorrect');
 	}
 

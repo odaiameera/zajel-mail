@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import { browserSupportsWebAuthn, startRegistration } from '@simplewebauthn/browser';
+	import { fetchWithStepUp } from '$lib/auth/step-up';
 
 	interface PasskeyInfo {
 		id: string;
@@ -35,13 +36,88 @@
 	let renameId = $state<string | null>(null);
 	let renameValue = $state('');
 
+	// --- Authenticator app ---
+	let totp = $state<{ enabled: boolean; recoveryCodesLeft: number } | null>(null);
+	let setup = $state<{ secret: string; uri: string; qr: string } | null>(null);
+	let setupCode = $state('');
+	let recoveryCodes = $state<string[] | null>(null);
+	let totpBusy = $state(false);
+	let totpError = $state<string | null>(null);
+
 	// --- Sessions ---
 	let sessions = $state<SessionInfo[]>([]);
 
 	onMount(async () => {
 		passkeySupported = browserSupportsWebAuthn();
-		await Promise.all([loadPasskeys(), loadSessions()]);
+		await Promise.all([loadPasskeys(), loadSessions(), loadTotp()]);
 	});
+
+	async function loadTotp() {
+		const res = await fetch('/api/auth/totp');
+		if (res.ok) totp = await res.json();
+	}
+
+	async function totpAction(action: string, extra: Record<string, unknown> = {}) {
+		if (totpBusy) return null;
+		totpBusy = true;
+		totpError = null;
+		try {
+			const res = await fetchWithStepUp('/api/auth/totp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action, ...extra })
+			});
+			const body = await res.json().catch(() => null);
+			if (!res.ok) {
+				if (!body?.stepUp) totpError = body?.message ?? 'That didn’t work';
+				return null;
+			}
+			return body;
+		} finally {
+			totpBusy = false;
+		}
+	}
+
+	async function beginTotp() {
+		const body = await totpAction('begin');
+		if (body) {
+			setup = body;
+			setupCode = '';
+		}
+	}
+
+	async function confirmTotp() {
+		const body = await totpAction('confirm', { code: setupCode });
+		if (!body) return;
+		setup = null;
+		recoveryCodes = body.recoveryCodes;
+		await loadTotp();
+	}
+
+	async function newRecoveryCodes() {
+		const body = await totpAction('recovery-codes');
+		if (body) recoveryCodes = body.recoveryCodes;
+		await loadTotp();
+	}
+
+	async function disableTotp() {
+		if (await totpAction('disable')) await loadTotp();
+	}
+
+	function downloadRecoveryCodes() {
+		if (!recoveryCodes) return;
+		const blob = new Blob([`Zajel Mail recovery codes\n\n${recoveryCodes.join('\n')}\n`], { type: 'text/plain' });
+		const a = document.createElement('a');
+		a.href = URL.createObjectURL(blob);
+		a.download = 'zajel-recovery-codes.txt';
+		a.click();
+		URL.revokeObjectURL(a.href);
+	}
+
+	/** The secret in groups of four, easier to type into an app by hand. */
+	function grouped(secret: string): string {
+		return secret.replace(/(.{4})/g, '$1 ').trim();
+	}
 
 	async function loadPasskeys() {
 		const res = await fetch('/api/auth/passkeys');
@@ -67,14 +143,14 @@
 		}
 		pwBusy = true;
 		try {
-			const res = await fetch('/api/auth/change-password', {
+			const res = await fetchWithStepUp('/api/auth/change-password', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ current: currentPassword, next: newPassword })
 			});
 			if (!res.ok) {
 				const body = await res.json().catch(() => null);
-				pwError = body?.message ?? 'Could not change password';
+				if (!body?.stepUp) pwError = body?.message ?? 'Could not change password';
 				return;
 			}
 			currentPassword = '';
@@ -93,15 +169,16 @@
 		pkBusy = true;
 		pkError = null;
 		try {
-			const optRes = await fetch('/api/auth/passkey/register/options', { method: 'POST' });
+			const optRes = await fetchWithStepUp('/api/auth/passkey/register/options', { method: 'POST' });
 			if (!optRes.ok) {
-				pkError = 'Could not start passkey registration';
+				const body = await optRes.json().catch(() => null);
+				if (!body?.stepUp) pkError = 'Could not start passkey registration';
 				return;
 			}
 			const options = await optRes.json();
 			const response = await startRegistration({ optionsJSON: options });
 			const name = defaultPasskeyName();
-			const verifyRes = await fetch('/api/auth/passkey/register/verify', {
+			const verifyRes = await fetchWithStepUp('/api/auth/passkey/register/verify', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ response, name })
@@ -141,7 +218,7 @@
 	}
 
 	async function deletePasskey(id: string) {
-		await fetch(`/api/auth/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+		await fetchWithStepUp(`/api/auth/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' });
 		await loadPasskeys();
 	}
 
@@ -214,6 +291,65 @@
 			{pwBusy ? 'Changing…' : 'Change password'}
 		</button>
 	</div>
+</section>
+
+<!-- Authenticator app: the second step after the password -->
+<section class="mb-8">
+	<div class="flex items-center justify-between mb-3">
+		<h2 class="text-sm font-medium text-text">Authenticator app</h2>
+		{#if totp && !totp.enabled && !setup}
+			<button type="button" onclick={beginTotp} disabled={totpBusy} class="btn btn-primary shrink-0">Set up</button>
+		{/if}
+	</div>
+
+	{#if totpError}
+		<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-3 py-2 mb-3">{totpError}</div>
+	{/if}
+
+	{#if recoveryCodes}
+		<div class="max-w-sm border border-border rounded-lg p-4 mb-3">
+			<p class="text-sm font-medium text-text mb-2">Recovery codes</p>
+			<ul class="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-sm text-text mb-3">
+				{#each recoveryCodes as code (code)}
+					<li>{code}</li>
+				{/each}
+			</ul>
+			<div class="flex gap-2">
+				<button type="button" class="btn btn-secondary btn-sm" onclick={() => navigator.clipboard.writeText(recoveryCodes!.join('\n'))}>Copy</button>
+				<button type="button" class="btn btn-secondary btn-sm" onclick={downloadRecoveryCodes}>Download</button>
+				<button type="button" class="btn btn-ghost btn-sm" onclick={() => (recoveryCodes = null)}>Done</button>
+			</div>
+		</div>
+	{/if}
+
+	{#if setup}
+		<div class="max-w-sm space-y-3">
+			<div class="w-44 h-44 bg-white rounded-lg p-2 [&>svg]:w-full [&>svg]:h-full">{@html setup.qr}</div>
+			<p class="font-mono text-sm text-text select-all">{grouped(setup.secret)}</p>
+			<a href={setup.uri} class="text-sm text-accent-fg hover:underline">Open in app</a>
+			<input
+				bind:value={setupCode}
+				inputmode="numeric"
+				autocomplete="one-time-code"
+				aria-label="Code"
+				placeholder="Code"
+				class={inputClass}
+			/>
+			<div class="flex gap-2">
+				<button type="button" onclick={confirmTotp} disabled={totpBusy || !setupCode.trim()} class="btn btn-primary">Turn on</button>
+				<button type="button" onclick={() => (setup = null)} class="btn btn-ghost">Cancel</button>
+			</div>
+		</div>
+	{:else if totp?.enabled}
+		<div class="flex items-center gap-3">
+			<p class="text-sm text-text flex-1">On · {totp.recoveryCodesLeft} recovery codes left</p>
+			<button type="button" onclick={newRecoveryCodes} disabled={totpBusy} class="btn btn-ghost btn-sm">New recovery codes</button>
+			<button type="button" onclick={disableTotp} disabled={totpBusy}
+				class="px-2.5 py-1.5 text-xs text-text-tertiary hover:text-danger transition-colors cursor-pointer">Turn off</button>
+		</div>
+	{:else if totp}
+		<p class="text-xs text-text-tertiary">Off</p>
+	{/if}
 </section>
 
 <!-- Passkeys -->

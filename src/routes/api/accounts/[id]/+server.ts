@@ -6,6 +6,7 @@ import {
 	setAccountColor,
 	setAccountDisplayName
 } from '$lib/server/auth/accounts';
+import { stepUpRequired } from '$lib/server/auth/step-up';
 
 /** Update how a linked account presents itself: its name and its colour. */
 export const PATCH: RequestHandler = async ({ request, params, locals }) => {
@@ -37,6 +38,8 @@ export const PATCH: RequestHandler = async ({ request, params, locals }) => {
  */
 export const DELETE: RequestHandler = async ({ params, locals, cookies }) => {
 	if (!locals.user) error(401, 'Not signed in');
+	const refused = stepUpRequired(locals);
+	if (refused) return refused;
 	const account = getAccount(params.id);
 	if (!account || account.user_id !== locals.user.id) error(404, 'Unknown account');
 
