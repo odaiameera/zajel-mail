@@ -24,6 +24,14 @@ const MIME_OVERRIDES: Record<string, string> = {
 };
 
 /**
+ * A JMAP id is 1–255 characters of the URL-safe base64 alphabet (RFC 8620
+ * §1.2). SvelteKit decodes `%2F` in the param, so without this check a link
+ * could walk the download URL out of /download to any path on Stalwart,
+ * fetched with the user's credentials.
+ */
+const JMAP_ID = /^[A-Za-z0-9_-]{1,255}$/;
+
+/**
  * Header values must be Latin-1, so a name such as "تقرير.pdf" would make the
  * Response constructor throw. Send it UTF-8 encoded in `filename*` (RFC 6266),
  * with an ASCII-only `filename` for clients that ignore that.
@@ -47,6 +55,9 @@ function contentDisposition(disposition: string, filename: string): string {
 export const GET: RequestHandler = async ({ params, locals, url }) => {
 	if (!locals.auth) {
 		return new Response('Unauthorized', { status: 401 });
+	}
+	if (!JMAP_ID.test(params.blobId)) {
+		return new Response('Invalid blob id', { status: 400 });
 	}
 
 	const filename = url.searchParams.get('name') ?? 'attachment';
