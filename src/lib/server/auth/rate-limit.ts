@@ -1,9 +1,14 @@
+import { createHash } from 'node:crypto';
 import { getDb } from '../db/index';
 
 /**
  * Fixed-window login rate limiting, persisted in SQLite so a container
  * restart doesn't reset an attacker's counter. 10 failures within a
  * 15-minute window locks the email+IP pair out for 15 minutes.
+ *
+ * Anyone can post the login form, so each row has to stay small and go
+ * away again: the key is a hash, and rows whose window and lockout have
+ * both run out are deleted on the next failure.
  */
 
 const WINDOW_MS = 15 * 60 * 1000;
@@ -21,7 +26,12 @@ function prepareStmts() {
 			 ON CONFLICT (key) DO UPDATE
 			   SET window_start = @windowStart, count = @count, locked_until = @lockedUntil`
 		),
-		clear: db.prepare(`DELETE FROM login_attempts WHERE key = ?`)
+		clear: db.prepare(`DELETE FROM login_attempts WHERE key = ?`),
+		// ISO timestamps from toISOString() compare correctly as text.
+		prune: db.prepare(
+			`DELETE FROM login_attempts
+			 WHERE window_start < ? AND (locked_until IS NULL OR locked_until < ?)`
+		)
 	};
 }
 function stmts() {
@@ -29,7 +39,7 @@ function stmts() {
 }
 
 function keyFor(email: string, ip: string): string {
-	return `${email.trim().toLowerCase()}|${ip}`;
+	return createHash('sha256').update(`${email.trim().toLowerCase()}|${ip}`).digest('hex');
 }
 
 /** True if this email+IP is currently locked out. */
@@ -55,6 +65,7 @@ export function recordFailure(email: string, ip: string): void {
 		count = row.count + 1;
 	}
 	const lockedUntil = count >= MAX_FAILURES ? new Date(now + LOCKOUT_MS).toISOString() : null;
+	stmts().prune.run(new Date(now - WINDOW_MS).toISOString(), new Date(now).toISOString());
 	stmts().upsert.run({
 		key,
 		windowStart: new Date(windowStart).toISOString(),

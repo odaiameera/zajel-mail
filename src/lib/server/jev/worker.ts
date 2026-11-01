@@ -6,7 +6,12 @@ import { getMailboxes } from '$lib/jmap/mailbox';
 import type { AuthState, Email, JMAPSession, MethodCall } from '$lib/jmap/types';
 import { categoryKeywordPatch, categoryOf, type InboxCategory } from '$lib/types/categories';
 import { hasJevCondition, type Rule } from '$lib/types/rules';
-import { getJevSettings, updateJevSettings, type SpamMode } from '$lib/server/db/queries/jev-settings';
+import {
+	advanceSortCursor,
+	getJevSettings,
+	updateJevSettings,
+	type SpamMode
+} from '$lib/server/db/queries/jev-settings';
 import { getRules } from '$lib/server/db/queries/rules';
 import { listPins, pinFor, senderHistory, type SenderPin } from '$lib/server/db/queries/jev-learning';
 import {
@@ -322,7 +327,7 @@ export async function sortNewMail(
 	if (!wantsTabs && rules.length === 0 && spamMode === 'off') {
 		// Nothing to ask: keep the cursor current, so switching tabs or a Jev
 		// rule on later doesn't reach back into mail from before.
-		updateJevSettings(accountRowId, { sortCursor: now.toISOString() }, now);
+		advanceSortCursor(accountRowId, settings.sortCursor, now.toISOString(), now);
 		return;
 	}
 
@@ -375,7 +380,7 @@ export async function sortNewMail(
 		if (arrived.length >= QUEUE_PAGE) resumeAt.push(arrived[arrived.length - 1].receivedAt);
 	}
 	const nextCursor = resumeAt.length ? resumeAt.sort()[0] : now.toISOString();
-	updateJevSettings(accountRowId, { sortCursor: nextCursor }, now);
+	advanceSortCursor(accountRowId, settings.sortCursor, nextCursor, now);
 
 	// Fetched only once there is mail to judge (contacts need the session).
 	let judgeCtx: JudgeContext | null = null;
@@ -400,12 +405,17 @@ export async function sortNewMail(
 		now
 	};
 
+	// Jev can be switched off while a pass runs. Look again before each
+	// batch, so nothing more is sent once it is.
+	const stillOn = () => getJevSettings(accountRowId).jevEnabled;
+
 	// 2. New arrivals, and earlier failures among them: spam, tab and rules.
+	if (!stillOn()) return;
 	await judgeAndApply(batch, listPendingEmailIds(accountRowId, JUDGE_BATCH), rules, wantsTabs, spamMode !== 'off');
 
 	// 3. Then mail that was already in the Inbox when you asked Jev to sort
 	// it: its tab only — rules and spam checks apply to new mail only.
-	if (wantsTabs) {
+	if (wantsTabs && stillOn()) {
 		await judgeAndApply(batch, listPendingEmailIds(accountRowId, BACKFILL_BATCH, true), [], true, false);
 	}
 }

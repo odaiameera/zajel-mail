@@ -278,7 +278,7 @@ async function gatherWithTools(
 	message: string,
 	conversation: AIChatMessage[],
 	timeZone: string,
-	todayIso: string
+	today: { iso: string; weekday: string }
 ): Promise<{ context: string; calendarEvents: EventInstance[] }> {
 	const transcript: string[] = [];
 	const openedIds = new Set<string>();
@@ -287,7 +287,7 @@ async function gatherWithTools(
 	const calendarEvents: EventInstance[] = [];
 
 	const system = `You are retrieving from the user's mailbox to answer their question.
-Today is ${todayIso} in timezone ${timeZone}.
+Today is ${today.iso} (${today.weekday}) in timezone ${timeZone}.
 
 Choose one tool per step and return JSON only:
 - search_mail — set any of text, from, after, before, hasAttachment, limit. Resolve
@@ -347,7 +347,7 @@ enough. Return done as soon as you can answer; do not search for its own sake.`;
 				// bounds, rather than asking CalDAV for all of time.
 				const from = call.search.after
 					? Date.parse(call.search.after)
-					: Date.parse(`${todayIso}T00:00:00Z`) - 7 * 86_400_000;
+					: Date.parse(`${today.iso}T00:00:00Z`) - 7 * 86_400_000;
 				const to = call.search.before
 					? Date.parse(call.search.before)
 					: from + 60 * 86_400_000;
@@ -368,6 +368,18 @@ enough. Return done as soon as you can answer; do not search for its own sake.`;
 	}
 
 	return { context: transcript.join('\n\n'), calendarEvents };
+}
+
+/**
+ * The user's own date for an instant, as "2026-11-01" plus the weekday. The
+ * rail sends local midnight serialised to UTC, so slicing that ISO string
+ * gives the previous day for anyone east of UTC.
+ */
+function localDate(ms: number, timeZone: string): { iso: string; weekday: string } {
+	return {
+		iso: new Intl.DateTimeFormat('en-CA', { timeZone }).format(ms),
+		weekday: new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' }).format(ms)
+	};
 }
 
 function normalSystemPrompt(timeZone: string): string {
@@ -454,7 +466,7 @@ export async function runMailAgent(
 			input.message,
 			safeConversation(input.conversation),
 			input.timeZone,
-			new Date(input.todayStartMs).toISOString().slice(0, 10)
+			localDate(input.todayStartMs, input.timeZone)
 		);
 		if (retrieved.context) parts.push(`MAILBOX RETRIEVAL\n${retrieved.context}`);
 		foundEvents = retrieved.calendarEvents;
@@ -488,11 +500,11 @@ Set destination to todoist, linear, or notion only when the user explicitly name
 	}
 
 	if (action === 'propose_event') {
-		const todayIso = new Date(input.todayStartMs).toISOString().slice(0, 10);
+		const today = localDate(input.todayStartMs, input.timeZone);
 		const content = await runAIChat({
 			system: `${normalSystemPrompt(input.timeZone)}
 Prepare exactly one calendar change from the user's request and the supplied context. Return JSON only.
-Today is ${todayIso}. The user's timezone is ${input.timeZone}.
+Today is ${today.iso} (${today.weekday}). The user's timezone is ${input.timeZone}.
 
 For action "create": give a title, and start/end as local wall-clock times with no zone —
 "YYYY-MM-DDTHH:mm" for timed events, "YYYY-MM-DD" for all-day (end exclusive). Set allDay

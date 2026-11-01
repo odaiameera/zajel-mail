@@ -406,6 +406,22 @@ export async function saveDraft(
 	return { success: true, id: created?.id };
 }
 
+/** Which of `ids` are in `mailboxId` right now. */
+export async function emailsInMailbox(
+	client: JMAPClient,
+	accountId: string,
+	ids: string[],
+	mailboxId: string
+): Promise<Set<string>> {
+	const response = await client.request([
+		['Email/get', { accountId, ids, properties: ['id', 'mailboxIds'] }, '0']
+	]);
+	const list =
+		(response.methodResponses[0][1] as { list?: { id: string; mailboxIds?: Record<string, boolean> }[] })
+			.list ?? [];
+	return new Set(list.filter((e) => e.mailboxIds?.[mailboxId]).map((e) => e.id));
+}
+
 export async function destroyEmail(
 	client: JMAPClient,
 	accountId: string,
@@ -506,6 +522,14 @@ export interface EmailMailboxChange {
 	add?: string[];
 	/** Mailbox ids to remove. */
 	remove?: string[];
+	/**
+	 * For a move, worked out from where the message really is rather than
+	 * where the client says it is: it leaves `from` if it is there, and
+	 * otherwise every mailbox but its labels. Starred and Search name no
+	 * folder, and a stale view can name the wrong one; either used to turn
+	 * the move into a copy.
+	 */
+	leave?: { from?: string; labelIds: ReadonlySet<string> };
 	/** Keyword → set (true) / clear (false). */
 	keywords?: Record<string, boolean>;
 }
@@ -606,8 +630,13 @@ export async function updateEmailMailboxes(
 		const change = changes[id];
 		const patch: Record<string, unknown> = {};
 
-		if (change.add?.length || change.remove?.length) {
+		if (change.add?.length || change.remove?.length || change.leave) {
 			const next: Record<string, boolean> = { ...cur };
+			if (change.leave) {
+				const { from, labelIds } = change.leave;
+				const leaving = from && cur[from] ? [from] : Object.keys(cur).filter((mb) => !labelIds.has(mb));
+				for (const mb of leaving) delete next[mb];
+			}
 			for (const mb of change.remove ?? []) delete next[mb];
 			for (const mb of change.add ?? []) next[mb] = true;
 			// JMAP requires at least one mailbox — never strand a message.
@@ -638,19 +667,32 @@ export async function updateEmailMailboxes(
 	}
 }
 
+/**
+ * What a move takes the message out of. With the account's labels known it
+ * is worked out from where the message really is (see
+ * {@link EmailMailboxChange.leave}); without them, only the named source.
+ */
+function moveAway(
+	targetMailboxId: string,
+	sourceMailboxId: string | undefined,
+	labelIds: ReadonlySet<string> | undefined
+): Pick<EmailMailboxChange, 'remove' | 'leave'> {
+	if (labelIds) return { leave: { from: sourceMailboxId, labelIds } };
+	return {
+		remove: sourceMailboxId && sourceMailboxId !== targetMailboxId ? [sourceMailboxId] : []
+	};
+}
+
 export async function moveEmail(
 	client: JMAPClient,
 	accountId: string,
 	id: string,
 	targetMailboxId: string,
-	sourceMailboxId?: string
+	sourceMailboxId?: string,
+	labelIds?: ReadonlySet<string>
 ): Promise<void> {
 	await updateEmailMailboxes(client, accountId, {
-		[id]: {
-			add: [targetMailboxId],
-			remove:
-				sourceMailboxId && sourceMailboxId !== targetMailboxId ? [sourceMailboxId] : []
-		}
+		[id]: { add: [targetMailboxId], ...moveAway(targetMailboxId, sourceMailboxId, labelIds) }
 	});
 }
 
@@ -663,34 +705,29 @@ export async function moveEmails(
 	accountId: string,
 	ids: string[],
 	targetMailboxId: string,
-	sourceMailboxId?: string
+	sourceMailboxId?: string,
+	labelIds?: ReadonlySet<string>
 ): Promise<void> {
 	if (ids.length === 0) return;
 	const changes: Record<string, EmailMailboxChange> = {};
 	for (const id of ids) {
-		changes[id] = {
-			add: [targetMailboxId],
-			remove:
-				sourceMailboxId && sourceMailboxId !== targetMailboxId ? [sourceMailboxId] : []
-		};
+		changes[id] = { add: [targetMailboxId], ...moveAway(targetMailboxId, sourceMailboxId, labelIds) };
 	}
 	await updateEmailMailboxes(client, accountId, changes);
 }
 
+// Trash, Archive and Spam take a message out of every folder it is in,
+// wherever they are pressed, and leave its labels on it.
+
 export const trashEmail = (
 	client: JMAPClient, accountId: string, id: string,
-	currentMailboxId: string, trashMailboxId: string
-) => moveEmail(client, accountId, id, trashMailboxId, currentMailboxId);
+	trashMailboxId: string, labelIds: ReadonlySet<string>
+) => moveEmail(client, accountId, id, trashMailboxId, undefined, labelIds);
 
 export const archiveEmail = (
 	client: JMAPClient, accountId: string, id: string,
-	currentMailboxId: string, archiveMailboxId: string
-) => moveEmail(client, accountId, id, archiveMailboxId, currentMailboxId);
-
-export const spamEmail = (
-	client: JMAPClient, accountId: string, id: string,
-	currentMailboxId: string, junkMailboxId: string
-) => moveEmail(client, accountId, id, junkMailboxId, currentMailboxId);
+	archiveMailboxId: string, labelIds: ReadonlySet<string>
+) => moveEmail(client, accountId, id, archiveMailboxId, undefined, labelIds);
 
 /**
  * Mark an email as spam: move to Junk AND set the `$junk` IMAP keyword
@@ -701,14 +738,13 @@ export async function markAsSpam(
 	client: JMAPClient,
 	accountId: string,
 	id: string,
-	currentMailboxId: string,
-	junkMailboxId: string
+	junkMailboxId: string,
+	labelIds: ReadonlySet<string>
 ): Promise<void> {
 	await updateEmailMailboxes(client, accountId, {
 		[id]: {
 			add: [junkMailboxId],
-			remove:
-				currentMailboxId && currentMailboxId !== junkMailboxId ? [currentMailboxId] : [],
+			leave: { labelIds },
 			keywords: { $junk: true, $notjunk: false }
 		}
 	});
@@ -740,16 +776,15 @@ export async function markManyAsSpam(
 	client: JMAPClient,
 	accountId: string,
 	ids: string[],
-	currentMailboxId: string,
-	junkMailboxId: string
+	junkMailboxId: string,
+	labelIds: ReadonlySet<string>
 ): Promise<void> {
 	if (ids.length === 0) return;
 	const changes: Record<string, EmailMailboxChange> = {};
 	for (const id of ids) {
 		changes[id] = {
 			add: [junkMailboxId],
-			remove:
-				currentMailboxId && currentMailboxId !== junkMailboxId ? [currentMailboxId] : [],
+			leave: { labelIds },
 			keywords: { $junk: true, $notjunk: false }
 		};
 	}

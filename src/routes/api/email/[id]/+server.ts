@@ -1,8 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createClient, fetchSession } from '$lib/jmap/auth';
-import { markEmail, flagEmail, trashEmail, archiveEmail, moveEmail, markAsSpam, markAsNotSpam, destroyEmail } from '$lib/jmap/email';
+import { markEmail, flagEmail, trashEmail, archiveEmail, moveEmail, markAsSpam, markAsNotSpam, destroyEmail, emailsInMailbox } from '$lib/jmap/email';
 import { getMailboxes, ensureArchiveMailbox } from '$lib/jmap/mailbox';
+import { labelMailboxIds } from '$lib/types/labels';
 import { trustSender } from '$lib/server/trust-sender';
 import { recordSpamCorrections } from '$lib/server/db/queries/jev-decisions';
 
@@ -35,24 +36,29 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 				const mailboxes = await getMailboxes(client, accountId);
 				const trash = mailboxes.find((m) => m.role === 'trash');
 				if (!trash) return json({ error: 'Trash folder not found' }, { status: 500 });
-				if (sourceMailboxId === trash.id) {
+				// Destroy only a message that is really in Trash.
+				const inTrash =
+					sourceMailboxId === trash.id &&
+					(await emailsInMailbox(client, accountId, [emailId], trash.id)).has(emailId);
+				if (inTrash) {
 					await destroyEmail(client, accountId, emailId);
 				} else {
-					await trashEmail(client, accountId, emailId, sourceMailboxId ?? '', trash.id);
+					await trashEmail(client, accountId, emailId, trash.id, labelMailboxIds(mailboxes));
 				}
 				break;
 			}
 			case 'archive': {
 				const archiveId = await ensureArchiveMailbox(client, accountId);
 				if (!archiveId) return json({ error: 'Could not create Archive' }, { status: 500 });
-				await archiveEmail(client, accountId, emailId, sourceMailboxId ?? '', archiveId);
+				const labelIds = labelMailboxIds(await getMailboxes(client, accountId));
+				await archiveEmail(client, accountId, emailId, archiveId, labelIds);
 				break;
 			}
 			case 'spam': {
 				const mailboxes = await getMailboxes(client, accountId);
 				const junk = mailboxes.find((m) => m.role === 'junk');
 				if (!junk) return json({ error: 'Junk folder not found' }, { status: 500 });
-				await markAsSpam(client, accountId, emailId, sourceMailboxId ?? '', junk.id);
+				await markAsSpam(client, accountId, emailId, junk.id, labelMailboxIds(mailboxes));
 				if (locals.activeAccountId) recordSpamCorrections(locals.activeAccountId, [emailId], 'spam');
 				break;
 			}
@@ -98,7 +104,8 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 			case 'moveTo': {
 				const targetMailboxId = body.targetMailboxId as string | undefined;
 				if (!targetMailboxId) return json({ error: 'targetMailboxId required' }, { status: 400 });
-				await moveEmail(client, accountId, emailId, targetMailboxId, sourceMailboxId);
+				const labelIds = labelMailboxIds(await getMailboxes(client, accountId));
+				await moveEmail(client, accountId, emailId, targetMailboxId, sourceMailboxId, labelIds);
 				break;
 			}
 			default:

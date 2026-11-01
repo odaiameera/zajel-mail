@@ -10,7 +10,7 @@
 	import { INBOX_CATEGORIES, type InboxCategory, type InboxTabsState } from '$lib/types/categories';
 	import { invalidateAll, goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { getContext, setContext } from 'svelte';
+	import { getContext, setContext, untrack } from 'svelte';
 	import { get } from 'svelte/store';
 	import type { Email, Mailbox } from '$lib/jmap/types';
 	import type { Label } from '$lib/types/labels';
@@ -123,6 +123,30 @@
 	let moveTriggerEl = $state<HTMLButtonElement | undefined>(undefined);
 	let showCategoryPicker = $state(false);
 	let categoryTriggerEl = $state<HTMLButtonElement | undefined>(undefined);
+
+	// A selection belongs to the list it was made in. Every folder, label,
+	// page and tab reuses this component, and Trash in Trash destroys what is
+	// selected, so start again when the place or the account changes, and let
+	// go of rows that a refresh took out of the list.
+	const listKey = $derived(
+		`${page.data.activeAccountId ?? ''} ${mailboxId} ${page.url.pathname}${page.url.search}`
+	);
+	let selectionKey = '';
+	$effect(() => {
+		const key = listKey;
+		const visible = new Set(emails.map((e) => e.id));
+		untrack(() => {
+			if (key !== selectionKey) {
+				selectionKey = key;
+				showMovePicker = false;
+				showCategoryPicker = false;
+				if (selectedIds.size > 0) selectedIds = new Set();
+				return;
+			}
+			const kept = [...selectedIds].filter((id) => visible.has(id));
+			if (kept.length !== selectedIds.size) selectedIds = new Set(kept);
+		});
+	});
 
 	async function bulkMoveToCategory(category: InboxCategory) {
 		if (selectedIds.size === 0 || !inboxTabs) return;

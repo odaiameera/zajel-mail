@@ -376,7 +376,7 @@ cp docker-compose.example.yml docker-compose.yml
 docker compose up --build -d
 ```
 
-The example binds to `127.0.0.1:3001`. Put it behind a TLS reverse proxy (Caddy, nginx or Traefik) for remote access, and set `ORIGIN` to the public URL.
+The example binds to `127.0.0.1:3001`. Put it behind a TLS reverse proxy (Caddy, nginx or Traefik) for remote access, and set `ORIGIN` to the public URL. Attachments can be up to 25 MB, so let the proxy pass request bodies that large. nginx stops at 1 MB by default, so set `client_max_body_size 30m;` there.
 
 The SQLite database lives at `/data/ameera.db`, so mount a volume there. Back up `WEBMAIL_SECRET` with it: if you rotate the secret, you have to re-enter every linked account's mail password.
 

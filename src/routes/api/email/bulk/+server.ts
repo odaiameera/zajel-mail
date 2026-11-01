@@ -9,10 +9,12 @@ import {
 	markManyAsSpam,
 	markManyAsNotSpam,
 	destroyEmail,
+	emailsInMailbox,
 	setEmailCategory
 } from '$lib/jmap/email';
 import { getMailboxes, ensureArchiveMailbox } from '$lib/jmap/mailbox';
 import { isInboxCategory } from '$lib/types/categories';
+import { labelMailboxIds } from '$lib/types/labels';
 import { recordCorrections, recordSpamCorrections } from '$lib/server/db/queries/jev-decisions';
 import { forgetSenderMoves, getPinCategory, recordSenderMoves } from '$lib/server/db/queries/jev-learning';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
@@ -44,7 +46,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		if (action === 'moveTo') {
 			const target = body.targetMailboxId as string | undefined;
 			if (!target) return json({ error: 'targetMailboxId required' }, { status: 400 });
-			await moveEmails(client, accountId, ids, target, sourceMailboxId);
+			const labelIds = labelMailboxIds(await getMailboxes(client, accountId));
+			await moveEmails(client, accountId, ids, target, sourceMailboxId, labelIds);
 			return json({ success: true });
 		}
 
@@ -84,7 +87,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const mailboxes = await getMailboxes(client, accountId);
 			const junk = mailboxes.find((m) => m.role === 'junk');
 			if (!junk) return json({ error: 'Junk folder not found' }, { status: 500 });
-			await markManyAsSpam(client, accountId, ids, sourceMailboxId ?? '', junk.id);
+			await markManyAsSpam(client, accountId, ids, junk.id, labelMailboxIds(mailboxes));
 			if (locals.activeAccountId) recordSpamCorrections(locals.activeAccountId, ids, 'spam');
 			return json({ success: true });
 		}
@@ -103,21 +106,30 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const mailboxes = await getMailboxes(client, accountId);
 			const trash = mailboxes.find((m) => m.role === 'trash');
 			if (!trash) return json({ error: 'Trash folder not found' }, { status: 500 });
-			const trashId = trash.id;
+			const labelIds = labelMailboxIds(mailboxes);
 
+			// Trash in Trash destroys, but only what is really in Trash. Ids from
+			// anywhere else (a selection carried over from another folder) are
+			// moved there instead.
+			const inTrash =
+				sourceMailboxId === trash.id
+					? await emailsInMailbox(client, accountId, ids, trash.id)
+					: new Set<string>();
 			await Promise.all(
 				ids.map((id) =>
-					sourceMailboxId === trashId
+					inTrash.has(id)
 						? destroyEmail(client, accountId, id)
-						: trashEmail(client, accountId, id, sourceMailboxId ?? '', trashId)
+						: trashEmail(client, accountId, id, trash.id, labelIds)
 				)
 			);
 			return json({ success: true });
 		}
 
 		let targetMailboxId: string | undefined;
+		let labelIds: ReadonlySet<string> = new Set();
 		if (action === 'archive') {
 			targetMailboxId = await ensureArchiveMailbox(client, accountId);
+			labelIds = labelMailboxIds(await getMailboxes(client, accountId));
 		}
 
 		await Promise.all(
@@ -128,7 +140,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					case 'markUnread':
 						return markEmail(client, accountId, id, false);
 					case 'archive':
-						return archiveEmail(client, accountId, id, sourceMailboxId ?? '', targetMailboxId!);
+						return archiveEmail(client, accountId, id, targetMailboxId!, labelIds);
 					default:
 						throw new Error(`Unknown action: ${action}`);
 				}
