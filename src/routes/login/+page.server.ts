@@ -4,6 +4,9 @@ import { verifyUserPassword } from '$lib/server/auth/user';
 import { createAppSession } from '$lib/server/auth/app-session';
 import { isLockedOut, recordFailure, recordSuccess } from '$lib/server/auth/rate-limit';
 
+/** The longest an email address can be (RFC 5321). */
+const MAX_EMAIL_LENGTH = 254;
+
 export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.user) {
 		redirect(303, '/inbox');
@@ -18,6 +21,11 @@ export const actions: Actions = {
 
 		if (!email || !password) {
 			return fail(400, { error: 'Email and password are required', email });
+		}
+		// Anyone can post this form; no real address is longer, so don't spend
+		// a password check or a rate-limit row on it, or echo it back.
+		if (email.length > MAX_EMAIL_LENGTH) {
+			return fail(400, { error: 'Invalid email or password' });
 		}
 
 		const ip = getClientAddress();
