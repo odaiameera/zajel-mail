@@ -49,6 +49,12 @@ export function isLabelMailbox(
 	return labelsParentId !== null && m.parentId === labelsParentId;
 }
 
+/** The ids of every label mailbox. */
+export function labelMailboxIds(mailboxes: MailboxLike[]): Set<string> {
+	const parentId = findLabelsParentId(mailboxes);
+	return new Set(mailboxes.filter((m) => isLabelMailbox(m, parentId)).map((m) => m.id));
+}
+
 /** True if `m` is the Labels container itself (not a real folder, not a label). */
 export function isLabelsParent(m: { id: string }, labelsParentId: string | null): boolean {
 	return labelsParentId !== null && m.id === labelsParentId;
