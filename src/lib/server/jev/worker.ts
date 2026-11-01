@@ -44,6 +44,8 @@ import { buildEmailState, type JevFacts } from './email-state';
 import { gatherFacts, senderAddress } from './facts';
 import { conditionAnswers, ruleChecks, ruleQuestions } from './rules';
 import { decideSpam, SPAM_QUESTIONS, spamAnswers, type SpamAction } from './spam';
+import { isUrgent, URGENT_QUESTION, URGENT_QUESTION_ID } from '$lib/server/telegram/urgent';
+import { notifyUrgent, urgentAlertsWanted } from '$lib/server/telegram/notifier';
 import type { JevQuestion, JevResponse } from './types';
 
 /**
@@ -324,7 +326,9 @@ export async function sortNewMail(
 	// Only when a rule needs Jev does this worker take over the rules.
 	const rules = enabledRules.some(hasJevCondition) ? enabledRules : [];
 	const spamMode = settings.spamMode;
-	if (!wantsTabs && rules.length === 0 && spamMode === 'off') {
+	// Telegram alerts for urgent mail: one more question for Jev, new mail only.
+	const alertUrgent = urgentAlertsWanted(accountRowId);
+	if (!wantsTabs && rules.length === 0 && spamMode === 'off' && !alertUrgent) {
 		// Nothing to ask: keep the cursor current, so switching tabs or a Jev
 		// rule on later doesn't reach back into mail from before.
 		advanceSortCursor(accountRowId, settings.sortCursor, now.toISOString(), now);
@@ -411,12 +415,12 @@ export async function sortNewMail(
 
 	// 2. New arrivals, and earlier failures among them: spam, tab and rules.
 	if (!stillOn()) return;
-	await judgeAndApply(batch, listPendingEmailIds(accountRowId, JUDGE_BATCH), rules, wantsTabs, spamMode !== 'off');
+	await judgeAndApply(batch, listPendingEmailIds(accountRowId, JUDGE_BATCH), rules, wantsTabs, spamMode !== 'off', alertUrgent);
 
 	// 3. Then mail that was already in the Inbox when you asked Jev to sort
 	// it: its tab only — rules and spam checks apply to new mail only.
 	if (wantsTabs && stillOn()) {
-		await judgeAndApply(batch, listPendingEmailIds(accountRowId, BACKFILL_BATCH, true), [], true, false);
+		await judgeAndApply(batch, listPendingEmailIds(accountRowId, BACKFILL_BATCH, true), [], true, false, false);
 	}
 }
 
@@ -440,7 +444,8 @@ async function judgeAndApply(
 	ids: string[],
 	rules: Rule[],
 	wantsTabs: boolean,
-	checkSpam: boolean
+	checkSpam: boolean,
+	alertUrgent: boolean
 ): Promise<void> {
 	if (ids.length === 0) return;
 	const now = b.now.getTime();
@@ -461,6 +466,7 @@ async function judgeAndApply(
 			? SPAM_QUESTIONS
 			: {
 					...(checkSpam ? SPAM_QUESTIONS : {}),
+					...(alertUrgent ? { [URGENT_QUESTION_ID]: URGENT_QUESTION } : {}),
 					// No point asking for a tab the message already has: Jev won't overrule it.
 					...(wantsTabs && !pinOf(email) && categoryOf(email.keywords) === 'important' ? tabQuestion() : {}),
 					...ruleQuestions(jevConditionsToAsk(email, rules, extractBodyText(email)))
@@ -471,6 +477,7 @@ async function judgeAndApply(
 	// for good, the rules still run, with no Jev answers. Spam goes first:
 	// mail that goes to Junk skips rules and tabs.
 	const plans = new Map<string, Plan>();
+	const toJunk = new Set<string>();
 	for (const j of judged) {
 		if (j.error) {
 			recordFailure(b.accountRowId, j.email.id, j.error, now);
@@ -508,6 +515,7 @@ async function judgeAndApply(
 				spam
 			});
 		} else if (acting && action === 'junk' && b.junkId) {
+			toJunk.add(j.email.id);
 			plans.set(j.email.id, { update: moveUpdate(j.email, b.inboxId, b.junkId), tab: null, pin: null, checks: [], spam });
 		} else {
 			plans.set(j.email.id, { ...planFor(j, rules, b.ruleCtx, wantsTabs, pinOf(j.email)), spam });
@@ -545,6 +553,17 @@ async function judgeAndApply(
 			},
 			now
 		);
+	}
+
+	// Urgent Inbox mail goes to the linked Telegram chat; never Junk, or mail
+	// on its way there.
+	if (alertUrgent) {
+		for (const j of judged) {
+			if (j.error || inJunk(j.email) || toJunk.has(j.email.id) || !isUrgent(j.response)) continue;
+			await notifyUrgent(b.accountRowId, j.email).catch((err) =>
+				console.error('[jev] urgent alert failed', err instanceof Error ? err.message : err)
+			);
+		}
 	}
 }
 

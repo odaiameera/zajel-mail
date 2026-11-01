@@ -6,7 +6,52 @@
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
 	import { canNotify, notificationSupport, subscribePush, unsubscribePush } from '$lib/notifications';
 	import { onMount } from 'svelte';
+	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import type { LayoutData } from '../$types';
+
+	// --- Telegram (the agent's own bot) ---
+	type TelegramStatus = { configured: boolean; linked: boolean; username: string | null; urgent: boolean; paused: boolean };
+	let telegram = $state<TelegramStatus | null>(null);
+	let telegramLink = $state<string | null>(null);
+	let telegramError = $state<string | null>(null);
+
+	async function loadTelegram() {
+		const res = await fetch('/api/telegram');
+		if (res.ok) telegram = await res.json();
+	}
+
+	async function telegramAction(body: Record<string, unknown>) {
+		telegramError = null;
+		const res = await fetchWithStepUp('/api/telegram', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		});
+		const data = await res.json().catch(() => null);
+		if (!res.ok) {
+			if (!data?.stepUp) telegramError = data?.message ?? 'That didn’t work';
+			return null;
+		}
+		return data;
+	}
+
+	async function linkTelegram() {
+		const data = await telegramAction({ action: 'link' });
+		if (data?.url) telegramLink = data.url;
+	}
+
+	async function unlinkTelegram() {
+		if (await telegramAction({ action: 'unlink' })) {
+			telegramLink = null;
+			await loadTelegram();
+		}
+	}
+
+	async function setTelegram(flags: { urgent?: boolean; paused?: boolean }) {
+		if (await telegramAction({ action: 'set', ...flags })) await loadTelegram();
+	}
+
+	onMount(loadTelegram);
 
 	let { data }: { data: LayoutData } = $props();
 
@@ -177,4 +222,45 @@
 			/>
 		{/snippet}
 	</SettingRow>
+
+	{#if telegram?.configured}
+		<div class="pt-6 pb-2">
+			<p class="text-sm font-semibold text-text">Telegram</p>
+		</div>
+
+		{#if telegramError}
+			<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-3 py-2 mb-2">{telegramError}</div>
+		{/if}
+
+		{#if telegram.linked}
+			<SettingRow title={telegram.username ? `Linked to @${telegram.username}` : 'Linked'}>
+				{#snippet control()}
+					<button type="button" onclick={unlinkTelegram}
+						class="px-2.5 py-1.5 text-xs text-text-tertiary hover:text-danger transition-colors cursor-pointer">Unlink</button>
+				{/snippet}
+			</SettingRow>
+			<SettingRow title="Urgent mail">
+				{#snippet control()}
+					<Toggle checked={telegram!.urgent} onChange={(next) => setTelegram({ urgent: next })} />
+				{/snippet}
+			</SettingRow>
+			<SettingRow title="Paused">
+				{#snippet control()}
+					<Toggle checked={telegram!.paused} onChange={(next) => setTelegram({ paused: next })} />
+				{/snippet}
+			</SettingRow>
+		{:else if telegramLink}
+			<SettingRow title="Open in Telegram">
+				{#snippet control()}
+					<a href={telegramLink} target="_blank" rel="noreferrer" class="btn btn-primary btn-sm">Open</a>
+				{/snippet}
+			</SettingRow>
+		{:else}
+			<SettingRow title="Link Telegram">
+				{#snippet control()}
+					<button type="button" onclick={linkTelegram} class="btn btn-primary btn-sm">Link</button>
+				{/snippet}
+			</SettingRow>
+		{/if}
+	{/if}
 </section>

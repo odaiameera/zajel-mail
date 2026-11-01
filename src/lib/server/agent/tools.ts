@@ -17,6 +17,8 @@ import { htmlToPromptText } from '$lib/server/ai/extract-event';
 import { createPendingAction, type AgentSource, type PendingAction, type ToolTier } from './store';
 import { composeReply, saveComposedDraft, type ComposeRequest } from './compose';
 import { CALENDAR_TOOLS } from './calendar-tools';
+import { telegramConfigured } from '$lib/server/telegram/bot';
+import { addReminder, getLink } from '$lib/server/telegram/store';
 
 /**
  * The agent's tools. Every tool declares a tier and the server enforces it,
@@ -421,6 +423,33 @@ const saveDraftTool: AgentTool = {
 	}
 };
 
+const remindMe: AgentTool = {
+	name: 'remind_me',
+	tier: 'self',
+	description:
+		'Send the user a reminder on Telegram at a local time ("YYYY-MM-DDTHH:mm"), about an email (give its id) or a task (just the text). It goes only to the user’s own linked chat.',
+	input_schema: schema({ text: { type: 'string' }, at: { type: 'string' }, email_id: { type: ['string', 'null'] } }),
+	async run(ctx, input) {
+		if (!telegramConfigured()) return { content: 'Telegram isn’t set up on this server', isError: true };
+		if (!getLink(ctx.userId)) return { content: 'The user hasn’t linked Telegram yet (Settings → Notifications)', isError: true };
+		const text = str(input.text, 500);
+		const wall = parseWallClock(str(input.at, 20));
+		const [emailId] = ids([input.email_id]);
+		if (!text || !wall) return { content: 'text and at are required', isError: true };
+		const at = wallClockToUtc(wall, ctx.timeZone);
+		if (at <= Date.now()) return { content: 'at must be in the future', isError: true };
+		addReminder({
+			userId: ctx.userId,
+			accountId: emailId ? ctx.accountRowId : null,
+			emailId: emailId ?? null,
+			text,
+			dueAt: new Date(at).toISOString()
+		});
+		const done = `Set a Telegram reminder for ${str(input.at, 20).replace('T', ' ')}: “${text.slice(0, 80)}”`;
+		return { content: `Done: ${done}.`, done };
+	}
+};
+
 // --- outward: needs your click ------------------------------------------------
 
 const sendEmail: AgentTool = {
@@ -460,6 +489,7 @@ export const AGENT_TOOLS: AgentTool[] = [
 	setLabel,
 	setTab,
 	snooze,
+	remindMe,
 	saveDraftTool,
 	sendEmail
 ];
