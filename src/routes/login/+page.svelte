@@ -3,10 +3,17 @@
 	import { enhance } from '$app/forms';
 	import { pageTitle } from '$lib/utils/title';
 	import { browserSupportsWebAuthn, startAuthentication } from '@simplewebauthn/browser';
-	import type { ActionData } from './$types';
+	import type { ActionData, PageData } from './$types';
 
-	let { form }: { form: ActionData } = $props();
+	let { form, data }: { form: ActionData; data: PageData } = $props();
 	let loading = $state(false);
+
+	// The second step after a correct password: from the action that just
+	// ran, or from a reload while one is pending.
+	const second = $derived.by(() => {
+		if (form) return 'secondStep' in form && form.secondStep ? form : null;
+		return data.pending;
+	});
 	let passkeyError = $state<string | null>(null);
 	let passkeySupported = $state(false);
 
@@ -54,6 +61,60 @@
 			<p class="text-text-tertiary mt-1 text-sm">Sign in to your webmail</p>
 		</div>
 
+		{#if second}
+			<form
+				method="POST"
+				action="?/code"
+				use:enhance={() => {
+					loading = true;
+					return async ({ update }) => {
+						loading = false;
+						await update();
+					};
+				}}
+				class="space-y-4"
+			>
+				{#if form?.error}
+					<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-4 py-3">
+						{form.error}
+					</div>
+				{/if}
+				{#if passkeyError}
+					<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-4 py-3">
+						{passkeyError}
+					</div>
+				{/if}
+
+				{#if second.totp}
+					<div>
+						<label for="code" class="block text-sm text-text-secondary mb-1.5">Code</label>
+						<input
+							id="code"
+							name="code"
+							type="text"
+							autocomplete="one-time-code"
+							required
+							class="w-full bg-surface border border-border rounded-lg px-3.5 py-2.5 text-text
+								focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-colors"
+						/>
+					</div>
+					<button type="submit" disabled={loading} class="btn btn-primary btn-lg w-full">
+						{loading ? 'Checking...' : 'Verify'}
+					</button>
+				{/if}
+			</form>
+
+			{#if second.passkey && passkeySupported}
+				<button type="button" onclick={passkeyLogin} class="btn btn-secondary btn-lg w-full mt-4">
+					<Icon name="passkey" size={16} />
+					Use a passkey
+				</button>
+			{/if}
+
+			<form method="POST" action="?/cancel" use:enhance class="mt-4">
+				<button type="submit" class="btn btn-ghost w-full">Back</button>
+			</form>
+		{:else}
 		<form
 			method="POST"
 			use:enhance={() => {
@@ -127,6 +188,7 @@
 				<Icon name="passkey" size={16} />
 				Sign in with a passkey
 			</button>
+		{/if}
 		{/if}
 	</div>
 </div>

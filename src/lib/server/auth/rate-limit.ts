@@ -51,7 +51,7 @@ export function isLockedOut(email: string, ip: string): boolean {
 	return new Date(row.locked_until).getTime() > Date.now();
 }
 
-export function recordFailure(email: string, ip: string): void {
+export function recordFailure(email: string, ip: string, maxFailures = MAX_FAILURES): void {
 	const key = keyFor(email, ip);
 	const now = Date.now();
 	const row = stmts().get.get(key) as
@@ -64,7 +64,7 @@ export function recordFailure(email: string, ip: string): void {
 		windowStart = new Date(row.window_start).getTime();
 		count = row.count + 1;
 	}
-	const lockedUntil = count >= MAX_FAILURES ? new Date(now + LOCKOUT_MS).toISOString() : null;
+	const lockedUntil = count >= maxFailures ? new Date(now + LOCKOUT_MS).toISOString() : null;
 	stmts().prune.run(new Date(now - WINDOW_MS).toISOString(), new Date(now).toISOString());
 	stmts().upsert.run({
 		key,
@@ -76,4 +76,18 @@ export function recordFailure(email: string, ip: string): void {
 
 export function recordSuccess(email: string, ip: string): void {
 	stmts().clear.run(keyFor(email, ip));
+}
+
+// Every failure from one address counts here too, whatever email it tried,
+// so trying a new email each time no longer resets the limit. Generous
+// enough that a typo-prone owner never meets it.
+const ANY_EMAIL = '\u0000any';
+const MAX_IP_FAILURES = 30;
+
+export function isIpLockedOut(ip: string): boolean {
+	return isLockedOut(ANY_EMAIL, ip);
+}
+
+export function recordIpFailure(ip: string): void {
+	recordFailure(ANY_EMAIL, ip, MAX_IP_FAILURES);
 }

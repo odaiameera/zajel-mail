@@ -2,6 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { pageTitle } from '$lib/utils/title';
+	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import ColorGrid from '$lib/components/modals/ColorGrid.svelte';
 	import { colorByHex, DEFAULT_LABEL_COLOR } from '$lib/constants/colors';
 	import { fileToAvatarDataUrl } from '$lib/utils/image';
@@ -168,7 +169,7 @@
 		if (rowBusy) return;
 		rowBusy = true;
 		try {
-			const res = await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+			const res = await fetchWithStepUp(`/api/accounts/${id}`, { method: 'DELETE' });
 			if (res.ok) {
 				confirmRemoveId = null;
 				await invalidateAll();

@@ -31,9 +31,10 @@ export function hasAppUser(): boolean {
 	return (stmts().count.get() as { n: number }).n > 0;
 }
 
-export function createAppUser(email: string, password: string): AppUser {
+export async function createAppUser(email: string, password: string): Promise<AppUser> {
 	const id = randomUUID();
-	stmts().insert.run(id, email.trim().toLowerCase(), hashPassword(password));
+	const hash = await hashPassword(password);
+	stmts().insert.run(id, email.trim().toLowerCase(), hash);
 	return { id, email: email.trim().toLowerCase() };
 }
 
@@ -46,22 +47,31 @@ export function getFirstUser(): AppUser | undefined {
 	return stmts().first.get() as AppUser | undefined;
 }
 
-export function verifyUserPassword(email: string, password: string): AppUser | undefined {
+// Hashed once and reused: an unknown email then costs one verify, exactly
+// like a known one with a wrong password. Hashing it on every attempt made
+// unknown emails twice as slow, which gave the login email away.
+let equalizer: Promise<string> | null = null;
+
+export async function verifyUserPassword(email: string, password: string): Promise<AppUser | undefined> {
 	const row = stmts().byEmail.get(email.trim().toLowerCase()) as
 		| { id: string; email: string; password_hash: string }
 		| undefined;
 	if (!row) {
-		// Burn comparable time so absent vs. wrong-password is not observable.
-		verifyPassword(password, hashPassword('timing-equalizer'));
+		await verifyPassword(password, await (equalizer ??= hashPassword('timing-equalizer')));
 		return undefined;
 	}
-	if (!verifyPassword(password, row.password_hash)) return undefined;
+	if (!(await verifyPassword(password, row.password_hash))) return undefined;
 	return { id: row.id, email: row.email };
 }
 
-export function changePassword(userId: string, current: string, next: string): boolean {
+/** The password check behind a re-check, for a user with no second factor. */
+export async function verifyPasswordForUser(userId: string, password: string): Promise<boolean> {
 	const row = stmts().getHash.get(userId) as { password_hash: string } | undefined;
-	if (!row || !verifyPassword(current, row.password_hash)) return false;
-	stmts().setPassword.run(hashPassword(next), userId);
+	return !!row && (await verifyPassword(password, row.password_hash));
+}
+
+export async function changePassword(userId: string, current: string, next: string): Promise<boolean> {
+	if (!(await verifyPasswordForUser(userId, current))) return false;
+	stmts().setPassword.run(await hashPassword(next), userId);
 	return true;
 }

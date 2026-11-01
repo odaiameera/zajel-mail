@@ -21,6 +21,8 @@ export interface AppSessionRow {
 	last_seen_at: string;
 	user_agent: string | null;
 	ip: string | null;
+	/** Last second-factor proof (SQLite UTC datetime), null if none yet. */
+	verified_at?: string | null;
 }
 
 let _stmts: ReturnType<typeof prepareStmts> | null = null;
@@ -28,13 +30,14 @@ function prepareStmts() {
 	const db = getDb();
 	return {
 		insert: db.prepare(
-			`INSERT INTO app_sessions (id, user_id, expires_at, user_agent, ip)
-			 VALUES (?, ?, ?, ?, ?)`
+			`INSERT INTO app_sessions (id, user_id, expires_at, user_agent, ip, verified_at)
+			 VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now') END)`
 		),
 		get: db.prepare(
-			`SELECT id, user_id, created_at, last_seen_at, user_agent, ip, expires_at
+			`SELECT id, user_id, created_at, last_seen_at, user_agent, ip, expires_at, verified_at
 			 FROM app_sessions WHERE id = ?`
 		),
+		verify: db.prepare(`UPDATE app_sessions SET verified_at = datetime('now') WHERE id = ?`),
 		touch: db.prepare(
 			`UPDATE app_sessions SET last_seen_at = datetime('now'), expires_at = ? WHERE id = ?`
 		),
@@ -55,10 +58,29 @@ function expiryFromNow(): string {
 	return new Date(Date.now() + SESSION_TTL_MS).toISOString().replace('T', ' ').slice(0, 19);
 }
 
-export function createAppSession(userId: string, userAgent?: string, ip?: string): string {
+/**
+ * `verified` marks a sign-in that proved a second factor (a passkey, or a
+ * code after the password), which also counts as a fresh re-check.
+ */
+export function createAppSession(
+	userId: string,
+	userAgent?: string,
+	ip?: string,
+	verified = false
+): string {
 	const id = randomUUID();
-	stmts().insert.run(id, userId, expiryFromNow(), userAgent ?? null, ip ?? null);
+	stmts().insert.run(id, userId, expiryFromNow(), userAgent ?? null, ip ?? null, verified ? 1 : 0);
 	return id;
+}
+
+/** This session has just re-checked: a passkey, a code, or the password. */
+export function markSessionVerified(id: string): void {
+	stmts().verify.run(id);
+}
+
+/** `verified_at` as epoch ms, or null. */
+export function verifiedAtMs(row: AppSessionRow): number | null {
+	return row.verified_at ? new Date(row.verified_at + 'Z').getTime() : null;
 }
 
 export function getAppSession(id: string): AppSessionRow | undefined {

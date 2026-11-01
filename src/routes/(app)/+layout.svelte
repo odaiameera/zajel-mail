@@ -7,6 +7,7 @@
 	import ComposerShell from '$lib/components/composer/ComposerShell.svelte';
 	import ProfileCard from '$lib/components/ProfileCard.svelte';
 	import ToastContainer from '$lib/components/ToastContainer.svelte';
+	import StepUpDialog from '$lib/components/StepUpDialog.svelte';
 	import SearchInput from '$lib/components/SearchInput.svelte';
 	import { goto, afterNavigate, onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
@@ -589,3 +590,4 @@
 
 <ComposerShell />
 <ToastContainer />
+<StepUpDialog />

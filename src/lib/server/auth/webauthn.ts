@@ -55,9 +55,11 @@ export async function registrationOptions(url: URL, user: AppUser) {
 			id: p.id,
 			transports: p.transports ? JSON.parse(p.transports) : undefined
 		})),
+		// A passkey is a whole sign-in by itself, so it has to check it's you
+		// (fingerprint, face or PIN), not just that a key is present.
 		authenticatorSelection: {
 			residentKey: 'required',
-			userVerification: 'preferred'
+			userVerification: 'required'
 		}
 	});
 	storeChallenge(options.challenge, user.id, 'reg');
@@ -79,7 +81,8 @@ export async function verifyRegistration(
 		response,
 		expectedChallenge: challenge,
 		expectedOrigin: url.origin,
-		expectedRPID: rpId(url)
+		expectedRPID: rpId(url),
+		requireUserVerification: true
 	});
 	if (!verification.verified || !verification.registrationInfo) return undefined;
 
@@ -99,7 +102,7 @@ export async function authenticationOptions(url: URL) {
 	if (!anyPasskeysExist()) return undefined;
 	const options = await generateAuthenticationOptions({
 		rpID: rpId(url),
-		userVerification: 'preferred'
+		userVerification: 'required'
 		// allowCredentials omitted: discoverable credentials, usernameless.
 	});
 	storeChallenge(options.challenge, null, 'auth');
@@ -122,6 +125,7 @@ export async function verifyAuthentication(
 		expectedChallenge: challenge,
 		expectedOrigin: url.origin,
 		expectedRPID: rpId(url),
+		requireUserVerification: true,
 		credential: {
 			id: passkey.id,
 			publicKey: Buffer.from(passkey.public_key, 'base64url'),
