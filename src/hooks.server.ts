@@ -9,7 +9,7 @@ import { startTrashRetentionScheduler } from '$lib/server/trash-retention';
 import { startJevScheduler, sortNewMailSafe } from '$lib/server/jev/worker';
 import { startScheduledSendWorker } from '$lib/server/scheduled-send';
 import { startPushWorker } from '$lib/server/push/worker';
-import { getAppSession } from '$lib/server/auth/app-session';
+import { getAppSession, verifiedAtMs } from '$lib/server/auth/app-session';
 import { getUserById, hasAppUser } from '$lib/server/auth/user';
 import { authStateForAccount, listAccounts, toPublic } from '$lib/server/auth/accounts';
 import { assertCryptoReady } from '$lib/server/auth/crypto';
@@ -50,6 +50,18 @@ function tooLargeForSignedOut(request: Request): boolean {
 
 const PAYLOAD_TOO_LARGE = () => new Response('Payload Too Large', { status: 413 });
 
+// SvelteKit's own CSRF check covers form posts only. The JSON API relied on
+// SameSite=Strict, which a sibling subdomain gets past, so any write whose
+// Origin names another site is refused. Browsers send Origin on every
+// cross-origin write; requests without one are left to the routes.
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function crossSiteWrite(request: Request, url: URL): boolean {
+	if (SAFE_METHODS.has(request.method)) return false;
+	const origin = request.headers.get('origin');
+	return origin !== null && origin !== url.origin;
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
 	// Fail fast on a missing/short WEBMAIL_SECRET: without it linked-account
 	// passwords can't be encrypted or decrypted, and the breakage would
@@ -81,6 +93,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	const { pathname } = event.url;
 
+	if (crossSiteWrite(event.request, event.url)) {
+		return new Response('Cross-site request refused', { status: 403 });
+	}
+
 	// First-run gate: until the master user exists, everything funnels to
 	// /setup (API calls get their 401s from their own auth checks). The
 	// flag is sticky once true so steady state skips the COUNT query.
@@ -100,6 +116,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 		if (session && user) {
 			event.locals.user = user;
 			event.locals.sessionId = session.id;
+			event.locals.sessionVerifiedAt = verifiedAtMs(session);
 
 			const accounts = listAccounts(user.id);
 			event.locals.accounts = accounts.map(toPublic);
