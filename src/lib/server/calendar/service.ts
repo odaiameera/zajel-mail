@@ -312,6 +312,30 @@ export async function updateEvent(
 	return { id };
 }
 
+/**
+ * What an event is, read from the server rather than from whoever names it:
+ * a confirmation card shows this, not the model's description.
+ */
+export async function getEventSummary(
+	auth: AuthState,
+	userEmail: string,
+	id: string
+): Promise<{ title: string; when: string; recurring: boolean } | null> {
+	await resolveCalendarHome(auth, userEmail);
+	const href = idToHref(id, userEmail);
+	if (!href) return null;
+	const master = parseIcs((await getObject(auth, href)).ics).master;
+	if (!master) return null;
+	const w = master.startWall;
+	const p = (n: number) => String(n).padStart(2, '0');
+	const date = `${w.year}-${p(w.month)}-${p(w.day)}`;
+	return {
+		title: master.summary || '(no title)',
+		when: master.allDay ? `${date} · all day` : `${date} ${p(w.hour)}:${p(w.minute)} (${master.tzid})`,
+		recurring: !!master.rruleRaw
+	};
+}
+
 export async function deleteEvent(
 	auth: AuthState,
 	userEmail: string,

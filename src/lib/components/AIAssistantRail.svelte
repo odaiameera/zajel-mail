@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import { tick } from 'svelte';
 
 	type AgentAction =
@@ -42,12 +43,28 @@
 		destination: 'todoist' | 'linear' | 'notion' | null;
 	};
 
+	/** Something the agent prepared that only runs on a click (sending, invitations, deletes). */
+	type PendingCard = {
+		id: string;
+		kind: string;
+		label: string;
+		title: string;
+		lines: string[];
+		body: string | null;
+		confirmLabel: string;
+		danger: boolean;
+		state?: 'working' | 'done' | 'cancelled' | 'failed';
+	};
+
 	type ChatMessage = {
 		id: string;
 		role: 'assistant' | 'user';
 		content: string;
 		/** Sanitised HTML for assistant replies; plain `content` is the fallback. */
 		html?: string;
+		/** Changes the agent made this turn (reversible ones). */
+		done?: string[];
+		pending?: PendingCard[];
 		proposal?: TaskProposal;
 		taskProviders?: TaskProvider[];
 		selectedProvider?: TaskProvider;
@@ -240,6 +257,8 @@
 				taskProposal?: TaskProposal;
 				taskProviders?: TaskProvider[];
 				calendarProposal?: CalendarProposal;
+				done?: string[];
+				pending?: PendingCard[];
 			} | null;
 			if (!response.ok || !data?.message) {
 				throw new Error(data?.error ?? 'The mail agent could not answer');
@@ -263,7 +282,9 @@
 					proposal: data.taskProposal,
 					calendarProposal: data.calendarProposal,
 					taskProviders: providers,
-					selectedProvider
+					selectedProvider,
+					done: data.done,
+					pending: data.pending
 				}
 			];
 			void loadSessions();
@@ -314,6 +335,32 @@
 			error = err instanceof Error ? err.message : 'The calendar change failed';
 		} finally {
 			await scrollToLatest();
+		}
+	}
+
+	/** Send or drop something the agent prepared. Only these buttons reach it. */
+	async function decidePending(messageId: string, actionId: string, decision: 'confirm' | 'cancel') {
+		const setState = (state: PendingCard['state']) => {
+			messages = messages.map((message) =>
+				message.id === messageId
+					? { ...message, pending: message.pending?.map((p) => (p.id === actionId ? { ...p, state } : p)) }
+					: message
+			);
+		};
+		setState('working');
+		error = '';
+		try {
+			const response = await fetchWithStepUp(`/api/ai/actions/${encodeURIComponent(actionId)}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ decision })
+			});
+			const data = (await response.json().catch(() => null)) as { message?: string; error?: string } | null;
+			if (!response.ok) throw new Error(data?.error ?? 'That didn’t work');
+			setState(decision === 'confirm' ? 'done' : 'cancelled');
+		} catch (err) {
+			setState('failed');
+			error = err instanceof Error ? err.message : 'That didn’t work';
 		}
 	}
 
@@ -481,6 +528,53 @@
 						{#if message.link}
 							<a href={message.link} target="_blank" rel="noreferrer" class="mt-2 inline-flex text-xs font-medium text-accent-fg hover:underline">Open task &nearr;</a>
 						{/if}
+						{#if message.done?.length}
+							<ul class="mt-2 space-y-1">
+								{#each message.done as change, i (i)}
+									<li class="flex items-start gap-1.5 text-xs text-text-secondary">
+										<Icon name="check" size={12} class="mt-0.5 shrink-0 text-accent-fg" />
+										<span>{change}</span>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+						{#each message.pending ?? [] as card (card.id)}
+							<!-- Shows exactly what will run; nothing happens until the button. -->
+							<div class="mt-3 rounded-xl border p-3 text-text {card.danger ? 'border-danger/40 bg-danger/5' : 'border-border bg-bg'}">
+								<p class="text-3xs font-semibold uppercase tracking-wider {card.danger ? 'text-danger' : 'text-accent-fg'}">{card.label}</p>
+								<p class="mt-1 font-medium">{card.title}</p>
+								{#each card.lines as line, i (i)}
+									<p class="mt-0.5 text-xs text-text-secondary">{line}</p>
+								{/each}
+								{#if card.body}
+									<p class="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-xs text-text-secondary">{card.body}</p>
+								{/if}
+								{#if card.state === 'done'}
+									<p class="mt-3 text-xs font-medium text-accent-fg">Done</p>
+								{:else if card.state === 'cancelled'}
+									<p class="mt-3 text-xs text-text-tertiary">Cancelled</p>
+								{:else}
+									<div class="mt-3 flex gap-2">
+										<button
+											type="button"
+											disabled={card.state === 'working'}
+											onclick={() => decidePending(message.id, card.id, 'confirm')}
+											class="btn btn-sm flex-1 {card.danger ? 'btn-danger-solid' : 'btn-primary'}"
+										>
+											{card.state === 'working' ? 'Working…' : card.state === 'failed' ? 'Try again' : card.confirmLabel}
+										</button>
+										<button
+											type="button"
+											disabled={card.state === 'working'}
+											onclick={() => decidePending(message.id, card.id, 'cancel')}
+											class="btn btn-ghost btn-sm"
+										>
+											Cancel
+										</button>
+									</div>
+								{/if}
+							</div>
+						{/each}
 						{#if message.calendarProposal}
 							<!--
 								A delete is irreversible, so the card names the event and

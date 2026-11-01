@@ -6,6 +6,7 @@ import {
 	runMailAssistant,
 	type MailAssistantAction
 } from '$lib/server/ai/mail-assistant';
+import { runChat } from '$lib/server/ai/chat';
 
 const ACTIONS: MailAssistantAction[] = ['summarize', 'answer', 'draft'];
 
@@ -35,7 +36,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			receivedAt: typeof body.receivedAt === 'string' ? body.receivedAt.slice(0, 100) : '',
 			bodyText: htmlToPromptText(body.html, 10_000),
 			question: typeof body.question === 'string' ? body.question.slice(0, 500) : undefined
-		});
+		}, runChat);
 		return json({ result });
 	} catch (err) {
 		if (err instanceof MailAssistantError) {

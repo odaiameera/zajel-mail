@@ -375,7 +375,7 @@ enough. Return done as soon as you can answer; do not search for its own sake.`;
  * rail sends local midnight serialised to UTC, so slicing that ISO string
  * gives the previous day for anyone east of UTC.
  */
-function localDate(ms: number, timeZone: string): { iso: string; weekday: string } {
+export function localDate(ms: number, timeZone: string): { iso: string; weekday: string } {
 	return {
 		iso: new Intl.DateTimeFormat('en-CA', { timeZone }).format(ms),
 		weekday: new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' }).format(ms)

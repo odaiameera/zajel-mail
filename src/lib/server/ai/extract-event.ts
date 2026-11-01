@@ -1,11 +1,13 @@
 import sanitizeHtml from 'sanitize-html';
-import { MailAssistantError, mailAssistantConfigured, runAIChat } from './mail-assistant';
+import { MailAssistantError } from './mail-assistant';
+import { assistantConfigured, runChat } from './chat';
 
 /**
  * LLM-backed event extraction from unstructured email text, through the
- * mail assistant's chat transport: OpenAI when OPENAI_API_KEY is set,
- * otherwise the Ollama endpoint (OLLAMA_URL / OLLAMA_API_KEY / OLLAMA_MODEL).
- * The model must follow JSON-schema output.
+ * shared chat transport: Claude's writer model when ANTHROPIC_API_KEY is
+ * set, OpenAI when OPENAI_API_KEY is, otherwise the Ollama endpoint
+ * (OLLAMA_URL / OLLAMA_API_KEY / OLLAMA_MODEL). The model must follow
+ * JSON-schema output.
  *
  * Structured invitations (text/calendar parts) never go through here —
  * they're parsed deterministically by the iMIP module. This path only
@@ -26,7 +28,7 @@ export interface ExtractedEvent {
 }
 
 export function aiConfigured(): boolean {
-	return mailAssistantConfigured();
+	return assistantConfigured();
 }
 
 /** Strip an email's HTML down to readable text, capped for the prompt. */
@@ -116,7 +118,7 @@ export async function extractEventFromEmail(input: {
 
 	let content: string;
 	try {
-		content = await runAIChat({
+		content = await runChat({
 			system: SYSTEM_PROMPT,
 			messages: [{ role: 'user', content: userPrompt }],
 			temperature: 0,

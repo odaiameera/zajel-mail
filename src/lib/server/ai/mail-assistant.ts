@@ -239,14 +239,19 @@ function instructionFor(action: MailAssistantAction, question?: string): string 
 	return `Answer this question using only the email: ${question}`;
 }
 
-export async function runMailAssistant(input: {
-	action: MailAssistantAction;
-	subject: string;
-	from: string;
-	receivedAt: string;
-	bodyText: string;
-	question?: string;
-}): Promise<string> {
+export async function runMailAssistant(
+	input: {
+		action: MailAssistantAction;
+		subject: string;
+		from: string;
+		receivedAt: string;
+		bodyText: string;
+		question?: string;
+	},
+	// The route passes the provider-neutral runner (Claude's writer model
+	// when configured); this stays the default for direct callers.
+	run: (input: AIChatInput) => Promise<string> = runAIChat
+): Promise<string> {
 	if (input.action === 'answer' && !input.question?.trim()) {
 		throw new MailAssistantError('A question is required', 400);
 	}
@@ -265,7 +270,7 @@ Subject: ${input.subject || '(no subject)'}
 ${input.bodyText || '(empty email)'}
 EMAIL END`;
 
-	return runAIChat({
+	return run({
 		system,
 		messages: [{ role: 'user', content: prompt }],
 		temperature: 0.2

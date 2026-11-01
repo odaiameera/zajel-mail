@@ -15,6 +15,17 @@ vi.mock('$lib/jmap/auth', () => ({
 	fetchSession: () => Promise.reject(new Error('no session in tests'))
 }));
 
+const telegram = vi.hoisted(() => ({ wanted: false, notify: vi.fn(async () => {}) }));
+vi.mock('$lib/server/telegram/notifier', () => ({
+	urgentAlertsWanted: () => telegram.wanted,
+	notifyUrgent: telegram.notify
+}));
+// Whether something is urgent is Jev's call; here every judged email is.
+vi.mock('$lib/server/telegram/urgent', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/telegram/urgent')>()),
+	isUrgent: () => true
+}));
+
 import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import { getJevSettings, updateJevSettings } from '$lib/server/db/queries/jev-settings';
@@ -403,6 +414,33 @@ describe('sortNewMail', () => {
 		// Already in a tab: left alone, and nothing asked.
 		expect(fake.emails.get('oldSorted')!.keywords).toEqual({ $cat_updates: true });
 		expect(getDecision(ACCT, 'oldSorted')).toMatchObject({ status: 'done', model: null });
+	});
+
+	describe('urgent mail on Telegram', () => {
+		beforeEach(() => {
+			telegram.wanted = false;
+			telegram.notify.mockClear();
+		});
+
+		it('alerts for new Inbox mail only while alerts are wanted', async () => {
+			fake.add('alarm', 1, { subject: 'Server down' });
+			await sortNewMail(ACCT, ME, auth, at(10));
+			expect(telegram.notify).not.toHaveBeenCalled();
+
+			telegram.wanted = true;
+			fake.add('pager', 11, { subject: 'Database unreachable' });
+			await sortNewMail(ACCT, ME, auth, at(20));
+			expect(telegram.notify).toHaveBeenCalledTimes(1);
+			expect(telegram.notify).toHaveBeenCalledWith(ACCT, expect.objectContaining({ id: 'pager' }));
+		});
+
+		it('asks Jev even when nothing else needs asking', async () => {
+			updateJevSettings(ACCT, { inboxTabs: false });
+			telegram.wanted = true;
+			fake.add('only', 1, { subject: 'Your flight was cancelled' });
+			await sortNewMail(ACCT, ME, auth, at(10));
+			expect(telegram.notify).toHaveBeenCalledWith(ACCT, expect.objectContaining({ id: 'only' }));
+		});
 	});
 
 	describe('switching Jev off', () => {
