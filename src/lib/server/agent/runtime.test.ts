@@ -159,6 +159,24 @@ describe('runAgentTurn', () => {
 		expect(params.tools.every((t: { strict: boolean }) => t.strict)).toBe(true);
 	});
 
+	it('sends only schema features strict tool use accepts', async () => {
+		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
+		await runAgentTurn(turn());
+		const tools = mocks.create.mock.calls[0][0].tools as { name: string; input_schema: unknown }[];
+		const visit = (node: unknown, path: string) => {
+			if (!node || typeof node !== 'object') return;
+			const n = node as Record<string, unknown>;
+			expect(Array.isArray(n.type), `type array at ${path}`).toBe(false);
+			if (n.type === 'object') expect(n.additionalProperties, `additionalProperties at ${path}`).toBe(false);
+			for (const [k, v] of Object.entries(n)) {
+				if (Array.isArray(v)) v.forEach((item, i) => visit(item, `${path}.${k}[${i}]`));
+				else if (typeof v === 'object') visit(v, `${path}.${k}`);
+			}
+		};
+		for (const tool of tools) visit(tool.input_schema, tool.name);
+		expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['schedule_job', 'create_event', 'remind_me']));
+	});
+
 	it('never offers outward tools to unattended runs', async () => {
 		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Done' }], 'end_turn'));
 		await runAgentTurn(turn({ source: 'job' }));

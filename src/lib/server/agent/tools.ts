@@ -17,6 +17,7 @@ import { htmlToPromptText } from '$lib/server/ai/extract-event';
 import { createPendingAction, type AgentSource, type PendingAction, type ToolTier } from './store';
 import { composeReply, saveComposedDraft, type ComposeRequest } from './compose';
 import { CALENDAR_TOOLS } from './calendar-tools';
+import { JOB_TOOLS } from './job-tools';
 import { telegramConfigured } from '$lib/server/telegram/bot';
 import { addReminder, getLink } from '$lib/server/telegram/store';
 
@@ -491,7 +492,8 @@ export const AGENT_TOOLS: AgentTool[] = [
 	snooze,
 	remindMe,
 	saveDraftTool,
-	sendEmail
+	sendEmail,
+	...JOB_TOOLS
 ];
 
 /** Tools allowed for a source: unattended runs never get outward ones. */

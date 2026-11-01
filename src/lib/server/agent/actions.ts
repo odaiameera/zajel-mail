@@ -1,6 +1,12 @@
 import { authStateForAccount, getAccount, type MailAccountRow } from '$lib/server/auth/accounts';
 import { sendComposed, type ComposedMessage } from './compose';
 import { createDraftedEvent, deleteConfirmedEvent, describeWhen, type EventDraft } from './calendar-tools';
+import { describeSchedule, parseSchedule } from '$lib/server/jobs/schedule';
+import { describeSpec, parseSpec } from '$lib/server/jobs/specs';
+import { createJob } from '$lib/server/jobs/store';
+
+/** Kinds whose confirm also needs a fresh re-check: they keep running unattended. */
+export const STEP_UP_KINDS = new Set(['create_job']);
 import {
 	claimPendingAction,
 	finishPendingAction,
@@ -78,6 +84,25 @@ const EXECUTORS: Record<string, Executor> = {
 		if (!draft || !account) return { success: false, message: 'That event can no longer be added' };
 		await createDraftedEvent(authStateForAccount(account), account.email, action.userId, draft);
 		return { success: true, message: `Added “${draft.title}” and invited ${draft.attendees.join(', ')}` };
+	},
+
+	async create_job(action) {
+		const p = action.payload;
+		const spec = parseSpec(p.spec);
+		const schedule = parseSchedule(p.schedule);
+		const account = ownAccount(action);
+		if (!spec || !schedule || !account || typeof p.title !== 'string') {
+			return { success: false, message: 'That job can no longer be set up' };
+		}
+		const job = createJob({
+			userId: action.userId,
+			accountId: account.id,
+			title: p.title,
+			spec,
+			schedule,
+			timeZone: typeof p.timeZone === 'string' ? p.timeZone : 'UTC'
+		});
+		return 'error' in job ? { success: false, message: job.error } : { success: true, message: `Scheduled “${job.title}”` };
 	},
 
 	async delete_event(action) {
@@ -161,6 +186,18 @@ export function pendingView(action: PendingAction): PendingView {
 					`Invite ${list(p.attendees).join(', ')}`
 				],
 				confirmLabel: 'Add and invite'
+			};
+		}
+		case 'create_job': {
+			const spec = parseSpec(p.spec);
+			const schedule = parseSchedule(p.schedule);
+			const zone = typeof p.timeZone === 'string' ? p.timeZone : 'UTC';
+			return {
+				...base,
+				label: 'Schedule a job',
+				title: String(p.title ?? ''),
+				lines: [...(schedule ? [describeSchedule(schedule, zone)] : []), ...(spec ? [describeSpec(spec)] : [])],
+				confirmLabel: 'Schedule'
 			};
 		}
 		case 'delete_event':
