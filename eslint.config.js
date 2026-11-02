@@ -29,9 +29,9 @@ export default ts.config(
 			'svelte/require-each-key': 'off',
 			// Local Maps and Sets in components are scratch values, not state.
 			'svelte/prefer-svelte-reactivity': 'off',
-			'svelte/prefer-writable-derived': 'off',
-			// Every {@html} renders HTML sanitised on the server or in the viewer.
-			'svelte/no-at-html-tags': 'off'
+			'svelte/prefer-writable-derived': 'off'
+			// `svelte/no-at-html-tags` stays on: each {@html} carries a disable
+			// comment saying where its HTML was sanitised.
 		}
 	},
 	{

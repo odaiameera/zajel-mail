@@ -47,6 +47,7 @@
 			<div class="flex items-center justify-center py-16 text-danger text-sm">{error}</div>
 		{:else}
 			<div class="docx-preview bg-white text-zinc-900 p-10 rounded-lg shadow-sm">
+				<!-- eslint-disable-next-line svelte/no-at-html-tags -- mammoth's output, passed through sanitizeDocxHtml above -->
 				{@html html}
 			</div>
 			{#if warnings.length > 0}

@@ -31,7 +31,9 @@ function varsInCode(): Set<string> {
 
 function varsInReadmeTable(): Set<string> {
 	const readme = readFileSync(join(root, 'README.md'), 'utf8');
-	const section = readme.split('## Configuration')[1].split('\n---')[0];
+	const after = readme.split('## Configuration')[1];
+	if (after === undefined) throw new Error('README.md has no "## Configuration" section');
+	const section = after.split('\n---')[0];
 	const found = new Set<string>();
 	for (const line of section.split('\n')) {
 		if (!line.startsWith('| `')) continue;

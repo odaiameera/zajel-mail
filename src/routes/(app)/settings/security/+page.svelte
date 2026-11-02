@@ -324,6 +324,7 @@
 
 	{#if setup}
 		<div class="max-w-sm space-y-3">
+			<!-- eslint-disable-next-line svelte/no-at-html-tags -- an SVG drawn on the server by qrcode-generator; the otpauth URI becomes QR cells, never markup -->
 			<div class="w-44 h-44 bg-white rounded-lg p-2 [&>svg]:w-full [&>svg]:h-full">{@html setup.qr}</div>
 			<p class="font-mono text-sm text-text select-all">{grouped(setup.secret)}</p>
 			<a href={setup.uri} class="text-sm text-accent-fg hover:underline">Open in app</a>
