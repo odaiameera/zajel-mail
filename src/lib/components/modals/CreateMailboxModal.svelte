@@ -89,7 +89,7 @@
 		previousOpen = open;
 	});
 
-	async function postJson(url: string, body: unknown): Promise<{ ok: boolean; error?: string; data?: any }> {
+	async function postJson(url: string, body: unknown): Promise<{ ok: boolean; error?: string; data?: { id?: string } }> {
 		const res = await fetch(url, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },

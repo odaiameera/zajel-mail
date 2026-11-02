@@ -3,7 +3,6 @@ import type {
 	ComposeAttachment,
 	ComposeEmail,
 	Email,
-	EmailAddress,
 	EmailQueryResult,
 	JMAPResponse,
 	MethodCall

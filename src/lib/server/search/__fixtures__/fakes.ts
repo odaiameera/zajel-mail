@@ -153,7 +153,7 @@ const TOPICS: Record<string, string[]> = {
 	school: ['school', 'teacher', 'homework', 'class', 'مدرسة'],
 	news: ['weekly', 'newsletter', 'digest', 'نشرة']
 };
-const TOPIC_OF = new Map(Object.entries(TOPICS).flatMap(([topic, words], i) => words.map((w) => [w, i] as const)));
+const TOPIC_OF = new Map(Object.entries(TOPICS).flatMap(([, words], i) => words.map((w) => [w, i] as const)));
 export const FAKE_DIMS = 32;
 /** Prompt words every input carries; they say nothing about the topic. */
 const PROMPT_WORDS = new Set(['task', 'search', 'result', 'query', 'title', 'text', 'none', 'from']);

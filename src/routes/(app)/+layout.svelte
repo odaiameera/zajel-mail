@@ -12,7 +12,7 @@
 	import { goto, afterNavigate, onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { PHONE_QUERY, sidebarIsDrawer } from '$lib/stores/viewport';
-	import { composer, openCompose, setMode } from '$lib/stores/compose';
+	import { composer, setMode } from '$lib/stores/compose';
 	import { onMount, setContext, untrack, type Snippet } from 'svelte';
 	import { APP_PANEL, type AppPanelContext } from '$lib/app-panel';
 	import { createReadingPaneStore } from '$lib/stores/readingPane';
@@ -26,9 +26,9 @@
 	import { LABELS_CONTEXT, type LabelsContext } from '$lib/types/labels';
 	import type { LayoutData } from './$types';
 
-	let { data, children }: { data: LayoutData; children: any } = $props();
+	let { data, children }: { data: LayoutData; children: Snippet } = $props();
 
-	// eslint-disable-next-line -- intentionally capturing initial values from server cookies
+	// Intentionally the initial value from the server.
 	let { readingPaneDefault } = data;
 	const readingPane = createReadingPaneStore(readingPaneDefault);
 	setContext('readingPane', readingPane);

@@ -2,7 +2,6 @@ import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { searchMail } from '$lib/server/search/hybrid';
-import { userEmailFromAuth } from '$lib/server/user';
 import { getDefaultPageSize } from '$lib/server/db/queries/app-prefs';
 import { parseSearch } from '$lib/search/parse';
 import { buildJmapFilter, type FilterContext } from '$lib/search/build-filter';
@@ -23,7 +22,6 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	if (!locals.auth) redirect(303, '/login');
 
 	const raw = url.searchParams.get('q')?.trim() ?? '';
-	const userEmail = userEmailFromAuth(locals.auth);
 	const { page, pageSize } = parsePagination(url, locals.user?.id ?? '');
 
 	const tokens = parseSearch(raw);

@@ -72,6 +72,7 @@
 					     between them, not inside "7:00 PM – 8:00 PM". -->
 					<p class="text-sm text-text-secondary mt-0.5">
 						{#each rangeText.split(' · ') as part, i}
+							<!-- eslint-disable-next-line svelte/no-useless-mustaches -- Svelte would trim plain spaces here -->
 							{#if i > 0}{' · '}{/if}<span class="whitespace-nowrap">{part}</span>
 						{/each}
 					</p>

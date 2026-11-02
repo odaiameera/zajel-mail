@@ -551,6 +551,7 @@ Never commit `.env`, `.env.local`, `docker-compose.yml` or anything from `local-
 Run these before opening a pull request. CI runs the same on every push and PR.
 
 ```sh
+npm run lint      # ESLint
 npm run check     # svelte-check + TypeScript
 npm test          # Vitest: unit tests, ICS and CalDAV round trips, and every form posted through a dev server
 npm run build     # production build

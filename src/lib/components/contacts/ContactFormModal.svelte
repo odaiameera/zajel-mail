@@ -4,7 +4,6 @@
 	import {
 		emptyContactForm,
 		contactToForm,
-		type ContactEntryType,
 		type ContactFormValue
 	} from '$lib/contacts/model';
 

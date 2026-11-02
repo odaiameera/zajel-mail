@@ -22,3 +22,8 @@ npm-debug.log*
 # Secrets / local env should never land in an image layer.
 .env
 .env.*
+
+# Local data, old test bundles and agent state.
+local-data
+.test-build
+.hermes

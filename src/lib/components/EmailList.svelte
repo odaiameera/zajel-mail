@@ -374,7 +374,6 @@
 		<header class="@container ribbon h-12 px-4 border-b border-border flex items-center gap-2 shrink-0">
 			{#if selectedIds.size > 0}
 				<div class="w-8 flex justify-center shrink-0">
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div
 							class="w-5 h-5 rounded-md border-2 flex items-center justify-center cursor-pointer transition-colors
 								{allSelected ? 'bg-accent border-accent' : 'border-text-tertiary hover:border-text-secondary'}"
@@ -459,7 +458,6 @@
 				</button>
 			{:else}
 				<div class="w-8 flex justify-center shrink-0">
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div
 							class="w-5 h-5 rounded-md border-2 flex items-center justify-center cursor-pointer transition-colors border-text-tertiary hover:border-text-secondary"
 							onclick={toggleAll}

@@ -175,7 +175,6 @@
 				class="absolute top-full left-0 mt-1 w-full max-w-sm bg-surface border border-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.35)] z-50 py-1"
 			>
 				{#each suggestions as s, i (s.kind === 'list' ? `l:${s.id}` : `p:${s.email}`)}
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
 					<li
 						role="option"
 						aria-selected={i === highlight}

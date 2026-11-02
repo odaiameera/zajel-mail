@@ -720,7 +720,6 @@
 													</button>
 													{#if addToListOpen}
 														<!-- svelte-ignore a11y_click_events_have_key_events -->
-														<!-- svelte-ignore a11y_no_static_element_interactions -->
 														<div class="absolute left-0 top-full mt-1 z-30 min-w-44 max-h-64 overflow-y-auto bg-surface border border-border rounded-lg shadow-lg py-1" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
 															{#each otherLists as list (list.id)}
 																<button type="button" role="menuitem" class="w-full text-left px-3 py-1.5 text-sm text-text hover:bg-surface-hover truncate cursor-pointer" onclick={() => setMembership(list, selected.uid, true)}>
