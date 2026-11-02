@@ -56,6 +56,10 @@ const NOTICE_EXPIRY_MS = 7 * 24 * HOUR_MS;
 // How long a notice waits while alerts are paused before looking again.
 const PAUSED_RECHECK_MS = 5 * 60_000;
 const BUTTON_TIMEOUT_MS = 20_000;
+// A reminder this far past due is no longer a reminder; and a backlog (a
+// chat relinked after months) goes out a run at a time, not as a burst.
+const REMINDER_EXPIRY_MS = 7 * 24 * HOUR_MS;
+const MAX_REMINDERS_PER_RUN = 20;
 const sentLog = new Map<string, number[]>();
 const cappedLogged = new Map<string, number>();
 
@@ -273,7 +277,18 @@ export async function sendTestAlert(userId: string): Promise<'sent' | 'not_linke
 /** Send the agent's reminders that are due. */
 export async function sendDueReminders(nowMs = Date.now()): Promise<void> {
 	if (!telegramConfigured()) return;
+	let sent = 0;
 	for (const reminder of dueReminders(nowMs)) {
+		// A week late it is dropped, linked or not: stale news on the phone helps nobody.
+		if (nowMs - Date.parse(reminder.dueAt) > REMINDER_EXPIRY_MS) {
+			if (claimReminder(reminder.id, nowMs)) {
+				markReminderSent(reminder.id);
+				logEvent('warn', 'telegram', 'reminder_expired', { daysLate: Math.floor((nowMs - Date.parse(reminder.dueAt)) / (24 * HOUR_MS)) });
+			}
+			continue;
+		}
+		// The rest wait for the next run.
+		if (sent >= MAX_REMINDERS_PER_RUN) break;
 		const link = getLink(reminder.userId);
 		// Paused or unlinked: it waits rather than being lost.
 		if (!link || link.paused || !claimReminder(reminder.id)) continue;
@@ -281,6 +296,7 @@ export async function sendDueReminders(nowMs = Date.now()): Promise<void> {
 		try {
 			await sendMessage(link.chatId, `<b>Reminder</b>\n${escapeHtml(reminder.text)}`, buttons);
 			markReminderSent(reminder.id);
+			sent += 1;
 			noteSendOk();
 		} catch (err) {
 			// Not delivered: give it back unless Telegram refused it for good,

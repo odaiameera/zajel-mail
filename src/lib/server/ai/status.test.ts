@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const env = vi.hoisted(() => ({}) as Record<string, string | undefined>);
 vi.mock('$env/dynamic/private', () => ({ env }));
@@ -127,11 +127,57 @@ describe('assistant status', () => {
 		expect(await checkAssistant()).toEqual({ ok: false, error: "This key can't use claude-haiku-9-9" });
 	});
 
+	it('checks the fallback model too, when the operator named one', async () => {
+		env.ANTHROPIC_API_KEY = 'sk-ant-test';
+		env.ANTHROPIC_FALLBACK_MODEL = 'claude-sonnet-9-9';
+		retrieve.mockImplementation(async (model: string) => {
+			if (model === 'claude-sonnet-9-9') {
+				throw new Anthropic.NotFoundError(404, { type: 'error', error: { type: 'not_found_error', message: 'model' } }, 'model', new Headers());
+			}
+			return { id: model };
+		});
+		expect(await checkAssistant()).toEqual({ ok: false, error: "This key can't use claude-sonnet-9-9" });
+		expect(retrieve.mock.calls.map((call) => call[0])).toEqual(['claude-opus-5-5', 'claude-haiku-5-5', 'claude-sonnet-9-9']);
+	});
+
 	it('reports a rejected key', async () => {
 		env.ANTHROPIC_API_KEY = 'sk-ant-bad';
 		retrieve.mockRejectedValue(
 			new Anthropic.AuthenticationError(401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }, 'invalid', new Headers())
 		);
 		expect(await checkAssistant()).toEqual({ ok: false, error: 'The AI service rejected its API key' });
+	});
+});
+
+describe('checking OpenAI and Ollama', () => {
+	const fetchMock = vi.fn();
+	beforeEach(() => {
+		fetchMock.mockReset();
+		vi.stubGlobal('fetch', fetchMock);
+	});
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('sends OpenAI a small real chat request, the way a turn would', async () => {
+		env.OPENAI_API_KEY = 'sk-test';
+		fetchMock.mockResolvedValue(new Response(JSON.stringify({ output_text: 'OK' }), { status: 200 }));
+		expect(await checkAssistant()).toEqual({ ok: true });
+		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(String(url)).toBe('https://api.openai.com/v1/responses');
+		expect(JSON.parse(String(init.body))).toMatchObject({ model: 'gpt-5.6-terra', store: false });
+	});
+
+	it('reports what the chat request failed with', async () => {
+		env.OPENAI_API_KEY = 'sk-bad';
+		fetchMock.mockResolvedValue(new Response('{}', { status: 401 }));
+		expect(await checkAssistant()).toEqual({ ok: false, error: 'The AI service rejected its API key' });
+	});
+
+	it('asks Ollama for a reply, not just its model list', async () => {
+		env.OLLAMA_URL = 'http://ollama.test:11434';
+		fetchMock.mockResolvedValue(new Response(JSON.stringify({ message: { content: 'OK' } }), { status: 200 }));
+		expect(await checkAssistant()).toEqual({ ok: true });
+		expect(String(fetchMock.mock.calls[0][0])).toBe('http://ollama.test:11434/api/chat');
 	});
 });

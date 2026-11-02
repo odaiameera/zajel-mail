@@ -7,7 +7,7 @@ import {
 	listCalendarsWithMeta
 } from '$lib/server/calendar/service';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
-import { parseLocalDate, parseLocalTime } from './local-time';
+import { localClock, parseLocalDate, parseLocalTime } from './local-time';
 import { createPendingAction } from './store';
 import type { AgentTool, ToolContext } from './tools';
 
@@ -152,7 +152,13 @@ const searchCalendar: AgentTool = {
 				.slice(0, 60)
 				.map((e) => {
 					const occurrence = e.recurring && e.recurrenceId ? ` | occurrence=${e.recurrenceId}` : '';
-					const line = `id=${e.id}${occurrence} | ${e.title} | ${e.start} – ${e.end}${e.location ? ` | ${e.location}` : ''}`;
+					// On the user's clock, like every time the model reads.
+					const start = localClock(e.start, ctx.timeZone);
+					const end = localClock(e.end, ctx.timeZone);
+					const when = e.allDay
+						? `${start.slice(0, 10)} all day`
+						: `${start} – ${start.slice(0, 10) === end.slice(0, 10) ? end.slice(11) : end}`;
+					const line = `id=${e.id}${occurrence} | ${e.title} | ${when}${e.location ? ` | ${e.location}` : ''}`;
 					return `<untrusted_event id="${e.id}">\n${line.replace(/<\/?untrusted_/g, '')}\n</untrusted_event>`;
 				})
 				.join('\n')

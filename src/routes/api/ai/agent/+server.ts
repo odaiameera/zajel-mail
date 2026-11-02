@@ -9,7 +9,8 @@ import {
 import { claudeConfigured } from '$lib/server/ai/claude';
 import { runAgentTurn } from '$lib/server/agent/runtime';
 import { pendingView } from '$lib/server/agent/actions';
-import { trackTurn } from '$lib/server/agent/turns';
+import { endTurnJournal, noteTurnProgress, startTurnJournal, takeInterruptedTurns } from '$lib/server/agent/store';
+import { trackTurn, turnRunning } from '$lib/server/agent/turns';
 import { aiProvider, MailAssistantError, type AIChatMessage } from '$lib/server/ai/mail-assistant';
 import { taskAdapterProviders } from '$lib/server/ai/task-adapter';
 import { renderAgentMarkdown } from '$lib/server/ai/markdown';
@@ -30,6 +31,8 @@ const ACTIONS = new Set<MailAgentAction>([
 	'propose_task'
 ]);
 const DAY_MS = 86_400_000;
+/** How the transcript records a turn the process lost after it had changed something. */
+const INTERRUPTED = 'I was interrupted before I could answer. Done before that:';
 
 /** What the panel is told when a turn fails, with the cause in the event log. */
 function failure(error: unknown, provider: string, started: number): Record<string, unknown> {
@@ -98,6 +101,16 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			? requestedId
 			: createConversation(userEmail);
 
+	// A turn this session lost (a restart mid-turn) may have changed the
+	// mailbox before it could answer. What it did goes into the transcript
+	// first, so the user sees it and this turn doesn't do it again.
+	if (locals.user && !turnRunning(conversationId)) {
+		for (const lost of takeInterruptedTurns(locals.user.id, conversationId)) {
+			appendMessage(conversationId, userEmail, 'user', lost.message);
+			appendMessage(conversationId, userEmail, 'assistant', `${INTERRUPTED} ${lost.done.join('; ')}.`);
+		}
+	}
+
 	// History comes from storage, not from the request. The client used to
 	// send the transcript back with every turn, which meant it could invent
 	// assistant turns the agent had never produced.
@@ -127,6 +140,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			conversationId,
 			stored.length,
 			(async () => {
+				// Each change is journalled as it happens; the journal goes once
+				// the reply is saved. A turn that never gets there leaves it for
+				// the next turn to put into the transcript (takeInterruptedTurns).
+				const journal = startTurnJournal({ userId, accountId: accountRowId, conversationId, message });
 				try {
 					const result = await runAgentTurn({
 						auth,
@@ -139,7 +156,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						history: conversation,
 						timeZone,
 						today: localDate(todayStartMs, timeZone),
-						currentEmailId
+						currentEmailId,
+						onProgress: (done) => noteTurnProgress(journal, done)
 					});
 					// A refusal stays out of the transcript: replayed as history in
 					// every later turn, it would only invite another.
@@ -147,6 +165,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						appendMessage(conversationId, userEmail, 'user', message);
 						appendMessage(conversationId, userEmail, 'assistant', result.message);
 					}
+					endTurnJournal(journal);
 					return {
 						message: result.message,
 						html: renderAgentMarkdown(result.message),

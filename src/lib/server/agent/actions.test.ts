@@ -5,8 +5,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'ameera-actions-')), 'test.db');
 
-const mocks = vi.hoisted(() => ({ sendComposed: vi.fn() }));
-vi.mock('./compose', () => ({ sendComposed: mocks.sendComposed }));
+const mocks = vi.hoisted(() => ({ sendComposed: vi.fn(), saveComposedDraft: vi.fn() }));
+vi.mock('./compose', () => ({ sendComposed: mocks.sendComposed, saveComposedDraft: mocks.saveComposedDraft }));
 vi.mock('$lib/server/auth/accounts', () => ({
 	getAccount: (id: string) => ({ id, user_id: id === 'acct-other' ? 'someone-else' : 'user-1', email: 'me@example.test' }),
 	authStateForAccount: (account: { id: string }) => ({ accountId: `jmap-${account.id}` })
@@ -14,8 +14,17 @@ vi.mock('$lib/server/auth/accounts', () => ({
 
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
-import { createPendingAction, getPendingAction, listAudit, listPendingActions } from './store';
-import { decidePendingAction } from './actions';
+import {
+	createPendingAction,
+	endTurnJournal,
+	getPendingAction,
+	listAudit,
+	listPendingActions,
+	noteTurnProgress,
+	startTurnJournal,
+	takeInterruptedTurns
+} from './store';
+import { decidePendingAction, pendingView } from './actions';
 
 const USER = 'user-1';
 const message = { to: ['dana@example.test'], cc: [], subject: 'Re: Lunch?', text: 'Thursday works.', inReplyTo: null, references: null, replyToEmailId: null };
@@ -37,6 +46,7 @@ beforeAll(() => {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.sendComposed.mockResolvedValue({ success: true });
+	mocks.saveComposedDraft.mockResolvedValue({ success: true });
 	getDb().prepare('DELETE FROM agent_actions').run();
 	getDb().prepare('DELETE FROM agent_audit').run();
 });
@@ -97,5 +107,47 @@ describe('the cards a chat session still has', () => {
 
 		expect(listPendingActions(USER, 'conv-1').map((a) => a.id)).toEqual([first.id, second.id]);
 		expect(listPendingActions('intruder', 'conv-1')).toEqual([]);
+	});
+});
+
+describe('a draft to someone else', () => {
+	it('shows its text on the card and is saved once on confirm, in the account it was written in', async () => {
+		const action = createPendingAction({ userId: USER, accountId: 'acct-2', conversationId: null, kind: 'save_draft', payload: message });
+		expect(pendingView(action)).toMatchObject({
+			label: 'Save draft',
+			title: 'Re: Lunch?',
+			lines: ['To dana@example.test'],
+			body: 'Thursday works.',
+			confirmLabel: 'Save draft'
+		});
+		expect(await decidePendingAction(USER, action.id, 'confirm')).toEqual({ status: 200, message: 'Saved a draft to dana@example.test' });
+		expect(mocks.saveComposedDraft).toHaveBeenCalledWith({ accountId: 'jmap-acct-2' }, 'me@example.test', expect.objectContaining({ to: ['dana@example.test'] }));
+		expect((await decidePendingAction(USER, action.id, 'confirm')).status).toBe(409);
+		expect(mocks.saveComposedDraft).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('a turn’s journal', () => {
+	const open = (conversationId: string, text: string) =>
+		startTurnJournal({ userId: USER, accountId: 'acct-1', conversationId, message: text });
+
+	it('hands what an interrupted turn did to the next turn in that session, once, and is never a card', () => {
+		const interrupted = open('conv-1', 'Tidy up');
+		noteTurnProgress(interrupted, ['Archived 2 messages']);
+		noteTurnProgress(interrupted, ['Archived 2 messages', 'Marked read 1 message']);
+		// Nothing done before the process stopped: nothing to tell.
+		open('conv-1', 'Hello');
+		// Finished normally: its reply holds what it did.
+		const finished = open('conv-1', 'Star it');
+		noteTurnProgress(finished, ['Starred 1 message']);
+		endTurnJournal(finished);
+		// Another session's turn stays with that session.
+		noteTurnProgress(open('conv-2', 'Elsewhere'), ['Snoozed “x” until 2026-11-03 09:00']);
+
+		expect(listPendingActions(USER, 'conv-1')).toEqual([]);
+		expect(takeInterruptedTurns('intruder', 'conv-1')).toEqual([]);
+		expect(takeInterruptedTurns(USER, 'conv-1')).toEqual([{ message: 'Tidy up', done: ['Archived 2 messages', 'Marked read 1 message'] }]);
+		expect(takeInterruptedTurns(USER, 'conv-1')).toEqual([]);
+		expect(takeInterruptedTurns(USER, 'conv-2')).toHaveLength(1);
 	});
 });

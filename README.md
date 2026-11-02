@@ -175,11 +175,11 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
 - **Persistent conversations** with history. Answers are rendered in Markdown.
 
 **On Claude, Zajel acts.** With `ANTHROPIC_API_KEY` set, Zajel runs on **Claude Opus 5.5** for the agent and **Claude Haiku 5.5** for writing, with native tool use.
-- **Your own mailbox:** it marks, stars, archives, moves, labels, snoozes, drafts and sets Telegram reminders. These changes are reversible, happen straight away and are logged.
-- **Anything that leaves your account or changes your calendar** (sending, adding or deleting an event, invitations, scheduling a job) becomes a card you confirm.
-- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), with **Mark read**, **Snooze 1h** and **Archive** buttons, and sends reminders. It doesn't take typed messages.
+- **Your own mailbox:** it marks, stars, archives, moves, labels and snoozes mail, saves drafts addressed to you and sets Telegram reminders. These changes are reversible, happen straight away and are logged. One request can archive or move up to 100 messages, move up to 30 to Trash and set up to 3 reminders this way; for more, Zajel asks you.
+- **Anything that leaves your account or changes your calendar** (sending, a draft to someone else, adding or deleting an event, invitations, scheduling a job) becomes a card you confirm.
+- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), with **Mark read**, **Snooze 1h** and **Archive** buttons, and sends reminders. A reminder more than a week late is dropped rather than sent. It doesn't take typed messages.
 - **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools only. They run once, hourly, daily, on weekdays, on chosen days of the week, or weekly.
-- **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from what each provider offers. **Check** sends a real request.
+- **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from what each provider offers. **Check** sends a real request to the provider in use, and checks the fallback model when `ANTHROPIC_FALLBACK_MODEL` is set.
 
 Without an Anthropic key, Zajel answers and proposes but doesn't act. It runs on **OpenAI's GPT-5.6** when `OPENAI_API_KEY` is set:
 - `gpt-5.6-terra` by default, the balanced tier
@@ -329,8 +329,8 @@ Zajel Mail holds the keys to your mail, so security comes first.
 - **Spam and authentication signals** are visible: the spam score, authentication results and sender trust are shown, not hidden.
 
 **AI that asks first**
-- **Anything that leaves your account waits for your click.** Sending, calendar changes, invitations and scheduled jobs are cards that name exactly what will happen.
-- **What Zajel does on its own stays in your mailbox and can be undone.** Marking, filing, labelling, snoozing and drafts are logged in Settings → Agent.
+- **Anything that leaves your account waits for your click.** Sending, drafts to other people, calendar changes, invitations and scheduled jobs are cards that name exactly what will happen.
+- **What Zajel does on its own stays in your mailbox and can be undone.** Marking, filing, labelling, snoozing, drafts to you and reminders are logged in Settings → Agent.
 
 ### Where your data goes
 
@@ -507,7 +507,7 @@ To let Zajel create tasks, configure any combination of Todoist, Linear, Notion 
 | `DATABASE_PATH` | No | SQLite path. Defaults to a local development database, or `/data/ameera.db` in production. |
 | `ANTHROPIC_API_KEY` | AI only | Runs Zajel on Claude, as an agent that acts on your mailbox. |
 | `ANTHROPIC_MODEL`, `ANTHROPIC_FAST_MODEL` | No | The agent and writing models. Default to Claude Opus 5.5 and Claude Haiku 5.5; Settings → Agent can override them. |
-| `ANTHROPIC_FALLBACK_MODEL` | No | Takes a turn when the agent model is rate-limited. Defaults to Claude Sonnet 5.5. |
+| `ANTHROPIC_FALLBACK_MODEL` | No | Takes a turn when the agent model is rate-limited. Defaults to Claude Sonnet 5.5. Settings → Agent → Check tests it when set. |
 | `AI_PROVIDER` | No | `anthropic`, `openai` or `ollama`, when more than one key is set. Settings → Agent overrides it. |
 | `OPENAI_API_KEY` | AI only | Runs Zajel and event extraction on OpenAI. |
 | `OPENAI_MODEL` | No | OpenAI model. Defaults to `gpt-5.6-terra`; `gpt-5.6-luna` is faster and cheaper. |

@@ -60,6 +60,7 @@ import { runJob, thrownStatus } from './runner';
 import { JOB_TOOLS } from '$lib/server/agent/job-tools';
 import { decidePendingAction } from '$lib/server/agent/actions';
 import type { ToolContext } from '$lib/server/agent/tools';
+import { newTurnBudget } from '$lib/server/agent/budget';
 import { MailAssistantError } from '$lib/server/ai/mail-assistant';
 import { TelegramError } from '$lib/server/telegram/bot';
 import { JMAPAuthError, JMAPError, JMAPMethodError } from '$lib/jmap/client';
@@ -284,6 +285,7 @@ describe('proposing a job', () => {
 		conversationId: null,
 		source,
 		timeZone: ZONE,
+		budget: newTurnBudget(),
 		mailboxes: async () => []
 	});
 	const input = {

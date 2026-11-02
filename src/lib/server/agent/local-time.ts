@@ -1,4 +1,4 @@
-import { parseWallClock, type WallClock } from '$lib/server/calendar/tz';
+import { parseWallClock, utcToWallClock, type WallClock } from '$lib/server/calendar/tz';
 
 /**
  * Local dates and times as the model writes them: "YYYY-MM-DDTHH:mm", or
@@ -28,6 +28,18 @@ export function parseLocalTime(value: unknown): WallClock | null {
 	if (typeof value !== 'string') return null;
 	const wall = parseWallClock(value.trim().slice(0, 20));
 	return wall && exists(wall) ? wall : null;
+}
+
+/**
+ * An instant as "YYYY-MM-DD HH:mm" on the user's own clock, for what the
+ * model reads: it is bad at offset arithmetic, so results never carry UTC.
+ */
+export function localClock(iso: string | undefined, timeZone: string): string {
+	const ms = Date.parse(iso ?? '');
+	if (!Number.isFinite(ms)) return iso ?? '';
+	const w = utcToWallClock(ms, timeZone);
+	const p = (n: number) => String(n).padStart(2, '0');
+	return `${w.year}-${p(w.month)}-${p(w.day)} ${p(w.hour)}:${p(w.minute)}`;
 }
 
 /** A real date, "YYYY-MM-DD", as the wall clock of its midnight, or null. */

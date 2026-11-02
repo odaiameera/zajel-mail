@@ -5,6 +5,8 @@ import { getDb } from '../db/index';
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const BUTTON_TTL_DAYS = 7;
+/** A sent (or given-up) reminder stays this long, then goes. */
+const REMINDER_KEEP_DAYS = 30;
 
 export interface TelegramLink {
 	userId: string;
@@ -70,6 +72,7 @@ function prepareStmts() {
 		),
 		reminderSent: db.prepare(`UPDATE agent_reminders SET sent_at = datetime('now'), claimed_at = NULL WHERE id = ?`),
 		reminderRelease: db.prepare(`UPDATE agent_reminders SET claimed_at = NULL WHERE id = ?`),
+		reminderPrune: db.prepare(`DELETE FROM agent_reminders WHERE sent_at IS NOT NULL AND sent_at < datetime('now', ?)`),
 		buttonRelease: db.prepare(`UPDATE telegram_buttons SET used_at = NULL WHERE id = ?`),
 		stateGet: db.prepare(`SELECT value FROM telegram_state WHERE key = ?`),
 		stateSet: db.prepare(
@@ -189,6 +192,7 @@ const CLAIM_MS = 2 * 60_000;
 const claimWindow = (nowMs: number) => ({ now: new Date(nowMs).toISOString(), stale: new Date(nowMs - CLAIM_MS).toISOString() });
 
 export function dueReminders(nowMs = Date.now()): AgentReminder[] {
+	stmts().reminderPrune.run(`-${REMINDER_KEEP_DAYS} days`);
 	return (stmts().remindersDue.all(claimWindow(nowMs)) as {
 		id: string;
 		user_id: string;

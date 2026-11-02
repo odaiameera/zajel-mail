@@ -10,6 +10,10 @@ const mocks = vi.hoisted(() => ({
 	updateEmailMailboxes: vi.fn(),
 	sendEmail: vi.fn(),
 	getEmailDetail: vi.fn(),
+	moveEmails: vi.fn(),
+	searchEmails: vi.fn(async () => ({ emails: [] as Record<string, unknown>[], total: 0 })),
+	saveDraft: vi.fn(async () => ({ success: true })),
+	addReminder: vi.fn(() => 'rem-1'),
 	createEvent: vi.fn(async () => ({ id: 'ev-new' })),
 	runChat: vi.fn(async () => 'Thanks, Thursday works for me.'),
 	claudeConfigured: true,
@@ -36,17 +40,19 @@ vi.mock('$lib/server/log', async (importOriginal) => ({
 vi.mock('$lib/jmap/auth', () => ({ createClient: () => ({}) }));
 vi.mock('$lib/jmap/email', () => ({
 	getEmailDetail: mocks.getEmailDetail,
-	moveEmails: vi.fn(),
-	searchEmails: vi.fn(async () => ({ emails: [], total: 0 })),
+	moveEmails: mocks.moveEmails,
+	searchEmails: mocks.searchEmails,
 	setEmailCategory: vi.fn(),
 	updateEmailMailboxes: mocks.updateEmailMailboxes,
-	saveDraft: vi.fn(async () => ({ success: true })),
+	saveDraft: mocks.saveDraft,
 	sendEmail: mocks.sendEmail
 }));
 vi.mock('$lib/jmap/mailbox', () => ({
 	getMailboxes: async () => [
 		{ id: 'IN', name: 'Inbox', role: 'inbox', parentId: null },
-		{ id: 'JK', name: 'Junk', role: 'junk', parentId: null }
+		{ id: 'JK', name: 'Junk', role: 'junk', parentId: null },
+		{ id: 'TR', name: 'Trash', role: 'trash', parentId: null },
+		{ id: 'DR', name: 'Drafts', role: 'drafts', parentId: null }
 	],
 	ensureArchiveMailbox: async () => 'AR',
 	ensureRemindMeLaterMailbox: async () => 'RML'
@@ -62,6 +68,9 @@ vi.mock('$lib/server/calendar/service', () => ({
 }));
 vi.mock('$lib/server/db/queries/reminders', () => ({ scheduleReminder: vi.fn() }));
 vi.mock('$lib/server/db/queries/jev-decisions', () => ({ getDecision: () => null }));
+vi.mock('$lib/server/db/queries/identities', () => ({ listIdentities: () => [{ email: 'alias@example.test' }] }));
+vi.mock('$lib/server/telegram/bot', () => ({ telegramConfigured: () => true }));
+vi.mock('$lib/server/telegram/store', () => ({ getLink: () => ({ chatId: '555' }), addReminder: mocks.addReminder }));
 
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
@@ -468,6 +477,104 @@ describe('runAgentTurn', () => {
 			content: expect.stringContaining('2026-11-31T09:00')
 		});
 		expect(mocks.getEmailDetail).not.toHaveBeenCalled();
+	});
+
+	describe('what one turn may do on its own', () => {
+		const idList = (n: number, from = 0) => Array.from({ length: n }, (_, i) => `e${from + i}`);
+		// The tool results the model was sent after its first reply. The runtime
+		// hands the same array to every request, so index, don't take the last.
+		const resultsOf = (call: number) => mocks.create.mock.calls[call][0].messages[2].content;
+		const draft = (id: string, to: string[]) =>
+			toolUse(id, 'save_draft', { to, cc: [], subject: 'Notes', reply_to_email_id: null, points: 'Remember the forms', exact_body: null });
+
+		it('stops trashing past the turn’s allowance and tells the model to ask', async () => {
+			mocks.create
+				.mockResolvedValueOnce(
+					reply([toolUse('t1', 'move_to_trash', { email_ids: idList(30) }), toolUse('t2', 'move_to_trash', { email_ids: idList(1, 30) })])
+				)
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'Stopped at 30.' }], 'end_turn'));
+			const result = await runAgentTurn(turn());
+			expect(mocks.moveEmails).toHaveBeenCalledTimes(1);
+			expect(result.done).toEqual(['Moved 30 messages to Trash']);
+			expect(resultsOf(1)[1]).toMatchObject({ is_error: true, content: expect.stringContaining('at most 30 messages') });
+		});
+
+		it('archives and files up to a hundred messages a turn, then asks', async () => {
+			mocks.create
+				.mockResolvedValueOnce(
+					reply([
+						toolUse('t1', 'archive', { email_ids: idList(60) }),
+						toolUse('t2', 'move_to_folder', { email_ids: idList(40, 60), folder_id: 'JK' }),
+						toolUse('t3', 'archive', { email_ids: idList(1, 100) })
+					])
+				)
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+			await runAgentTurn(turn());
+			expect(mocks.moveEmails).toHaveBeenCalledTimes(2);
+			expect(resultsOf(1)[2]).toMatchObject({ is_error: true, content: expect.stringContaining('at most 100 messages') });
+		});
+
+		it('sets at most three Telegram reminders a turn', async () => {
+			mocks.create
+				.mockResolvedValueOnce(
+					reply([1, 2, 3, 4].map((i) => toolUse(`t${i}`, 'remind_me', { text: `Reminder ${i}`, at: '2030-01-01T09:00', email_id: null })))
+				)
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+			await runAgentTurn(turn());
+			expect(mocks.addReminder).toHaveBeenCalledTimes(3);
+			expect(resultsOf(1)[3]).toMatchObject({ is_error: true, content: expect.stringContaining('at most 3 reminders') });
+		});
+
+		it('saves a draft to the user straight away, but a draft to anyone else waits for a click', async () => {
+			mocks.create
+				.mockResolvedValueOnce(reply([draft('t1', ['Me@example.test']), draft('t2', ['alias@example.test']), draft('t3', ['dana@example.test'])]))
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+			const result = await runAgentTurn(turn());
+			expect(mocks.saveDraft).toHaveBeenCalledTimes(2);
+			expect(result.done).toEqual(['Saved a draft to Me@example.test: “Notes”', 'Saved a draft to alias@example.test: “Notes”']);
+			expect(result.pending).toHaveLength(1);
+			expect(result.pending[0]).toMatchObject({
+				kind: 'save_draft',
+				payload: { to: ['dana@example.test'], subject: 'Notes', text: 'Thanks, Thursday works for me.' }
+			});
+			expect(resultsOf(1)[2].content).toContain('Nothing has been saved');
+			expect(listAudit(USER).find((e) => e.outcome === 'proposed')).toMatchObject({ tool: 'save_draft', tier: 'outward' });
+		});
+
+		it('refuses a draft to someone else from an unattended run', async () => {
+			mocks.create
+				.mockResolvedValueOnce(reply([draft('t1', ['dana@example.test'])]))
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+			const result = await runAgentTurn(turn({ source: 'job' }));
+			expect(mocks.saveDraft).not.toHaveBeenCalled();
+			expect(result.pending).toEqual([]);
+			expect(resultsOf(1)[0]).toMatchObject({ is_error: true });
+		});
+
+		it('reports each change as it happens, so a restart loses none of them', async () => {
+			const onProgress = vi.fn();
+			mocks.create
+				.mockResolvedValueOnce(
+					reply([toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true }), toolUse('t2', 'star', { email_ids: ['e2'], starred: true })])
+				)
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+			await runAgentTurn(turn({ onProgress }));
+			expect(onProgress.mock.calls.map((call) => call[0])).toEqual([['Marked read 1 message'], ['Marked read 1 message', 'Starred 1 message']]);
+		});
+
+		it('gives dates on the user’s own clock, not in UTC', async () => {
+			mocks.searchEmails.mockResolvedValueOnce({
+				emails: [{ id: 'e5', receivedAt: '2026-11-02T22:30:00Z', from: [{ email: 'a@example.test' }], subject: 'Late', mailboxIds: { IN: true }, keywords: {}, preview: '' }],
+				total: 1
+			});
+			mocks.create
+				.mockResolvedValueOnce(reply([toolUse('t1', 'inbox_triage', { limit: 10, unread_only: false })]))
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+			await runAgentTurn(turn());
+			// Amman is three hours ahead of UTC.
+			expect(resultsOf(1)[0].content).toContain('date=2026-11-03 01:30');
+			expect(mocks.create.mock.calls[0][0].system[1].text).toContain('already in that zone');
+		});
 	});
 
 	it('fences email content as untrusted, so it cannot close the fence itself', async () => {

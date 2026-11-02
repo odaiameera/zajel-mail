@@ -277,6 +277,40 @@ describe('reminders', () => {
 		await sendDueReminders();
 		expect(sentTexts()).toEqual(['<b>Reminder</b>\nCall the bank']);
 	});
+
+	it('drops a reminder a week late instead of sending it, linked or not', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		const remind = (text: string, dueAt: number, userId = 'user-1') =>
+			addReminder({ userId, accountId: null, emailId: null, text, dueAt: new Date(dueAt).toISOString() });
+		remind('Old news', Date.now() - 8 * 86_400_000);
+		remind('Never linked', Date.now() - 8 * 86_400_000, 'user-2');
+		remind('Fresh', Date.now() - 1000);
+		await sendDueReminders();
+		await sendDueReminders();
+		expect(sentTexts()).toEqual(['<b>Reminder</b>\nFresh']);
+		const settled = getDb().prepare(`SELECT COUNT(*) AS n FROM agent_reminders WHERE sent_at IS NOT NULL`).get() as { n: number };
+		expect(settled.n).toBe(3);
+	});
+
+	it('sends at most twenty a run, and the rest next time', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		for (let i = 0; i < 25; i += 1) {
+			addReminder({ userId: 'user-1', accountId: null, emailId: null, text: `r${i}`, dueAt: new Date(Date.now() - 60_000 + i).toISOString() });
+		}
+		await sendDueReminders();
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(20);
+		await sendDueReminders();
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(25);
+	});
+
+	it('forgets sent reminders after a month', async () => {
+		const id = addReminder({ userId: 'user-1', accountId: null, emailId: null, text: 'Gone', dueAt: new Date().toISOString() });
+		getDb().prepare(`UPDATE agent_reminders SET sent_at = datetime('now', '-31 days') WHERE id = ?`).run(id);
+		await sendDueReminders();
+		expect(getDb().prepare('SELECT COUNT(*) AS n FROM agent_reminders WHERE id = ?').get(id)).toEqual({ n: 0 });
+	});
 });
 
 // Last: it fills the hourly cap, which is kept in memory for the whole file.
