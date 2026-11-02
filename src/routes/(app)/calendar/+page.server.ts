@@ -4,10 +4,21 @@ import { getEventsInRange } from '$lib/server/calendar/service';
 import { userEmailFromAuth } from '$lib/server/user';
 import { isCalendarView, type CalendarInfo, type CalendarView, type EventInstance } from '$lib/calendar/types';
 import { readPreferences } from '$lib/server/preferences';
+import { isValidTimeZone } from '$lib/server/calendar/tz';
 
 export type { CalendarView };
 
 const DAY_MS = 86400000;
+
+/** The cookie the browser leaves with its IANA zone, so "today" is the user's day and not the server's. */
+const TIME_ZONE_COOKIE = 'calendar_tz';
+
+/** Today's `YYYY-MM-DD` in `zone`; UTC when the zone is missing or unknown. */
+function todayIn(zone: string | undefined): string {
+	const timeZone = zone && zone.length <= 64 && isValidTimeZone(zone) ? zone : 'UTC';
+	// The Swedish locale's default date form is ISO.
+	return new Intl.DateTimeFormat('sv', { timeZone }).format(new Date());
+}
 
 export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 	if (!locals.auth) redirect(303, '/login');
@@ -23,15 +34,12 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 			: 'month';
 
 	const dateParam = url.searchParams.get('date');
-	let date: string;
-	if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) && !isNaN(Date.parse(dateParam))) {
-		date = dateParam;
-	} else {
-		// Server-local today; the client URL always carries an explicit date
-		// after the first navigation, so tz skew only affects the very first
-		// paint by at most a day.
-		date = new Date().toISOString().slice(0, 10);
-	}
+	const dateFromUrl = !!dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) && !isNaN(Date.parse(dateParam));
+	// No date in the URL (the rail's plain /calendar link, a notification):
+	// "today" is the user's, not the server's. The browser leaves its zone in
+	// a cookie on its first visit; before that the UTC date stands, and the
+	// page corrects itself client-side when that differs from the local day.
+	const date = dateFromUrl ? (dateParam as string) : todayIn(cookies.get(TIME_ZONE_COOKIE));
 
 	const [y, m, d] = date.split('-').map(Number);
 	const anchor = Date.UTC(y, m - 1, d);
@@ -76,5 +84,5 @@ export const load: PageServerLoad = async ({ locals, url, cookies }) => {
 		calendarErrorDetail = err instanceof Error ? err.message : String(err);
 	}
 
-	return { calendars, events, view, date, weekStart, calendarError, calendarErrorDetail };
+	return { calendars, events, view, date, dateFromUrl, weekStart, calendarError, calendarErrorDetail };
 };

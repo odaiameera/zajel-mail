@@ -1,3 +1,5 @@
+import ICAL from 'ical.js';
+
 /**
  * Wall-clock ⇄ UTC conversion backed by the Intl API, so any IANA timezone
  * the runtime knows works without shipping VTIMEZONE data. iCalendar stores
@@ -5,7 +7,20 @@
  * TZID-by-reference form Stalwart emits), and recurrence math must happen in
  * wall-clock space for DST to behave like Google/Apple calendars — a 9am
  * weekly meeting stays 9am local across transitions.
+ *
+ * Zones Intl cannot name (Outlook's "Customized Time Zone", a vendor's own
+ * id) are read from the VTIMEZONE the object carries, through ical.js.
  */
+
+/** The zone of a time written with neither TZID nor Z: it reads as written wherever it is viewed. */
+export const FLOATING = 'floating';
+
+// Definitions registered from VTIMEZONE blocks, keyed by their TZID. One
+// object is parsed and expanded (or rewritten) in one synchronous stretch,
+// so the definition in force is the one that object came with; two senders
+// using the same made-up name with different rules could only collide
+// across requests, and the last parse wins.
+const customZones = new Map<string, ICAL.Timezone>();
 
 export interface WallClock {
 	year: number;
@@ -128,7 +143,26 @@ export function normalizeTzid(tzid: string): string | null {
 	if (isValidTimeZone(clean)) return clean;
 	const mapped = WINDOWS_TZ[clean];
 	if (mapped && isValidTimeZone(mapped)) return mapped;
+	if (customZones.has(clean)) return clean;
 	return null;
+}
+
+/**
+ * Make a VTIMEZONE's rules available under its TZID when nothing else can
+ * resolve it. Zones Intl knows are left to Intl: current rules rather than
+ * the snapshot a sender shipped. Returns the id registered, or null.
+ */
+export function registerVTimezone(component: ICAL.Component): string | null {
+	const tzid = component.getFirstPropertyValue('tzid');
+	if (typeof tzid !== 'string' || !tzid.trim()) return null;
+	const clean = tzid.replace(/^\//, '').trim();
+	if (isValidTimeZone(clean) || (WINDOWS_TZ[clean] && isValidTimeZone(WINDOWS_TZ[clean]))) return null;
+	try {
+		customZones.set(clean, new ICAL.Timezone({ component, tzid: clean }));
+	} catch {
+		return null;
+	}
+	return clean;
 }
 
 /** Milliseconds east of UTC for `timeZone` at the given UTC instant. */
@@ -160,7 +194,15 @@ function tzOffsetMs(timeZone: string, utcMs: number): number {
  */
 export function wallClockToUtc(wc: WallClock, timeZone: string): number {
 	const naive = Date.UTC(wc.year, wc.month - 1, wc.day, wc.hour, wc.minute, wc.second);
-	if (timeZone === 'UTC' || timeZone === 'Etc/UTC' || timeZone === 'Z') return naive;
+	if (timeZone === 'UTC' || timeZone === 'Etc/UTC' || timeZone === 'Z' || timeZone === FLOATING) return naive;
+	const custom = customZones.get(timeZone);
+	if (custom) {
+		const t = ICAL.Time.fromData(
+			{ year: wc.year, month: wc.month, day: wc.day, hour: wc.hour, minute: wc.minute, second: wc.second, isDate: false },
+			custom
+		);
+		return t.toUnixTime() * 1000;
+	}
 	try {
 		let offset = tzOffsetMs(timeZone, naive);
 		offset = tzOffsetMs(timeZone, naive - offset);
@@ -173,9 +215,14 @@ export function wallClockToUtc(wc: WallClock, timeZone: string): number {
 
 /** Wall-clock fields of a UTC instant as seen in `timeZone`. */
 export function utcToWallClock(utcMs: number, timeZone: string): WallClock {
+	const custom = customZones.get(timeZone);
+	if (custom) {
+		const t = ICAL.Time.fromJSDate(new Date(Math.floor(utcMs / 1000) * 1000), true).convertToZone(custom);
+		return { year: t.year, month: t.month, day: t.day, hour: t.hour, minute: t.minute, second: t.second };
+	}
 	let parts: Intl.DateTimeFormatPart[];
 	try {
-		parts = getDtf(timeZone).formatToParts(new Date(utcMs));
+		parts = getDtf(timeZone === FLOATING ? 'UTC' : timeZone).formatToParts(new Date(utcMs));
 	} catch {
 		parts = getDtf('UTC').formatToParts(new Date(utcMs));
 	}

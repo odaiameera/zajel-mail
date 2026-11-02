@@ -270,3 +270,66 @@ export async function importInvitation(
 	await putObject(auth, href, patched, undefined);
 	return result;
 }
+
+export interface ItipReply {
+	/** METHOD:REPLY calendar, ready to mail. */
+	ics: string;
+	/** The organizer's address, the one recipient. */
+	organizer: string;
+	/** "Accepted: Weekly sync" — the subject Google, Outlook and Apple use. */
+	subject: string;
+}
+
+const REPLY_WORD: Record<string, string> = { ACCEPTED: 'Accepted', TENTATIVE: 'Tentative', DECLINED: 'Declined' };
+
+/**
+ * The iTIP REPLY (RFC 5546 §3.2.3) for an RSVP: each invited VEVENT reduced
+ * to what a reply carries — UID, RECURRENCE-ID, SEQUENCE, ORGANIZER, the
+ * time, SUMMARY, and exactly one ATTENDEE, the user, with the new PARTSTAT —
+ * plus the VTIMEZONEs those times refer to. Null when there is nobody to
+ * tell: no ORGANIZER, the user isn't an attendee, or the user organizes it.
+ */
+export function buildReply(ics: string, userEmail: string, partStat: string): ItipReply | null {
+	let comp: ICAL.Component;
+	try {
+		comp = new ICAL.Component(ICAL.parse(ics));
+	} catch {
+		return null;
+	}
+	const me = userEmail.toLowerCase();
+	const address = (prop: ICAL.Property) => String(prop.getFirstValue() ?? '').replace(/^mailto:/i, '');
+	const out = new ICAL.Component(['vcalendar', [], []]);
+	out.updatePropertyWithValue('version', '2.0');
+	out.updatePropertyWithValue('prodid', '-//Zajel Mail//webmail calendar//EN');
+	out.updatePropertyWithValue('method', 'REPLY');
+
+	let organizer: string | null = null;
+	let summary = '';
+	for (const vevent of comp.getAllSubcomponents('vevent')) {
+		const mine = vevent.getAllProperties('attendee').find((p) => address(p).toLowerCase() === me);
+		const org = vevent.getFirstProperty('organizer');
+		if (!mine || !org) continue;
+		organizer ??= address(org);
+		summary ||= String(vevent.getFirstPropertyValue('summary') ?? '');
+
+		const reply = new ICAL.Component('vevent');
+		for (const name of ['uid', 'recurrence-id', 'sequence', 'organizer', 'dtstart', 'dtend', 'duration', 'summary']) {
+			const prop = vevent.getFirstProperty(name);
+			if (prop) reply.addProperty(new ICAL.Property(structuredClone(prop.toJSON())));
+		}
+		const attendee = new ICAL.Property(structuredClone(mine.toJSON()));
+		attendee.setParameter('partstat', partStat);
+		attendee.removeParameter('rsvp');
+		reply.addProperty(attendee);
+		reply.updatePropertyWithValue('dtstamp', ICAL.Time.fromJSDate(new Date(), true));
+		out.addSubcomponent(reply);
+	}
+	if (!organizer || organizer.toLowerCase() === me || out.getAllSubcomponents('vevent').length === 0) return null;
+	for (const tz of comp.getAllSubcomponents('vtimezone')) out.addSubcomponent(clone(tz));
+
+	return {
+		ics: out.toString(),
+		organizer,
+		subject: `${REPLY_WORD[partStat] ?? partStat}: ${summary || 'Invitation'}`
+	};
+}

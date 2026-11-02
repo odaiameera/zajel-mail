@@ -57,12 +57,29 @@ async function jsonFetch(url: string, init: RequestInit): Promise<ApiResult> {
 	}
 }
 
+/**
+ * Fired on `window` after a successful write, so the notification poller
+ * refreshes its reminder timers at once: a meeting pushed from 10:00 to
+ * 14:00 must lose its 09:50 reminder and gain a 13:50 one without waiting
+ * for the next five-minute poll.
+ */
+export const CALENDAR_CHANGED_EVENT = 'zajel:calendar-changed';
+
+function announceChange(): void {
+	try {
+		window.dispatchEvent(new Event(CALENDAR_CHANGED_EVENT));
+	} catch {
+		// No window (SSR, tests) — nothing is listening anyway.
+	}
+}
+
 export async function apiCreateEvent(payload: EventWritePayload): Promise<ApiResult> {
 	const res = await jsonFetch('/api/calendar/events', {
 		method: 'POST',
 		body: JSON.stringify(payload)
 	});
 	if (res.ok && res.id) markTouched(res.id);
+	if (res.ok) announceChange();
 	return res;
 }
 
@@ -78,6 +95,7 @@ export async function apiUpdateEvent(
 		body: JSON.stringify({ event: payload, scope, recurrenceId })
 	});
 	if (res.ok && res.id) markTouched(res.id);
+	if (res.ok) announceChange();
 	return res;
 }
 
@@ -89,9 +107,11 @@ export async function apiDeleteEvent(
 	markTouched(id);
 	const params = new URLSearchParams({ scope });
 	if (recurrenceId) params.set('recurrenceId', recurrenceId);
-	return jsonFetch(`/api/calendar/events/${encodeURIComponent(id)}?${params}`, {
+	const res = await jsonFetch(`/api/calendar/events/${encodeURIComponent(id)}?${params}`, {
 		method: 'DELETE'
 	});
+	if (res.ok) announceChange();
+	return res;
 }
 
 export interface ImportBatchResult {

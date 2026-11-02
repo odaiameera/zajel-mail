@@ -28,7 +28,7 @@ vi.mock('./caldav', async (importOriginal) => {
 
 import { CalDAVError } from './caldav';
 import { expandToInstances, parseIcs } from './ics';
-import { importInvitation, mergeOccurrence, summarizeInvitation } from './imip';
+import { buildReply, importInvitation, mergeOccurrence, summarizeInvitation } from './imip';
 
 const USER = 'me@example.test';
 const HREF = '/dav/cal/me%40example.test/default/sync-1.ics';
@@ -142,5 +142,26 @@ describe('importInvitation', () => {
 		await importInvitation(auth, USER, STORED.replace('PRODID:-//Test//EN', 'PRODID:-//Test//EN\r\nMETHOD:REQUEST'), 'default', 'TENTATIVE');
 		expect(fake.puts[1].etag).toBeUndefined();
 		expect(fake.puts[1].ics).toContain('PARTSTAT=TENTATIVE');
+	});
+});
+
+describe('buildReply', () => {
+	it('answers one occurrence with only the user as attendee, the organizer as the recipient', () => {
+		const reply = buildReply(MOVED, USER, 'TENTATIVE')!;
+		expect(reply.organizer).toBe('boss@example.test');
+		expect(reply.subject).toBe('Tentative: Weekly sync (moved)');
+		expect(reply.ics).toContain('METHOD:REPLY');
+		expect(reply.ics).toContain('UID:sync-1');
+		expect(reply.ics).toContain('RECURRENCE-ID;TZID=Europe/Berlin:20261110T090000');
+		expect(reply.ics).toContain('SEQUENCE:1');
+		expect(reply.ics).toContain('TZID:Europe/Berlin');
+		expect(reply.ics.match(/^ATTENDEE/gm)).toHaveLength(1);
+		expect(reply.ics).toMatch(/^ATTENDEE;PARTSTAT=TENTATIVE:mailto:me@example.test$/m);
+	});
+
+	it('has nobody to tell without an organizer, for a stranger, or for the organizer themselves', () => {
+		expect(buildReply(MOVED, 'stranger@example.test', 'ACCEPTED')).toBeNull();
+		expect(buildReply(MOVED.replace(/^ORGANIZER.*\r\n/m, ''), USER, 'ACCEPTED')).toBeNull();
+		expect(buildReply(MOVED, 'boss@example.test', 'ACCEPTED')).toBeNull();
 	});
 });

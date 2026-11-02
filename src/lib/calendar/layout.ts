@@ -104,17 +104,25 @@ export interface TimedBlock {
 	width: number;
 }
 
-/** Clip a timed instance to one local day, in minutes from midnight. */
+/**
+ * Clip a timed instance to one local day, in wall-clock minutes from that
+ * day's midnight. Wall-clock rather than elapsed time: on the 25-hour
+ * fall-back day an elapsed count draws every afternoon event an hour late
+ * and loses the last hour entirely, while the hour labels, click-to-create
+ * and the now-line all speak wall-clock. A zero-length event (a deadline, an
+ * imported reminder) gets the same 15-minute floor as any short one instead
+ * of vanishing from the grid.
+ */
 export function clipToDay(ev: EventInstance, day: Date): { startMin: number; endMin: number } | null {
-	const dayStart = startOfDay(day).getTime();
-	const dayEnd = dayStart + DAY_MS;
-	const s = new Date(ev.start).getTime();
-	const e = new Date(ev.end).getTime();
-	if (e <= dayStart || s >= dayEnd) return null;
-	const startMin = Math.max(0, (s - dayStart) / 60000);
-	const endMin = Math.min(1440, (e - dayStart) / 60000);
-	if (endMin - startMin <= 0) return null;
-	return { startMin, endMin: Math.max(endMin, startMin + 15) };
+	const dayStart = startOfDay(day);
+	const nextDay = addDays(dayStart, 1);
+	const s = new Date(ev.start);
+	const e = new Date(ev.end);
+	if (e <= dayStart || s >= nextDay) return null;
+	const minutesOf = (d: Date) => d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+	const startMin = s < dayStart ? 0 : minutesOf(s);
+	const endMin = e >= nextDay ? 1440 : minutesOf(e);
+	return { startMin, endMin: Math.min(1440, Math.max(endMin, startMin + 15)) };
 }
 
 /**

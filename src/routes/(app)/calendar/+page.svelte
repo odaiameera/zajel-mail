@@ -21,7 +21,7 @@
 	import CalendarPanel from '$lib/components/calendar/CalendarPanel.svelte';
 	import { appDrawerCloser, hostAppPanel } from '$lib/app-panel';
 	import { newRequest } from '$lib/stores/create';
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import MonthView from '$lib/components/calendar/MonthView.svelte';
 	import TimeGrid from '$lib/components/calendar/TimeGrid.svelte';
 	import EventModal from '$lib/components/calendar/EventModal.svelte';
@@ -293,6 +293,17 @@
 		if ($newRequest !== 'event') return;
 		newRequest.set(null);
 		untrack(() => openCreate());
+	});
+
+	// The server only knows the user's day from the zone the browser leaves
+	// here; until it has one, a plain /calendar opens on the UTC date, so the
+	// first paint moves to the local day when the two differ.
+	onMount(() => {
+		document.cookie = `calendar_tz=${encodeURIComponent(localTimeZone())}; path=/; max-age=31536000; samesite=lax`;
+		const today = dayKey(new Date());
+		if (!data.dateFromUrl && data.date !== today) {
+			goto(`/calendar?view=${data.view}&date=${today}`, { replaceState: true, noScroll: true });
+		}
 	});
 </script>
 

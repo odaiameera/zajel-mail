@@ -73,7 +73,15 @@
 				startX: number;
 				startY: number;
 		  }
-		| { kind: 'resize'; ev: EventInstance; dayIdx: number; startMin: number; curEndMin: number };
+		| {
+				kind: 'resize';
+				ev: EventInstance;
+				dayIdx: number;
+				startMin: number;
+				curEndMin: number;
+				moved: boolean;
+				startY: number;
+		  };
 
 	let drag = $state<Drag | null>(null);
 
@@ -121,7 +129,7 @@
 	function resizePointerDown(e: PointerEvent, ev: EventInstance, dayIdx: number, startMin: number, endMin: number) {
 		if (e.button !== 0) return;
 		e.stopPropagation();
-		drag = { kind: 'resize', ev, dayIdx, startMin, curEndMin: endMin };
+		drag = { kind: 'resize', ev, dayIdx, startMin, curEndMin: endMin, moved: false, startY: e.clientY };
 	}
 
 	function windowPointerMove(e: PointerEvent) {
@@ -140,8 +148,11 @@
 			newStart = Math.max(0, Math.min(1440 - drag.durMin, newStart));
 			drag = { ...drag, dayIdx: cell.dayIdx, startMin: newStart, moved: true };
 		} else {
+			// Same threshold as a move: the handle is the bottom 6px of every
+			// block, so a plain click there must stay a click, not a save.
+			if (!drag.moved && Math.abs(e.clientY - drag.startY) <= DRAG_THRESHOLD_PX) return;
 			const end = Math.max(drag.startMin + SNAP, snap(cell.minute));
-			drag = { ...drag, curEndMin: Math.min(1440, end) };
+			drag = { ...drag, curEndMin: Math.min(1440, end), moved: true };
 		}
 	}
 
@@ -166,6 +177,10 @@
 			const end = minutesToDate(days[d.dayIdx], d.startMin + d.durMin);
 			onEventMove(d.ev, start, end);
 		} else {
+			if (!d.moved) {
+				onEventClick(d.ev, e.clientX, e.clientY);
+				return;
+			}
 			const orig = instanceDate(d.ev.start, false);
 			const end = minutesToDate(days[d.dayIdx], d.curEndMin);
 			onEventMove(d.ev, orig, end);
@@ -192,7 +207,7 @@
 				color: colorOf.get(drag.ev.calendarId) ?? DEFAULT_CALENDAR_COLOR
 			};
 		}
-		if (drag.kind === 'resize') {
+		if (drag.kind === 'resize' && drag.moved) {
 			return {
 				dayIdx: drag.dayIdx,
 				startMin: drag.startMin,
@@ -205,7 +220,9 @@
 	});
 </script>
 
-<svelte:window onpointermove={windowPointerMove} onpointerup={windowPointerUp} />
+<!-- pointercancel: a touch that turns into a scroll never sends pointerup, and
+     a drag left behind would be carried out by the next tap anywhere. -->
+<svelte:window onpointermove={windowPointerMove} onpointerup={windowPointerUp} onpointercancel={() => (drag = null)} />
 
 <div class="h-full flex flex-col min-h-0 select-none">
 	<!-- Day headers. The header, all-day lane and grid all keep room for the
@@ -274,7 +291,7 @@
 
 			<!-- Day columns -->
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div bind:this={columnsEl} class="flex-1 relative flex" onpointerdown={gridPointerDown}>
+			<div bind:this={columnsEl} data-time-grid-columns class="flex-1 relative flex" onpointerdown={gridPointerDown}>
 				<!-- Hour lines -->
 				{#each hours as h (h)}
 					{#if h > 0}
