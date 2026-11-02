@@ -108,3 +108,26 @@ describe('EmailDetail remote images', () => {
 		expect(contactLookups()).toHaveLength(0);
 	});
 });
+
+describe('EmailDetail attachments', () => {
+	it('lists real attachments whatever their Content-ID or disposition, and not the images the body draws', () => {
+		mocks.page.data.autoLoadImages = 'never';
+		const e = email();
+		e.bodyValues = { '1': { value: '<p>Hi</p><img src="cid:logo@shop.example">', isEncodingProblem: false, isTruncated: false } };
+		e.attachments = [
+			{ partId: '2', blobId: 'B-logo', type: 'image/png', name: 'logo.png', size: 1200, cid: 'logo@shop.example', disposition: 'inline' },
+			// Outlook puts a Content-ID on ordinary attachments.
+			{ partId: '3', blobId: 'B-report', type: 'application/pdf', name: 'report.pdf', size: 52_000, cid: 'f_abc@namprd.outlook.com', disposition: 'attachment' },
+			// Apple Mail sends a file placed in the text as inline.
+			{ partId: '4', blobId: 'B-notes', type: 'application/pdf', name: 'notes.pdf', size: 8_000, cid: null, disposition: 'inline' }
+		];
+		render(EmailDetail, { email: e });
+
+		expect(screen.getByText('report.pdf')).toBeTruthy();
+		expect(screen.getByText('notes.pdf')).toBeTruthy();
+		expect(screen.queryByText('logo.png')).toBeNull();
+		expect(screen.getByText(/2 attachments/)).toBeTruthy();
+		// The logo is in the body, where it belongs.
+		expect(srcdoc()).toContain('/api/email/M1/attachment/B-logo');
+	});
+});

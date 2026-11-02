@@ -13,6 +13,7 @@
 	import { detectEmailVerificationCode } from '$lib/utils/otp';
 	import FolderPicker from './FolderPicker.svelte';
 	import AttachmentBar from './AttachmentBar.svelte';
+	import { attachmentCards } from '$lib/attachments/list';
 	import InvitationCard from './InvitationCard.svelte';
 	import JevWhy, { type JevSpamCheck } from './JevWhy.svelte';
 	import EventModal from './calendar/EventModal.svelte';
@@ -322,6 +323,8 @@
 			remote: remoteAllowed ? 'proxy' : 'block'
 		})
 	);
+	// The cards under the header: every part but the images the body draws.
+	const attachmentList = $derived(attachmentCards(email, display.inlineBlobIds));
 
 	// The frame's CSP names this origin (a path-restricted source needs a host).
 	// The browser's own origin once hydrated; the server's view of it before.
@@ -1165,7 +1168,7 @@
 		{/key}
 	{/if}
 
-	<AttachmentBar emailId={email.id} attachments={email.attachments ?? []} />
+	<AttachmentBar emailId={email.id} attachments={attachmentList} />
 
 	{#if assistantOpen}
 		<section class="shrink-0 border-b border-border bg-surface-hover/40 {compact ? 'px-4' : 'px-6'} py-3">
