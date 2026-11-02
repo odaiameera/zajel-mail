@@ -548,17 +548,13 @@ Never commit `.env`, `.env.local`, `docker-compose.yml` or anything from `local-
 
 ### Checks
 
-Run these before opening a pull request. CI runs the same three on every push and PR.
+Run these before opening a pull request. CI runs the same on every push and PR.
 
 ```sh
 npm run check     # svelte-check + TypeScript
-npm test          # Vitest unit and integration tests
+npm test          # Vitest: unit tests, ICS and CalDAV round trips, and every form posted through a dev server
 npm run build     # production build
 ```
-
-There are two more checks against real protocol output:
-- `npm run test:ics` for ICS parsing
-- `npm run test:caldav` for CalDAV discovery
 
 ### Where things live
 

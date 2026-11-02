@@ -30,7 +30,6 @@ local-data/
 # Local deployment config — holds real secrets (API keys).
 # Use docker-compose.example.yml as a template.
 docker-compose.yml
-.test-build/
 
 # Local agent/tool state
 .claude/settings.local.json

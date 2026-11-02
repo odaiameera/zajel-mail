@@ -12,9 +12,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test": "vitest run",
-		"test:watch": "vitest",
-		"test:ics": "npx esbuild src/lib/server/calendar/ics.ts --bundle --platform=node --format=esm --outfile=.test-build/ics.mjs && node tests/ics-qa.mjs",
-		"test:caldav": "npx esbuild src/lib/server/calendar/caldav.ts --bundle --platform=node --format=esm --outfile=.test-build/caldav.mjs && node tests/caldav-discovery.mjs"
+		"test:watch": "vitest"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-node": "^5.5.4",
