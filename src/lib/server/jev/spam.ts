@@ -133,7 +133,9 @@ export type SpamAction = 'junk' | 'rescue' | 'flag';
  * What Jev's answers call for, before the mode decides whether to act:
  * - in the Inbox, phishing or spam ≥ 0.9 goes to Junk — but never mail from
  *   a contact or someone you've written to, which at most gets the warning
- *   (contacts can be spoofed, or their accounts taken over);
+ *   (contacts can be spoofed, or their accounts taken over). When that
+ *   couldn't be checked (`trusted` null), nothing goes to Junk either: a
+ *   failed lookup must not turn everyone into a stranger;
  * - anything ≥ 0.6 stays, with a "looks suspicious" warning;
  * - in Junk, mail comes back only when Jev is very sure it is fine and the
  *   sender's domain passed DMARC. "Didn't fail" is not enough: a forged
@@ -144,14 +146,15 @@ export function decideSpam(input: {
 	spam: number;
 	phishing: number;
 	inJunk: boolean;
-	trusted: boolean;
+	/** A contact or someone you've written to; null when that couldn't be checked. */
+	trusted: boolean | null;
 	dmarcPassed: boolean;
 }): SpamAction | null {
 	const { spam, phishing, inJunk, trusted, dmarcPassed } = input;
 	if (inJunk) {
 		return spam < RESCUE_SPAM_BELOW && phishing < RESCUE_PHISHING_BELOW && dmarcPassed ? 'rescue' : null;
 	}
-	if (!trusted && (phishing >= JUNK_AT || spam >= JUNK_AT)) return 'junk';
+	if (trusted === false && (phishing >= JUNK_AT || spam >= JUNK_AT)) return 'junk';
 	if (phishing >= FLAG_AT || spam >= FLAG_AT) return 'flag';
 	return null;
 }

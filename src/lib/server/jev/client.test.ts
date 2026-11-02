@@ -111,6 +111,14 @@ describe('askJev', () => {
 		await expect(askJev({}, questions)).rejects.toThrow('TypeSafe rejected the API key');
 	});
 
+	it('carries TypeSafe’s own status, and none when it couldn’t be reached', async () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(400, { error: 'state too large' })));
+		await expect(askJev({}, questions)).rejects.toMatchObject({ status: 502, upstream: 400 });
+		vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+		await expect(askJev({}, questions)).rejects.toMatchObject({ status: 502, upstream: null });
+	});
+
 	it('refuses to run unconfigured, and never calls out in mock mode', async () => {
 		const fetchMock = vi.fn();
 		vi.stubGlobal('fetch', fetchMock);

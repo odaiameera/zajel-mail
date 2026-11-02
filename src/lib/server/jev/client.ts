@@ -50,7 +50,9 @@ export function costUsd(inputTokens: number): number {
 export class JevError extends Error {
 	constructor(
 		message: string,
-		public status: number
+		public status: number,
+		/** TypeSafe's own status when it answered with an error; null when it couldn't be reached or read. */
+		public upstream: number | null = null
 	) {
 		super(message);
 		this.name = 'JevError';
@@ -136,7 +138,7 @@ export async function askJev(
 			console.warn(
 				`[jev] ${baseUrl()}/v1/systemone ${response.status} for model ${jevModel()}: ${detail.slice(0, 300)}`
 			);
-			throw new JevError(errorMessage(response.status), response.status === 429 ? 429 : 502);
+			throw new JevError(errorMessage(response.status), response.status === 429 ? 429 : 502, response.status);
 		}
 
 		return parseResponse(await response.json().catch(() => null));

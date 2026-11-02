@@ -126,10 +126,15 @@ let _stmts: ReturnType<typeof prepareStmts> | null = null;
 function prepareStmts() {
 	const db = getDb();
 	return {
+		// A new arrival is queued once. The one row it may revive is the record
+		// of a tab you chose before the pass queued it (done, with no answer of
+		// Jev's): it is still checked for spam, rules and urgency, tab aside.
 		enqueue: db.prepare(
 			`INSERT INTO jev_decisions (account_id, email_id, status, backfill, created_at)
 			 VALUES (?, ?, 'pending', ?, ?)
-			 ON CONFLICT (account_id, email_id) DO NOTHING`
+			 ON CONFLICT (account_id, email_id) DO UPDATE SET
+			   status = 'pending', created_at = excluded.created_at, decided_at = NULL
+			 WHERE jev_decisions.status = 'done' AND jev_decisions.answers_json IS NULL`
 		),
 		// Sorting existing mail offers skipped and failed mail again: it is
 		// still sitting in the Inbox unsorted. Its row starts over, so a
@@ -190,9 +195,13 @@ function prepareStmts() {
 			 WHERE account_id = ? AND status = 'done' AND spam IS NOT NULL AND decided_at >= ?
 			 ORDER BY decided_at DESC`
 		),
+		// A tab you chose is remembered on any row, and makes one where Jev has
+		// none: a 'done' row with nothing of Jev's in it, so the email counts as
+		// known (knownEmailIds) and is never sorted against your choice.
 		correct: db.prepare(
-			`UPDATE jev_decisions SET corrected_to = ?
-			 WHERE account_id = ? AND email_id = ? AND status = 'done'`
+			`INSERT INTO jev_decisions (account_id, email_id, status, backfill, corrected_to, created_at, decided_at)
+			 VALUES (@accountId, @emailId, 'done', 0, @to, @now, @now)
+			 ON CONFLICT (account_id, email_id) DO UPDATE SET corrected_to = excluded.corrected_to`
 		),
 		stats: db.prepare(
 			`SELECT COUNT(*) AS sorted,
@@ -265,27 +274,38 @@ export function backfillProgress(accountId: string): BackfillProgress {
 	return out;
 }
 
-/**
- * Which of these emails Jev has judged or has queued. Skipped and failed
- * mail is not known: it was never sorted, so sorting existing mail offers it
- * again. (Before this, cancelling a run or switching Jev off and on marked
- * the queue skipped, and those emails could never be queued again.)
- */
-export function knownEmailIds(accountId: string, emailIds: string[]): Set<string> {
-	const known = new Set<string>();
+/** The emails among `emailIds` whose row satisfies `condition`, 500 ids a query. */
+function emailIdsWhere(accountId: string, emailIds: string[], condition: string): Set<string> {
+	const out = new Set<string>();
 	const db = getDb();
 	for (let i = 0; i < emailIds.length; i += 500) {
 		const chunk = emailIds.slice(i, i + 500);
 		const rows = db
 			.prepare(
 				`SELECT email_id FROM jev_decisions
-				 WHERE account_id = ? AND status IN ('pending', 'done')
+				 WHERE account_id = ? AND (${condition})
 				   AND email_id IN (${chunk.map(() => '?').join(',')})`
 			)
 			.all(accountId, ...chunk) as { email_id: string }[];
-		for (const r of rows) known.add(r.email_id);
+		for (const r of rows) out.add(r.email_id);
 	}
-	return known;
+	return out;
+}
+
+/**
+ * Which of these emails Jev has judged or has queued, or you have put in a
+ * tab yourself (recordCorrections). Skipped and failed mail is not known: it
+ * was never sorted, so sorting existing mail offers it again. (Before this,
+ * cancelling a run or switching Jev off and on marked the queue skipped, and
+ * those emails could never be queued again.)
+ */
+export function knownEmailIds(accountId: string, emailIds: string[]): Set<string> {
+	return emailIdsWhere(accountId, emailIds, `status IN ('pending', 'done') OR corrected_to IS NOT NULL`);
+}
+
+/** Which of these emails you have put in a tab yourself: Jev leaves their tab alone. */
+export function correctedEmailIds(accountId: string, emailIds: string[]): Set<string> {
+	return emailIdsWhere(accountId, emailIds, 'corrected_to IS NOT NULL');
 }
 
 /** Stop sorting existing mail: what is still queued is dropped. */
@@ -357,11 +377,16 @@ export function getDecision(accountId: string, emailId: string): JevDecisionRow 
 	return row ? toRow(row) : null;
 }
 
-/** You moved emails Jev had sorted: remember where, to measure how often it's wrong. */
-export function recordCorrections(accountId: string, emailIds: string[], to: InboxCategory): void {
+/**
+ * You moved emails to a tab. Where Jev had sorted them, that measures how
+ * often it's wrong; wherever they were, it is your choice of tab — Important
+ * included, which leaves no keyword to see it by — and Jev never sorts them
+ * again (see correctedEmailIds and knownEmailIds).
+ */
+export function recordCorrections(accountId: string, emailIds: string[], to: InboxCategory, now = Date.now()): void {
 	const s = stmts();
 	getDb().transaction(() => {
-		for (const id of emailIds) s.correct.run(to, accountId, id);
+		for (const id of emailIds) s.correct.run({ accountId, emailId: id, to, now });
 	})();
 }
 

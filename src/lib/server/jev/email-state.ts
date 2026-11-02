@@ -71,18 +71,25 @@ export function stripQuotedReplies(text: string): string {
 	return kept.join('\n');
 }
 
-function partText(email: Email, parts: Email['textBody']): string {
+/** The fetched parts of one media type, joined. */
+function partText(email: Email, parts: Email['textBody'], type: string): string {
 	return (parts ?? [])
+		.filter((part) => part.type?.toLowerCase().startsWith(type))
 		.map((part) => email.bodyValues?.[part.partId]?.value ?? '')
 		.filter(Boolean)
 		.join('\n');
 }
 
-/** Plain-text body, quotes removed, whitespace folded, cut to `maxChars`. */
+/**
+ * Plain-text body, quotes removed, whitespace folded, cut to `maxChars`.
+ * An HTML-only message lists its html part under `textBody` too (RFC 8621
+ * §4.1.4), so the part's type decides, not the list it is in: markup is
+ * always flattened to text first.
+ */
 export function bodyExcerpt(email: Email, maxChars = BODY_EXCERPT_CHARS): string {
-	let text = partText(email, email.textBody);
+	let text = partText(email, email.textBody, 'text/plain');
 	if (!text) {
-		const html = partText(email, email.htmlBody);
+		const html = partText(email, email.htmlBody, 'text/html') || partText(email, email.textBody, 'text/html');
 		text = html ? htmlToPromptText(html, maxChars * 3) : email.preview ?? '';
 	}
 	const cleaned = stripQuotedReplies(text)

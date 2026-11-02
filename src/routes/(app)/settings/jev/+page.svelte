@@ -245,12 +245,18 @@
 	<div class="rounded-xl border border-border bg-surface-hover/40 p-4 mb-4">
 		<p class="text-sm font-medium text-text">What Jev is sent</p>
 		<p class="text-xs text-text-tertiary mt-1">
-			For each new email in an account you switch on: the sender, recipients and subject, the first
-			{data.jev.excerptChars.toLocaleString()} characters of the body with quoted replies removed, and facts
-			this app works out — whether the sender is in your contacts, whether you’ve written to them or in
-			the conversation, its mailing-list headers, and whether it carries a sign-in code — along with the statements in rules you wrote for Jev, and, with spam checks on, the email’s authentication results, Reply-To, link domains and Stalwart’s spam score. Jev returns
-			only probabilities; the app keeps those and the facts, never the email text. TypeSafe says it
-			doesn’t train on customer data; its documentation doesn’t say how long requests are kept.
+			For each new email in an account you switch on: the sender, every To and Cc address, the subject,
+			and the first {data.jev.excerptChars.toLocaleString()} characters of the body as text, with quoted
+			replies removed. With them, facts this app works out: whether the sender is in your contacts,
+			whether you’ve written to them or in the conversation, whether the email was addressed to you
+			directly, its mailing-list, bulk and auto-submitted markers, whether it comes from a no-reply
+			address, whether it carries a sign-in code, and where you moved this sender’s mail before. Also the
+			statements in rules you wrote for Jev, and, while Telegram alerts are on, the question of whether
+			it’s urgent. With spam checks on, for new mail: its authentication results, whether its Reply-To or
+			display name points at another domain, up to five domains the body links to (read from its first
+			16 KB), and Stalwart’s spam score and rule names. Jev returns only probabilities; the app keeps
+			those and the facts, never the email text. TypeSafe says it doesn’t train on customer data; its
+			documentation doesn’t say how long requests are kept.
 		</p>
 	</div>
 
@@ -319,11 +325,17 @@
 		<p class="text-xs text-text-tertiary mb-3">
 			Mail from a pinned sender always goes to its tab — Jev isn’t asked. Pin one from the message
 			that appears after you move an email, or add it here; <span class="font-mono">@domain</span> pins
-			everyone at a domain, and an address pin wins over its domain’s.
+			everyone at a domain, and an address pin wins over its domain’s. Pins are applied by the same
+			pass that sorts new mail, so they act while Inbox tabs and “Let Jev read new mail” are both on.
 		</p>
 		{#each data.jevAccounts as account (account.id)}
 			{#if data.jevAccounts.length > 1}
 				<p class="text-xs font-medium text-text-secondary mt-3 mb-1.5">{account.email}</p>
+			{/if}
+			{#if account.pins.length > 0 && !(current(account, 'inboxTabs') && current(account, 'jevEnabled'))}
+				<p class="text-xs text-warning mb-1.5">
+					These pins do nothing until Inbox tabs and “Let Jev read new mail” are on for {account.email}.
+				</p>
 			{/if}
 			{#if account.pins.length > 0}
 				<ul class="rounded-lg border border-border divide-y divide-border mb-2">

@@ -7,6 +7,7 @@
 	import type { PageData } from './$types';
 	import {
 		hasJevCondition,
+		JEV_OFF_LIMITS_ROLES,
 		JEV_STRICTNESS,
 		ruleHolds,
 		type JevStrictness,
@@ -35,6 +36,11 @@
 		data.mailboxes.filter((m) => m.role === 'archive' || m.role === 'junk' || m.role === 'trash')
 	);
 	const labelOptions = $derived(data.labels);
+
+	/** Trash or Junk: a rule Jev judges never moves mail there (the worker skips the action). */
+	function isOffLimitsTarget(mailboxId: string | undefined): boolean {
+		return data.mailboxes.some((m) => m.id === mailboxId && JEV_OFF_LIMITS_ROLES.has(m.role ?? ''));
+	}
 
 	/**
 	 * A saved action can point at a folder/label that was deleted after the
@@ -685,11 +691,19 @@
 										{#if systemFolderOptions.length > 0}
 											<optgroup label="System">
 												{#each systemFolderOptions as mb}
-													<option value={mb.id}>{mb.name}</option>
+													<!-- Trash and Junk are off limits to a rule Jev judges; one already pointing there stays visible, with the warning below. -->
+													{#if !hasJevCondition(rule) || !JEV_OFF_LIMITS_ROLES.has(mb.role ?? '') || action.value === mb.id}
+														<option value={mb.id}>{mb.name}</option>
+													{/if}
 												{/each}
 											</optgroup>
 										{/if}
 									</select>
+								{/if}
+								{#if action.type === 'moveToFolder' && hasJevCondition(rule) && isOffLimitsTarget(action.value)}
+									<span class="w-full text-2xs text-warning">
+										⚠ A rule Jev judges never moves mail to Trash or Junk — a wrong call there is as good as a delete. This action is skipped.
+									</span>
 								{/if}
 								{#if isStaleTarget(action)}
 									<span class="w-full text-2xs text-warning">

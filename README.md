@@ -202,9 +202,9 @@ Otherwise it runs on **any Ollama-compatible endpoint**: Ollama Cloud, or a mode
 A confident pick is applied. Anything else stays in **Important**, so nothing is hidden because Jev was unsure. The message view shows **why** a message landed where it did.
 
 Jev learns from you:
-- **It never moves mail you've put in a tab yourself.**
+- **It never moves mail you've put in a tab yourself**, Important included.
 - **Your moves teach it.** When you move a message, that's passed to Jev with that sender's next email.
-- **Pinning** a sender, or a whole `@domain`, to a tab means Jev isn't asked again.
+- **Pinning** a sender, or a whole `@domain`, to a tab means Jev isn't asked again. Pins act while Inbox tabs and Jev are on for the account.
 
 Before switching it on, **Try Jev** shows where it would put your newest 200 Inbox emails, without moving anything. Afterwards, the mail already in your Inbox can be **sorted in the background**, with a cost estimate first.
 
@@ -213,13 +213,13 @@ Before switching it on, **Try Jev** shows where it would put your newest 200 Inb
 - Normal (80%)
 - Strict (95%)
 
-Mix these conditions freely with exact matches like *From contains…*, and test the rule on recent mail before you save it. Rules with a Jev condition never delete.
+Mix these conditions freely with exact matches like *From contains…*, and test the rule on recent mail before you save it. Rules with a Jev condition never delete, and never move mail to Trash or Junk.
 
 ![A Jev rule that moves invoices and receipts to the Receipts folder](docs/screenshots/jev-rule.png)
 
 **3. A second opinion on spam and phishing.** Jev runs beside Stalwart's filter, which keeps running.
 - **Watch only** records Jev's verdict next to Stalwart's, with a report of where the two disagree. Nothing moves.
-- **Active** moves mail Jev is at least 90% sure is spam or phishing to Junk. It warns from 60%, and never moves mail from your contacts or people you've written to. It also brings mail back out of Junk when Jev is very sure it's fine and the sender passed DMARC. A missing or errored DMARC result doesn't count as a pass.
+- **Active** moves mail Jev is at least 90% sure is spam or phishing to Junk. It warns from 60%, and never moves mail from your contacts or people you've written to, nor any mail when it couldn't check that. It also brings mail back out of Junk when Jev is very sure it's fine and the sender passed DMARC. A missing or errored DMARC result doesn't count as a pass.
 
 Jev is **off until you turn it on, account by account.** For a demo or development without a key, `JEV_MOCK=1` answers on the server and labels every answer as a mock, so a demo can never be mistaken for Jev. [JEV_PLAN.md](JEV_PLAN.md) has the full design.
 
@@ -336,7 +336,7 @@ Zajel Mail holds the keys to your mail, so security comes first.
 
 - **AI.** Email content goes only to the AI service you choose: Anthropic, OpenAI or your own Ollama endpoint. **Semantic search** sends mail text only to the Ollama you name for it: the endpoint is reached from the server, receives the text of every indexed message, and a redirect to another host is refused. OpenAI requests are sent with `store: false`, but OpenAI's abuse-monitoring logs keep API content for up to 30 days unless you have Zero Data Retention.
 - **Jev.** Mail goes to TypeSafe only for accounts where you switch Jev on.
-  - Each new email is sent **once**: sender, recipients, subject, the first 2,000 characters of the body with quoted replies removed, and the facts the app works out about it.
+  - Each new email is sent **once**: the sender, To and Cc addresses, subject, the first 2,000 characters of the body as text with quoted replies removed, and the facts the app works out about it. With spam checks on, new mail also carries its authentication results, whether its Reply-To or display name points at another domain, up to five domains its body links to (read from its first 16 KB), and Stalwart's spam score and rule names. If the mail server refuses Jev's change, the email can be sent again on a later pass, up to five times.
   - Jev returns probabilities. The app keeps those and the facts; it **never stores the email text**.
   - "Try Jev" sends your newest 200 Inbox emails the same way, once, when you press it.
   - TypeSafe states it doesn't train on customer data. Its documentation doesn't state a retention period, and zero data retention is an enterprise option.

@@ -5,7 +5,7 @@ import { createClient, fetchSession } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import type { AuthState, Email, JMAPSession, MethodCall } from '$lib/jmap/types';
 import { categoryKeywordPatch, categoryOf, type InboxCategory } from '$lib/types/categories';
-import { hasJevCondition, type Rule } from '$lib/types/rules';
+import { hasJevCondition, JEV_OFF_LIMITS_ROLES, withoutOffLimitsTargets, type Rule } from '$lib/types/rules';
 import {
 	advanceSortCursor,
 	getJevSettings,
@@ -16,6 +16,7 @@ import { getRules } from '$lib/server/db/queries/rules';
 import { listPins, pinFor, senderHistory, type SenderPin } from '$lib/server/db/queries/jev-learning';
 import {
 	addUsage,
+	correctedEmailIds,
 	enqueueEmails,
 	getDecision,
 	listPendingEmailIds,
@@ -84,6 +85,8 @@ const WRITE_BATCH = 50;
 export const PREVIEW_LIMIT = 200;
 /** Body bytes fetched per email — comfortably more than the excerpt needs. */
 const MAX_BODY_BYTES = 16_000;
+/** How long an account's queue waits after TypeSafe rate-limited every call of a pass. */
+const RATE_LIMIT_PAUSE_MS = 5 * 60_000;
 
 const JEV_EMAIL_PROPERTIES = [
 	'id', 'threadId', 'mailboxIds', 'keywords',
@@ -151,6 +154,8 @@ export interface JudgedEmail {
 	error: string | null;
 	/** TypeSafe's status for a failed call: 429 means it is busy, not that the email is bad. */
 	errorStatus?: number;
+	/** TypeSafe refused this very request: a 4xx that is not about the key, the model or its load. */
+	refused?: boolean;
 }
 
 export interface JudgeContext {
@@ -202,13 +207,15 @@ export async function judgeEmails(
 				error: null
 			};
 		} catch (err) {
+			const upstream = err instanceof JevError ? err.upstream : null;
 			return {
 				email,
 				facts: emailFacts,
 				response: null,
 				decision: null,
 				error: err instanceof Error ? err.message : String(err),
-				errorStatus: err instanceof JevError ? err.status : undefined
+				errorStatus: err instanceof JevError ? err.status : undefined,
+				refused: upstream !== null && upstream >= 400 && upstream < 500 && ![401, 403, 404, 429].includes(upstream)
 			};
 		}
 	});
@@ -226,7 +233,8 @@ export function tabToApply(judged: JudgedEmail): InboxCategory | null {
 }
 
 interface Plan {
-	update: Record<string, unknown>;
+	/** What to do to the message — applied to where it is when it is written. */
+	outcome: RuleOutcome;
 	/** The tab a pin or Jev's pick put it in (not a rule's), for the record. */
 	tab: InboxCategory | null;
 	/** The pin that chose the tab, if one did. */
@@ -244,12 +252,38 @@ interface SpamRecord {
 	action: string | null;
 }
 
-/** Move an email from one mailbox to another, as a full mailboxIds write. */
-function moveUpdate(email: Email, from: string, to: string): Record<string, unknown> {
+/** Move a message from one mailbox to another. */
+function moveOutcome(from: string, to: string): RuleOutcome {
 	const outcome = emptyOutcome();
 	outcome.removeMailboxIds.add(from);
 	outcome.addMailboxIds.add(to);
-	return outcomeToUpdate(email, outcome);
+	return outcome;
+}
+
+const hasWork = (o: RuleOutcome) =>
+	o.addMailboxIds.size > 0 || o.removeMailboxIds.size > 0 || Object.keys(o.keywords).length > 0;
+
+type Placement = Pick<Email, 'mailboxIds' | 'keywords'>;
+
+/** Where each message is, and which tab it has, right now; one the server no longer has is absent. */
+async function currentPlacement(client: JMAPClient, accountId: string, ids: string[]): Promise<Map<string, Placement>> {
+	if (ids.length === 0) return new Map();
+	const response = await client.request([
+		['Email/get', { accountId, ids, properties: ['id', 'mailboxIds', 'keywords'] }, 'p']
+	]);
+	const list = (response.methodResponses[0][1] as { list?: (Placement & { id: string })[] }).list ?? [];
+	return new Map(list.map((e) => [e.id, { mailboxIds: e.mailboxIds ?? {}, keywords: e.keywords ?? {} }]));
+}
+
+/**
+ * Whether the sender is someone you know — a contact, or someone you've
+ * written to — or null when a lookup couldn't tell. Unknown is not "no":
+ * nothing moves to Junk on it (see decideSpam).
+ */
+function trustOf(facts: JevFacts | null): boolean | null {
+	const looked = [facts?.sender_in_contacts, facts?.you_have_written_to_sender];
+	if (looked.includes(true)) return true;
+	return looked.every((v) => v === false) ? false : null;
 }
 
 /** How a spam action reads in the record: what was done, or would have been. */
@@ -283,7 +317,7 @@ function planFor(
 	const tab = pinned ? pinned.category : open ? tabToApply(judged) : null;
 	if (tab && tab !== 'important') Object.assign(outcome.keywords, categoryKeywordPatch(tab));
 	return {
-		update: outcomeToUpdate(email, outcome),
+		outcome,
 		tab,
 		pin: pinned,
 		checks: ruleChecks(rules, answers, outcome.firedRuleIds)
@@ -330,11 +364,11 @@ export async function sortNewMail(
 	const enabledRules = getRules(accountEmail).filter((r) => r.enabled);
 	const wantsTabs = settings.inboxTabs;
 	// Only when a rule needs Jev does this worker take over the rules.
-	const rules = enabledRules.some(hasJevCondition) ? enabledRules : [];
+	const handlesRules = enabledRules.some(hasJevCondition);
 	const spamMode = settings.spamMode;
 	// Telegram alerts for urgent mail: one more question for Jev, new mail only.
 	const alertUrgent = urgentAlertsWanted(accountRowId);
-	if (!wantsTabs && rules.length === 0 && spamMode === 'off' && !alertUrgent) {
+	if (!wantsTabs && !handlesRules && spamMode === 'off' && !alertUrgent) {
 		// Nothing to ask: keep the cursor current, so switching tabs or a Jev
 		// rule on later doesn't reach back into mail from before.
 		advanceSortCursor(accountRowId, settings.sortCursor, now.toISOString(), now);
@@ -349,6 +383,9 @@ export async function sortNewMail(
 	// With spam checking on, Junk is watched too: Stalwart's verdicts there
 	// are what Jev can confirm, or (in active mode) rescue mail from.
 	const junk = spamMode !== 'off' ? (mailboxes.find((m) => m.role === 'junk') ?? null) : null;
+	// A rule Jev judges never moves mail into Trash or Junk, as it never deletes.
+	const offLimits = new Set(mailboxes.filter((m) => m.role && JEV_OFF_LIMITS_ROLES.has(m.role)).map((m) => m.id));
+	const rules = handlesRules ? enabledRules.map((r) => withoutOffLimitsTargets(r, offLimits)) : [];
 	const ruleCtx: RuleActionCtx = {
 		inboxId: inbox.id,
 		trashId: mailboxes.find((m) => m.role === 'trash')?.id,
@@ -404,6 +441,10 @@ export async function sortNewMail(
 		: new Date(Math.max(Date.parse(settings.sortCursor), now.getTime() - CURSOR_LOOKBACK_MS)).toISOString();
 	advanceSortCursor(accountRowId, settings.sortCursor, nextCursor, now);
 
+	// TypeSafe rate-limited every call of a recent pass: it asked for a pause,
+	// so the queue waits (what arrives meanwhile is queued above all the same).
+	if ((rateLimitedUntil.get(accountRowId) ?? 0) > now.getTime()) return;
+
 	// Fetched only once there is mail to judge (contacts need the session).
 	let judgeCtx: JudgeContext | null = null;
 	const batch: Batch = {
@@ -418,8 +459,7 @@ export async function sortNewMail(
 				accountRowId,
 				accountEmail,
 				sentId: mailboxes.find((m) => m.role === 'sent')?.id ?? null,
-				session: await fetchSession(auth).catch(() => null),
-				security: spamMode !== 'off'
+				session: await fetchSession(auth).catch(() => null)
 			}),
 		ruleCtx,
 		// A pinned sender's tab is already decided: Jev isn't asked for it.
@@ -478,7 +518,12 @@ async function judgeAndApply(
 	if (judgeable.length === 0) return;
 
 	const pinOf = (email: Email) => pinFor(b.pins, senderAddress(email));
-	const judged = await judgeEmails(b.client, b.accountId, judgeable, await b.judge(), (email) =>
+	// Mail you put in a tab yourself keeps it — Important included, which
+	// leaves no keyword to see it by, so the record is asked as well.
+	const chosen = correctedEmailIds(b.accountRowId, judgeable.map((e) => e.id));
+	const tabOpen = (email: Email) => wantsTabs && !chosen.has(email.id) && categoryOf(email.keywords) === 'important';
+	// Origin evidence goes along only while this batch's spam is checked.
+	const judged = await judgeEmails(b.client, b.accountId, judgeable, { ...(await b.judge()), security: checkSpam }, (email) =>
 		// Junk mail is only checked for spam: no tab, no rules.
 		inJunk(email)
 			? SPAM_QUESTIONS
@@ -486,16 +531,26 @@ async function judgeAndApply(
 					...(checkSpam ? SPAM_QUESTIONS : {}),
 					...(alertUrgent ? { [URGENT_QUESTION_ID]: URGENT_QUESTION } : {}),
 					// No point asking for a tab the message already has: Jev won't overrule it.
-					...(wantsTabs && !pinOf(email) && categoryOf(email.keywords) === 'important' ? tabQuestion() : {}),
+					...(tabOpen(email) && !pinOf(email) ? tabQuestion() : {}),
 					...ruleQuestions(jevConditionsToAsk(email, rules, extractBodyText(email)))
 				}
 	);
 
+	const asked = judged.filter((j) => j.facts);
+	// TypeSafe rate-limited every call: it asked for a pause, so this account's
+	// queue waits a few minutes instead of knocking again every pass.
+	if (asked.length && asked.every((j) => j.errorStatus === 429)) {
+		rateLimitedUntil.set(b.accountRowId, now + RATE_LIMIT_PAUSE_MS);
+		noteFailure('typesafe', b.accountRowId, 'typesafe_rate_limited', { count: asked.length, error: asked[0].error });
+		return;
+	}
 	// Every email that was asked failed: TypeSafe is down, not these emails.
 	// Charging each an attempt would let a few minutes' outage fail them for
 	// good, urgent ones included, so they wait for the next pass instead.
-	const asked = judged.filter((j) => j.facts);
-	if (asked.length && asked.every((j) => j.error)) {
+	// One email alone can't show an outage, though: when TypeSafe refused that
+	// one request, the refusal is charged to it, or a message it keeps
+	// refusing would be sent again every pass for ever.
+	if (asked.length && asked.every((j) => j.error) && !(asked.length === 1 && asked[0].refused)) {
 		noteFailure('typesafe', b.accountRowId, 'typesafe_unavailable', { count: asked.length, error: asked[0].error });
 		return;
 	}
@@ -524,8 +579,9 @@ async function judgeAndApply(
 			? decideSpam({
 					...verdict,
 					inJunk: junked,
-					// Contacts and people you've written to are never sent to Junk.
-					trusted: !!(j.facts?.sender_in_contacts || j.facts?.you_have_written_to_sender),
+					// Contacts and people you've written to are never sent to Junk —
+					// nor is anyone while that couldn't be checked.
+					trusted: trustOf(j.facts),
 					// Out of Junk needs a DMARC pass, not just "no fail".
 					dmarcPassed: j.facts?.security?.dmarc === 'pass'
 				})
@@ -541,7 +597,7 @@ async function judgeAndApply(
 		if (junked) {
 			const rescue = acting && action === 'rescue';
 			plans.set(j.email.id, {
-				update: rescue && b.junkId ? moveUpdate(j.email, b.junkId, b.inboxId) : {},
+				outcome: rescue && b.junkId ? moveOutcome(b.junkId, b.inboxId) : emptyOutcome(),
 				tab: null,
 				pin: null,
 				checks: [],
@@ -549,16 +605,32 @@ async function judgeAndApply(
 			});
 		} else if (acting && action === 'junk' && b.junkId) {
 			toJunk.add(j.email.id);
-			plans.set(j.email.id, { update: moveUpdate(j.email, b.inboxId, b.junkId), tab: null, pin: null, checks: [], spam });
+			plans.set(j.email.id, { outcome: moveOutcome(b.inboxId, b.junkId), tab: null, pin: null, checks: [], spam });
 		} else {
-			plans.set(j.email.id, { ...planFor(j, rules, b.ruleCtx, wantsTabs, pinOf(j.email)), spam });
+			plans.set(j.email.id, { ...planFor(j, rules, b.ruleCtx, wantsTabs && !chosen.has(j.email.id), pinOf(j.email)), spam });
 		}
 	}
 
-	// Apply, worked out before anything changes.
-	const updates = [...plans]
-		.filter(([, p]) => Object.keys(p.update).length > 0)
-		.map(([id, p]) => [id, p.update] as [string, Record<string, unknown>]);
+	// Apply. The snapshot judged above is minutes old by now: read where each
+	// message is, and which tab it has, again, and write only what differs
+	// from that, so nothing done to it meanwhile is written over. One that
+	// left its mailbox or changed tabs in between was moved by you, or by a
+	// rule: it stays as it was put, and Jev's answer is recorded unapplied.
+	const withWork = [...plans].filter(([, p]) => hasWork(p.outcome));
+	const placement = await currentPlacement(b.client, b.accountId, withWork.map(([id]) => id));
+	const updates: [string, Record<string, unknown>][] = [];
+	const moved = new Set<string>();
+	for (const [id, plan] of withWork) {
+		const snapshot = fetched.get(id)!;
+		const current = placement.get(id);
+		const home = inJunk(snapshot) && b.junkId ? b.junkId : b.inboxId;
+		if (!current?.mailboxIds[home] || categoryOf(current.keywords) !== categoryOf(snapshot.keywords)) {
+			moved.add(id);
+			continue;
+		}
+		const update = outcomeToUpdate({ ...snapshot, ...current }, plan.outcome);
+		if (Object.keys(update).length > 0) updates.push([id, update]);
+	}
 	const refused = await writeUpdates(b.client, b.accountId, updates);
 
 	// Record.
@@ -569,20 +641,21 @@ async function judgeAndApply(
 			recordFailure(b.accountRowId, j.email.id, 'The mail server refused the change', now);
 			continue;
 		}
+		const applied = !moved.has(j.email.id);
 		recordDecision(
 			b.accountRowId,
 			j.email.id,
 			{
 				category: plan.pin ? plan.pin.category : (j.decision?.category ?? null),
 				confidence: plan.pin ? null : (j.decision?.confidence ?? null),
-				applied: plan.tab,
+				applied: applied ? plan.tab : null,
 				pinnedBy: plan.pin?.sender ?? null,
 				answers: j.response?.answers ?? {},
 				facts: j.facts ?? {},
 				rules: plan.checks,
 				model: j.response?.model ?? null,
 				inputTokens: j.response?.usage.inputTokens ?? 0,
-				spam: plan.spam ?? null
+				spam: plan.spam ? { ...plan.spam, action: applied ? plan.spam.action : null } : null
 			},
 			now
 		);
@@ -612,6 +685,14 @@ async function judgeAndApply(
 
 let started = false;
 const inFlight = new Set<string>();
+
+// Accounts TypeSafe rate-limited on a recent pass, and until when they wait.
+const rateLimitedUntil = new Map<string, number>();
+
+/** Forget the rate-limit pauses — for tests, which run many passes on one account. */
+export function forgetRateLimits(): void {
+	rateLimitedUntil.clear();
+}
 
 // The failure last logged, per kind and account: a failing pass is logged
 // when it starts failing or fails differently, and once when it recovers,

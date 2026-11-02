@@ -109,6 +109,12 @@ describe('decideSpam', () => {
 		expect(decideSpam({ ...base, spam: 0.4, trusted: true })).toBeNull();
 	});
 
+	it('only warns when it couldn’t check whether the sender is someone you know', () => {
+		expect(decideSpam({ ...base, phishing: 0.97, trusted: null })).toBe('flag');
+		expect(decideSpam({ ...base, spam: 0.95, trusted: null })).toBe('flag');
+		expect(decideSpam({ ...base, spam: 0.4, trusted: null })).toBeNull();
+	});
+
 	it('warns in between, and leaves the rest alone', () => {
 		expect(decideSpam({ ...base, spam: 0.6 })).toBe('flag');
 		expect(decideSpam({ ...base, phishing: 0.89 })).toBe('flag');

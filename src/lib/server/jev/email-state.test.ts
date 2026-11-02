@@ -65,6 +65,22 @@ describe('bodyExcerpt', () => {
 	it('falls back to the preview when no body was fetched', () => {
 		expect(bodyExcerpt(email())).toBe('preview text');
 	});
+
+	it('flattens an HTML-only message, whose html part is listed under textBody too', () => {
+		const part = { partId: '2', blobId: 'p2', type: 'text/html', name: null };
+		const e = email({
+			textBody: [part],
+			htmlBody: [part],
+			bodyValues: {
+				2: {
+					value: '<!DOCTYPE html><html><head><style>.x{color:red}</style></head><body><p>Your order <b>shipped</b></p></body></html>',
+					isEncodingProblem: false,
+					isTruncated: false
+				}
+			}
+		});
+		expect(bodyExcerpt(e)).toBe('Your order shipped');
+	});
 });
 
 describe('buildEmailState', () => {
