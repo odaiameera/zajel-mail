@@ -14,6 +14,7 @@
 	let telegram = $state<TelegramStatus | null>(null);
 	let telegramLink = $state<string | null>(null);
 	let telegramError = $state<string | null>(null);
+	let testState = $state<'idle' | 'sending' | 'sent'>('idle');
 
 	async function loadTelegram() {
 		const res = await fetch('/api/telegram');
@@ -49,6 +50,11 @@
 
 	async function setTelegram(flags: { urgent?: boolean; paused?: boolean }) {
 		if (await telegramAction({ action: 'set', ...flags })) await loadTelegram();
+	}
+
+	async function testTelegram() {
+		testState = 'sending';
+		testState = (await telegramAction({ action: 'test' })) ? 'sent' : 'idle';
 	}
 
 	onMount(loadTelegram);
@@ -247,6 +253,16 @@
 			<SettingRow title="Paused">
 				{#snippet control()}
 					<Toggle checked={telegram!.paused} onChange={(next) => setTelegram({ paused: next })} />
+				{/snippet}
+			</SettingRow>
+			<SettingRow title="Test alert">
+				{#snippet control()}
+					{#if testState === 'sent'}
+						<span class="text-xs text-success">Sent</span>
+					{/if}
+					<button type="button" onclick={testTelegram} disabled={testState === 'sending'} class="btn btn-secondary btn-sm">
+						{testState === 'sending' ? 'Sending…' : 'Send'}
+					</button>
 				{/snippet}
 			</SettingRow>
 		{:else if telegramLink}

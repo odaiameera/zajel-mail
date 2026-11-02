@@ -38,7 +38,7 @@ vi.mock('$lib/server/db/queries/reminders', () => ({ scheduleReminder: mocks.sch
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
 import { addReminder, createButton, createLinkCode, getLink, setLinkFlags } from './store';
-import { handleUpdate, notifyUrgent, sendDueReminders } from './notifier';
+import { handleUpdate, notifyUrgent, sendDueReminders, sendTestAlert } from './notifier';
 
 const CHAT = 555;
 const start = (code: string, chatId = CHAT, type = 'private') =>
@@ -150,6 +150,24 @@ describe('urgent alerts', () => {
 		await notifyUrgent('acct-1', { id: 'e4', subject: 'x' });
 		setLinkFlags('user-1', { paused: false, urgent: false });
 		await notifyUrgent('acct-1', { id: 'e4', subject: 'x' });
+		expect(mocks.sendMessage).not.toHaveBeenCalled();
+	});
+});
+
+describe('test alert', () => {
+	it('looks like an urgent alert, with only an Open button, and goes out while paused', async () => {
+		await start(createLinkCode('user-1'));
+		setLinkFlags('user-1', { paused: true });
+		mocks.sendMessage.mockClear();
+		expect(await sendTestAlert('user-1')).toBe('sent');
+		const [chat, html, buttons] = mocks.sendMessage.mock.calls[0] as unknown as [string, string, { text: string; url?: string }[][]];
+		expect(chat).toBe(String(CHAT));
+		expect(html).toBe('<b>Urgent</b> · Zajel\nTest alert');
+		expect(buttons).toEqual([[{ text: 'Open', url: 'https://mail.example.test/' }]]);
+	});
+
+	it('needs a linked chat', async () => {
+		expect(await sendTestAlert('user-2')).toBe('not_linked');
 		expect(mocks.sendMessage).not.toHaveBeenCalled();
 	});
 });

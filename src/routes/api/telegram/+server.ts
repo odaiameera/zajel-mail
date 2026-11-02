@@ -1,10 +1,12 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { stepUpRequired } from '$lib/server/auth/step-up';
-import { botUsername, telegramConfigured } from '$lib/server/telegram/bot';
+import { botUsername, telegramConfigured, TelegramError } from '$lib/server/telegram/bot';
+import { sendTestAlert } from '$lib/server/telegram/notifier';
 import { createLinkCode, getLink, setLinkFlags, unlink } from '$lib/server/telegram/store';
+import { errorFields, logEvent } from '$lib/server/log';
 
-/** The agent's Telegram bot: link a chat, unlink it, switch alerts on or off. */
+/** The agent's Telegram bot: link a chat, unlink it, switch alerts on or off, send a test. */
 
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) error(401, 'Not signed in');
@@ -38,6 +40,22 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			const refused = stepUpRequired(locals);
 			if (refused) return refused;
 			unlink(userId);
+			return json({ success: true });
+		}
+		// Only ever reaches the chat already linked, so no re-check.
+		case 'test': {
+			let result: Awaited<ReturnType<typeof sendTestAlert>>;
+			try {
+				result = await sendTestAlert(userId);
+			} catch (err) {
+				logEvent('error', 'telegram', 'test_failed', errorFields(err));
+				// 403: the bot was blocked, or the chat is gone.
+				if (err instanceof TelegramError && err.status === 403) error(502, 'Telegram won’t deliver to that chat. Open the bot, press Start, or link again');
+				error(502, err instanceof TelegramError ? `Telegram refused the message (${err.status})` : 'Telegram didn’t answer');
+			}
+			if (result === 'not_linked') error(409, 'Link Telegram first');
+			if (result === 'limited') error(429, 'The hourly limit of 20 messages is reached');
+			logEvent('info', 'telegram', 'test_sent');
 			return json({ success: true });
 		}
 		case 'set':
