@@ -23,6 +23,7 @@
 	import { showToast } from '$lib/stores/toast';
 	import { loadUserState } from '$lib/stores/userState';
 	import { AI_ASSISTANT_CONTEXT, type AIAssistantContext } from '$lib/types/assistant';
+	import { LABELS_CONTEXT, type LabelsContext } from '$lib/types/labels';
 	import type { LayoutData } from './$types';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();
@@ -31,8 +32,13 @@
 	let { readingPaneDefault } = data;
 	const readingPane = createReadingPaneStore(readingPaneDefault);
 	setContext('readingPane', readingPane);
-	setContext('labels', data.labels ?? []);
-	setContext('rules', data.rules ?? []);
+	// A getter, so consumers see the labels of the current page data (a new
+	// label, another account) rather than those of the first load.
+	setContext<LabelsContext>(LABELS_CONTEXT, {
+		get current() {
+			return data.labels ?? [];
+		}
+	});
 
 	let searchQuery = $state(page.url.searchParams.get('q') ?? '');
 

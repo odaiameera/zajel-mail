@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import type { Email } from '$lib/jmap/types';
-	import type { Label } from '$lib/types/labels';
+	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
 	import { categoryOf, type InboxTabsState } from '$lib/types/categories';
 	import { getContext, onDestroy } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
@@ -10,7 +10,8 @@
 	import EmailRowActions from './EmailRowActions.svelte';
 	import SenderAvatar from './SenderAvatar.svelte';
 
-	const allLabels = getContext<Label[]>('labels') ?? [];
+	const labelsContext = getContext<LabelsContext | undefined>(LABELS_CONTEXT);
+	const allLabels: Label[] = $derived(labelsContext?.current ?? []);
 	const getRemindedIds = getContext<() => Set<string>>('remindedIds');
 	const listMailboxId = getContext<() => string>('listMailboxId');
 	/** emailId → ISO return time for mail parked in Remind Me Later. */
