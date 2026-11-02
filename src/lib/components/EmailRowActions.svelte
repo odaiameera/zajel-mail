@@ -64,8 +64,11 @@
 		if (loading) return;
 		loading = 'unsnooze';
 		try {
-			await fetch(`/api/reminders/${emailId}`, { method: 'DELETE' });
+			const res = await fetch(`/api/reminders/${emailId}`, { method: 'DELETE' });
+			if (!res.ok) showToast({ message: await errorText(res, 'Could not cancel the reminder') });
 			await invalidateAll();
+		} catch {
+			showToast({ message: 'Network error' });
 		} finally {
 			loading = '';
 		}
@@ -76,15 +79,23 @@
 		if (loading) return;
 		loading = 'rml';
 		try {
-			await fetch('/api/reminders', {
+			const res = await fetch('/api/reminders', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ emailId, remindAt, sourceMailboxId })
 			});
+			if (!res.ok) showToast({ message: await errorText(res, 'Could not set the reminder') });
 			await invalidateAll();
+		} catch {
+			showToast({ message: 'Network error' });
 		} finally {
 			loading = '';
 		}
+	}
+
+	async function errorText(res: Response, fallback: string): Promise<string> {
+		const data = (await res.json().catch(() => null)) as { error?: string } | null;
+		return data?.error ?? fallback;
 	}
 
 	/**

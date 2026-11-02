@@ -6,10 +6,19 @@ const DEFAULT_USING = [
 	'urn:ietf:params:jmap:submission'
 ];
 
+/**
+ * How long one request may take before it is abandoned. Without a limit a
+ * server that accepts the connection and then hangs holds the caller for
+ * undici's default of five minutes — and the background workers deliver one
+ * account after another, so one stalled account held up everyone's sends.
+ */
+export const REQUEST_TIMEOUT_MS = 60_000;
+
 export class JMAPClient {
 	constructor(
 		private apiUrl: string,
-		private authHeader: string
+		private authHeader: string,
+		private timeoutMs = REQUEST_TIMEOUT_MS
 	) {}
 
 	async request(methodCalls: MethodCall[], using: string[] = DEFAULT_USING): Promise<JMAPResponse> {
@@ -19,7 +28,10 @@ export class JMAPClient {
 				'Content-Type': 'application/json',
 				Authorization: this.authHeader
 			},
-			body: JSON.stringify({ using, methodCalls })
+			body: JSON.stringify({ using, methodCalls }),
+			// A timed-out request rejects like any other failure to reach the
+			// server, so callers' network-error handling (and retries) apply.
+			signal: AbortSignal.timeout(this.timeoutMs)
 		});
 
 		if (response.status === 401) {

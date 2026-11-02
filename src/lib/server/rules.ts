@@ -32,7 +32,12 @@ function conditionToFilter(c: RuleCondition): JmapFilter | null {
 
 	if (!base) return null;
 
-	const negated = c.negate || c.op === 'not_contains';
+	// As the engine reads it: "doesn't contain" and NOT each flip the sense,
+	// so both together is a double negative. The operator counts only for
+	// text fields — switching the field to Has attachment or Size leaves the
+	// old operator behind in the condition, and the engine ignores it there.
+	const opNegates = c.op === 'not_contains' && c.field !== 'size' && c.field !== 'hasAttachment';
+	const negated = c.negate !== opNegates;
 	return negated ? { operator: 'NOT', conditions: [base] } : base;
 }
 

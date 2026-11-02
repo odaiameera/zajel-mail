@@ -6,13 +6,7 @@ import { getMailboxes } from '$lib/jmap/mailbox';
 import type { AuthState, Email } from '$lib/jmap/types';
 import { getRules, getRulesCursor, setRulesCursor } from './db/queries/rules';
 import { jevHandlesRules } from './jev/rules';
-import {
-	evaluateRulesForEmail,
-	extractBodyText,
-	outcomeToUpdate,
-	rulesNeedBody,
-	type RuleActionCtx
-} from './rules-engine';
+import { matcherProperties, updatesForEmails, type RuleActionCtx } from './rules-engine';
 
 /**
  * Server-side rule application. Stalwart on this deployment does not run
@@ -97,12 +91,7 @@ async function runApply(auth: AuthState, userEmail: string, accountRowId: string
 		validMailboxIds: new Set(mailboxes.map((m) => m.id))
 	};
 
-	const needBody = rulesNeedBody(enabled);
-	const props = [
-		'id', 'receivedAt', 'from', 'to', 'subject', 'size',
-		'hasAttachment', 'keywords', 'mailboxIds', 'preview',
-		...(needBody ? ['bodyValues', 'textBody'] : [])
-	];
+	const { properties, fetchTextBodyValues } = matcherProperties(enabled);
 
 	const response = await client.request([
 		[
@@ -120,22 +109,15 @@ async function runApply(auth: AuthState, userEmail: string, accountRowId: string
 			{
 				accountId,
 				'#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
-				properties: props,
-				...(needBody ? { fetchTextBodyValues: true } : {})
+				properties,
+				...(fetchTextBodyValues && { fetchTextBodyValues })
 			},
 			'g'
 		]
 	]);
 
 	const emails = (response.methodResponses[1][1] as { list: Email[] }).list ?? [];
-
-	const update: Record<string, Record<string, unknown>> = {};
-	for (const email of emails) {
-		const bodyText = needBody ? extractBodyText(email) : '';
-		const outcome = evaluateRulesForEmail(email, enabled, ctx, bodyText);
-		const emailUpdate = outcomeToUpdate(email, outcome);
-		if (Object.keys(emailUpdate).length > 0) update[email.id] = emailUpdate;
-	}
+	const { update } = updatesForEmails(emails, enabled, ctx);
 
 	const entries = Object.entries(update);
 	for (let i = 0; i < entries.length; i += BATCH) {
@@ -159,11 +141,19 @@ async function runApply(auth: AuthState, userEmail: string, accountRowId: string
 		}
 	}
 
-	// If we filled a full page there may be more backlog; advance the cursor
-	// only to the newest message we actually processed so the next tick picks
-	// up where we left off. Otherwise jump to "now".
-	const newCursor =
-		emails.length >= PAGE && emails.length > 0 ? emails[emails.length - 1]!.receivedAt : nowIso;
+	// A full page may have more behind it, so the cursor resumes from the
+	// newest message processed rather than jumping to "now". Stalwart stamps
+	// receivedAt to the second and `after` is strict, so resuming at that
+	// message would skip the rest of its second: step back a second for ties
+	// (a re-read is safe, the updates only write differences) — unless the
+	// whole page is that one second, when stepping back would never move on.
+	// The same stepping as Jev's worker.
+	let newCursor = nowIso;
+	if (emails.length >= PAGE) {
+		const lastSeen = emails[emails.length - 1]!.receivedAt;
+		const stepped = Date.parse(lastSeen) - 1000;
+		newCursor = stepped > Date.parse(cursor) ? new Date(stepped).toISOString() : lastSeen;
+	}
 	setRulesCursor(userEmail, newCursor);
 }
 

@@ -31,15 +31,15 @@ Regressions from the v0.6.0 work, data loss that is live in production, and the 
 Verified bugs that lose mail or events, or weaken the account, but need a user to do something unusual first. One pull request per bullet is fine.
 
 **Mail (`dev-mail`)**
-- Every draft save and send destroys the previous draft in the same request that creates the new one, so a quota or size failure loses the message. Create first, destroy on success.
-- Snooze from Starred or Search trusts a client-named source mailbox and can leave the message in the Inbox while "returning" it to a label. Use the same leave-from-wherever-it-is logic as moves.
-- "Save & apply now" runs the rule on an approximate filter (negation inverted, no folder) and so acts on different mail than the rule matches.
-- Deleting a label that holds any message always fails (`onDestroyRemoveEmails: false` means "refuse if non-empty"); removing a label from a message that is only in that label silently does nothing.
-- Scheduled sends: a missing Scheduled folder drops the message silently; any JMAP method error fails permanently; no request timeout.
-- The rules scheduler re-reads the same page forever when 100+ messages share one second; the deploy route treats an empty result as failure and deactivates other Sieve scripts without saying so.
-- The quadratic regexes in email HTML rewriting run during server rendering (measured 449 ms for 48 KB); the image proxy buffers 10 MB per request with no concurrency cap.
-- Real attachments are hidden when they carry a Content-ID; the attachment Content-Type comes from the file-name extension only and its CSP lacks `sandbox`.
-- Non-ASCII mail passwords cannot be linked (`btoa` versus `Buffer`).
+- [x] Every draft save and send destroys the previous draft in the same request that creates the new one, so a quota or size failure loses the message. Create first, destroy on success.
+- [x] Snooze from Starred or Search trusts a client-named source mailbox and can leave the message in the Inbox while "returning" it to a label. Use the same leave-from-wherever-it-is logic as moves.
+- [x] "Save & apply now" runs the rule on an approximate filter (negation inverted, no folder) and so acts on different mail than the rule matches.
+- [x] Deleting a label that holds any message always fails (`onDestroyRemoveEmails: false` means "refuse if non-empty"); removing a label from a message that is only in that label silently does nothing.
+- [x] Scheduled sends: a missing Scheduled folder drops the message silently; any JMAP method error fails permanently; no request timeout.
+- [x] The rules scheduler re-reads the same page forever when 100+ messages share one second; the deploy route treats an empty result as failure and deactivates other Sieve scripts without saying so.
+- [x] The quadratic regexes in email HTML rewriting run during server rendering (measured 449 ms for 48 KB); the image proxy buffers 10 MB per request with no concurrency cap. Left: stream the proxied image through instead of buffering it, which needs the SSRF-vetted fetcher in `avatars/net.ts` to expose the response.
+- [x] Real attachments are hidden when they carry a Content-ID; the attachment Content-Type comes from the file-name extension only and its CSP lacks `sandbox`.
+- [x] Non-ASCII mail passwords cannot be linked (`btoa` versus `Buffer`).
 
 **Calendar (`dev-calendar`)**
 - `UNTIL` is written as `T235959Z`, off by a day outside UTC; `EXDATE`/`RDATE` ignore their own zone; unknown time zones become UTC and are saved that way.

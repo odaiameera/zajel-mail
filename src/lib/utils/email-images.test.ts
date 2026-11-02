@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { EmailAttachment } from '$lib/jmap/types';
-import { emailFrameCsp, prepareEmailForReading, proxiedImageUrl, rewriteEmailImages } from './email-images';
+import {
+	MAX_HTML_LENGTH,
+	emailFrameCsp,
+	prepareEmailForReading,
+	proxiedImageUrl,
+	rewriteEmailImages
+} from './email-images';
 
 const ctx = (attachments: Partial<EmailAttachment>[] = []) => ({
 	emailId: 'M1',
@@ -117,6 +123,89 @@ describe('rewriteEmailImages', () => {
 		expect(out).not.toContain('<base');
 		expect(out).toContain(`src="${proxied('https://news.test/mail/img/1.png')}"`);
 	});
+
+	it('skips comments, and leaves a tag that never closes (which a browser shows nothing of) alone', () => {
+		const out = rewriteEmailImages(
+			'<!-- <img src="https://t.test/c.png"> --><img src="https://a.test/1.png"><img src="https://t.test/open',
+			ctx()
+		);
+		expect(out).toContain('<!-- <img src="https://t.test/c.png"> -->');
+		expect(out).toContain(`src="${proxied('https://a.test/1.png')}"`);
+		expect(out).toContain('<img src="https://t.test/open');
+	});
+});
+
+describe('prepareEmailForReading on hostile input', () => {
+	const SIZE = 200 * 1024;
+	const fill = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length));
+	// Each of these made the old regexes scan to the end of the body from
+	// every match: 48 KB of `<link ` took half a second, 200 KB over a minute.
+	const HOSTILE: Record<string, string> = {
+		'<link ': fill('<link '),
+		'<a ': fill('<a '),
+		'<style>': fill('<style>'),
+		'<base ': fill('<base '),
+		'<meta ': fill('<meta '),
+		'<img src="': fill('<img src="'),
+		'<!--': fill('<!--'),
+		'@import': `<style>${fill('@import')}</style>`,
+		'@font-face': `<style>${fill('@font-face')}</style>`,
+		'@font-face{': `<style>${fill('@font-face{')}</style>`,
+		'url(': `<style>${fill('url(')}</style>`,
+		'url("': `<style>${fill('url("')}</style>`,
+		'style="url(': fill('<p style="url(')
+	};
+
+	// Warm up both scanners, so the first measurement is not paying for the
+	// JIT compiling them.
+	prepareEmailForReading(
+		'<style>' + 'url(url("x")'.repeat(200) + '</style>' +
+			'<img src="https://t.test/x.png" style="background:url(https://t.test/b.png)">'.repeat(200),
+		{ ...ctx(), remote: 'block' }
+	);
+
+	// The quickest of a few runs: what the code costs, not what a garbage
+	// collection that happens to land inside one run costs.
+	function quickest(run: () => void, runs = 3): number {
+		let best = Infinity;
+		for (let i = 0; i < runs; i++) {
+			const started = performance.now();
+			run();
+			best = Math.min(best, performance.now() - started);
+		}
+		return best;
+	}
+
+	for (const [name, body] of Object.entries(HOSTILE)) {
+		it(`prepares 200 KB of ${name} in linear time`, () => {
+			let html = '';
+			const ms = quickest(() => {
+				html = prepareEmailForReading(body, { ...ctx(), remote: 'block' }).html;
+			});
+			expect(ms).toBeLessThan(50);
+			expect(typeof html).toBe('string');
+		});
+	}
+
+	it('still prepares an ordinary large body quickly', () => {
+		const body = '<p>Hello</p><img src="https://t.test/x.png" style="background:url(https://t.test/b.png)">'.repeat(2000);
+		let blockedRemote = 0;
+		const ms = quickest(() => {
+			blockedRemote = prepareEmailForReading(body, { ...ctx(), remote: 'block' }).blockedRemote;
+		});
+		expect(ms).toBeLessThan(200);
+		expect(blockedRemote).toBe(4000);
+	});
+
+	it('shows a body past the size cap as text instead of laying it out', () => {
+		const body = '<img src="https://t.test/x.png">'.repeat(MAX_HTML_LENGTH / 32 + 1);
+		const { html, blockedRemote, inlineBlobIds } = prepareEmailForReading(body, { ...ctx(), remote: 'proxy' });
+		expect(html.startsWith('<pre')).toBe(true);
+		expect(html).not.toContain('<img');
+		expect(html).not.toContain('/api/image-proxy');
+		expect(blockedRemote).toBe(0);
+		expect(inlineBlobIds.size).toBe(0);
+	});
 });
 
 describe('prepareEmailForReading', () => {
@@ -149,6 +238,20 @@ describe('prepareEmailForReading', () => {
 		expect(blockedRemote).toBe(0);
 		expect(html).toContain('/api/email/M1/attachment/B1');
 		expect(html).toContain('data:image/png;base64,AAAA');
+	});
+
+	it('reports which parts the body draws inline, by blob id', () => {
+		const { inlineBlobIds } = prepareEmailForReading(
+			'<img src="cid:logo@x"><a href="cid:doc@x">the document</a><p style="background:url(cid:bg@x)">x</p>',
+			ctx([
+				{ cid: 'logo@x', blobId: 'B1', name: 'logo.png', type: 'image/png', disposition: 'inline' },
+				{ cid: 'doc@x', blobId: 'B2', name: 'doc.pdf', type: 'application/pdf', disposition: 'attachment' },
+				{ cid: 'bg@x', blobId: 'B3', name: 'bg.png', type: 'image/png', disposition: 'inline' },
+				{ cid: 'unused@x', blobId: 'B4', name: 'spare.png', type: 'image/png', disposition: 'inline' }
+			])
+		);
+		// A link to a part is not a picture of it, and B4 is never referenced.
+		expect([...inlineBlobIds].sort()).toEqual(['B1', 'B3']);
 	});
 
 	it('removes <link> tags and meta refreshes, which load or navigate outside CSP image rules', () => {

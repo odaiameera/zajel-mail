@@ -1,11 +1,14 @@
 import type { RequestHandler } from './$types';
+import type { AuthState } from '$lib/jmap/types';
+import { createClient } from '$lib/jmap/auth';
 
 /**
  * Stalwart sometimes returns `application/octet-stream` for blobs even when
  * the original part had a specific MIME type. The browser then refuses to
  * render the response inline (e.g. the PDF viewer iframe just downloads).
- * When the upstream type is the generic catch-all, fall back to a
- * filename-extension lookup so the inline viewer can do its job.
+ * The part's own type, looked up from the message, is used first; when the
+ * part declares nothing better either, the filename's extension stands in so
+ * the inline viewer can do its job.
  */
 const MIME_OVERRIDES: Record<string, string> = {
 	pdf: 'application/pdf',
@@ -22,6 +25,18 @@ const MIME_OVERRIDES: Record<string, string> = {
 	json: 'application/json; charset=utf-8',
 	md: 'text/markdown; charset=utf-8'
 };
+
+/**
+ * Types a browser would run or navigate as a document if it rendered them
+ * inline from this origin. The CSP below already sandboxes them, but a
+ * download is the one outcome with nothing to get wrong, and the built-in
+ * viewer reads such files as text through fetch(), which this does not affect.
+ */
+const SERVED_AS_DOWNLOAD =
+	/^(?:text\/html|application\/xhtml\+xml|text\/xml|application\/xml|application\/(?:x-)?javascript|text\/javascript|application\/ecmascript|text\/ecmascript)\b/i;
+
+/** A type/subtype as a JMAP part declares it (no parameters), and nothing that could reach the header line. */
+const MIME_TOKEN = /^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/;
 
 /**
  * A JMAP id is 1–255 characters of the URL-safe base64 alphabet (RFC 8620
@@ -46,6 +61,70 @@ function contentDisposition(disposition: string, filename: string): string {
 	return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
+type BodyPartLike = { blobId?: string; type?: string };
+type PartLists = Partial<Record<'attachments' | 'htmlBody' | 'textBody', BodyPartLike[]>>;
+
+/**
+ * The declared MIME type of each of a message's parts, by blob id — one
+ * Email/get without body values. Kept for a minute per message so a body full
+ * of inline images costs one lookup, not one per image.
+ */
+const PART_TYPES_TTL_MS = 60_000;
+const PART_TYPES_MAX = 256;
+const partTypesCache = new Map<string, { at: number; types: Promise<Map<string, string>> }>();
+
+async function fetchPartTypes(auth: AuthState, emailId: string): Promise<Map<string, string>> {
+	const response = await createClient(auth).request([
+		['Email/get', { accountId: auth.accountId, ids: [emailId], properties: ['attachments', 'htmlBody', 'textBody'] }, '0']
+	]);
+	const list = (response.methodResponses[0]?.[1] as { list?: PartLists[] } | undefined)?.list ?? [];
+	const types = new Map<string, string>();
+	for (const email of list) {
+		for (const key of ['attachments', 'htmlBody', 'textBody'] as const) {
+			for (const part of email[key] ?? []) {
+				if (part.blobId && part.type && !types.has(part.blobId)) types.set(part.blobId, part.type);
+			}
+		}
+	}
+	return types;
+}
+
+function partTypes(auth: AuthState, emailId: string): Promise<Map<string, string>> {
+	const key = `${auth.accountId}/${emailId}`;
+	const now = Date.now();
+	const hit = partTypesCache.get(key);
+	if (hit && now - hit.at < PART_TYPES_TTL_MS) return hit.types;
+	const types = fetchPartTypes(auth, emailId).catch(() => {
+		// A failed lookup is not an answer worth keeping.
+		partTypesCache.delete(key);
+		return new Map<string, string>();
+	});
+	if (partTypesCache.size >= PART_TYPES_MAX) {
+		partTypesCache.delete(partTypesCache.keys().next().value as string);
+	}
+	partTypesCache.set(key, { at: now, types });
+	return types;
+}
+
+/** A declared type worth using: a well-formed token and not the catch-all. */
+function specificType(type: string | null | undefined): string | null {
+	if (!type) return null;
+	const token = type.split(';')[0].trim().toLowerCase();
+	if (!MIME_TOKEN.test(token) || token === 'application/octet-stream') return null;
+	return token;
+}
+
+function contentType(declared: string | undefined, upstream: string | null, filename: string): string {
+	const ext = filename.toLowerCase().split('.').pop() ?? '';
+	let type =
+		specificType(declared) ?? specificType(upstream) ?? MIME_OVERRIDES[ext] ?? 'application/octet-stream';
+	if (SERVED_AS_DOWNLOAD.test(type)) type = 'application/octet-stream';
+	// Text read straight into a tab: the message's parts are UTF-8 once
+	// Stalwart has decoded them, and the extension table says the same.
+	if (type.startsWith('text/') && !type.includes(';')) type += '; charset=utf-8';
+	return type;
+}
+
 /**
  * Proxy a JMAP blob download so the user's auth header never reaches the
  * browser. Defaults to `Content-Disposition: attachment` (safe for direct
@@ -66,34 +145,37 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	const downloadUrl =
 		`${locals.auth.apiUrl}download/${locals.auth.accountId}/${params.blobId}/${encodeURIComponent(filename)}`;
 
-	const res = await fetch(downloadUrl, {
-		headers: { Authorization: locals.auth.authHeader }
-	});
+	// The blob and the message's part types, side by side.
+	const [res, types] = await Promise.all([
+		fetch(downloadUrl, { headers: { Authorization: locals.auth.authHeader } }),
+		partTypes(locals.auth, params.id)
+	]);
 
 	if (!res.ok) {
 		return new Response('Download failed', { status: res.status });
 	}
 
-	const upstreamType = res.headers.get('Content-Type') ?? 'application/octet-stream';
-	const ext = filename.toLowerCase().split('.').pop() ?? '';
-	const effectiveType =
-		upstreamType.startsWith('application/octet-stream') && MIME_OVERRIDES[ext]
-			? MIME_OVERRIDES[ext]
-			: upstreamType;
+	const type = contentType(types.get(params.blobId), res.headers.get('Content-Type'), filename);
 
-	return new Response(res.body, {
-		status: 200,
-		headers: {
-			'Content-Type': effectiveType,
-			'Content-Disposition': contentDisposition(disposition, filename),
-			'Content-Length': res.headers.get('Content-Length') ?? '',
-			// Lock down inline-rendered SVGs / HTML attachments so they can't
-			// run scripts or fetch tracking pixels through the viewer iframe.
-			'Content-Security-Policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
-			// Force the browser to trust our Content-Type rather than
-			// sniffing — required for inline PDF rendering when the override
-			// above kicks in.
-			'X-Content-Type-Options': 'nosniff'
-		}
-	});
+	const headers: Record<string, string> = {
+		'Content-Type': type,
+		'Content-Disposition': contentDisposition(disposition, filename),
+		// Lock down inline-rendered SVGs / HTML attachments so they can't run
+		// scripts, post forms or fetch tracking pixels through the viewer
+		// iframe. `sandbox` also takes the response out of this origin, which
+		// is what matters for an attachment opened in its own tab. Not for
+		// PDFs: Chrome's viewer does not render a sandboxed PDF document.
+		'Content-Security-Policy':
+			"default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; form-action 'none'" +
+			(type === 'application/pdf' ? '' : '; sandbox'),
+		// Force the browser to trust our Content-Type rather than sniffing —
+		// required for inline PDF rendering when the override above kicks in.
+		'X-Content-Type-Options': 'nosniff'
+	};
+	// Forward the length only when it describes the bytes we send: fetch has
+	// already undone any Content-Encoding, and an empty value is not a length.
+	const length = res.headers.get('Content-Length');
+	if (length && !res.headers.get('Content-Encoding')) headers['Content-Length'] = length;
+
+	return new Response(res.body, { status: 200, headers });
 };

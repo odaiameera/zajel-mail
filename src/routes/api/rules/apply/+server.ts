@@ -1,11 +1,12 @@
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
-import { buildJmapFilter } from '$lib/server/rules';
 import {
 	applyActionsToOutcome,
 	emptyOutcome,
+	matcherProperties,
 	outcomeToUpdate,
+	updatesForEmails,
 	type RuleActionCtx
 } from '$lib/server/rules-engine';
 import { effectiveActions, hasJevCondition, type Rule } from '$lib/types/rules';
@@ -14,12 +15,16 @@ import type { Email } from '$lib/jmap/types';
 const PAGE = 200;
 const BATCH = 50;
 
+interface SetResult {
+	updated?: Record<string, unknown> | null;
+	notUpdated?: Record<string, { type?: string; description?: string; properties?: string[] }> | null;
+}
+
 /**
- * One email's JMAP update for a single rule. Matching already happened
- * server-side (Email/query pre-filtered), so only the actions run here.
- * The wire format comes from the shared engine — full `mailboxIds`
- * objects, never id pointer patches (see outcomeToUpdate for the Stalwart
- * digit-id story).
+ * One email's JMAP update for a single rule whose matches were chosen by
+ * hand (the editor's Jev test), so only the actions run here. The wire
+ * format comes from the shared engine — full `mailboxIds` objects, never
+ * id pointer patches (see outcomeToUpdate for the Stalwart digit-id story).
  */
 function buildUpdates(email: Email, rule: Rule, ctx: RuleActionCtx): Record<string, unknown> {
 	const outcome = emptyOutcome();
@@ -40,6 +45,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const client = createClient(locals.auth);
 	const { accountId } = locals.auth;
 
+	// The editor's Cancel aborts the fetch; the loop below stops at the next
+	// page instead of finishing the whole mailbox behind its back.
+	let cancelled = false;
+
 	const stream = new ReadableStream({
 		async start(controller) {
 			const encoder = new TextEncoder();
@@ -58,6 +67,30 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			let failedReason = '';
 			let total = 0;
 
+			// Send a page of updates in JMAP-safe chunks, counting what the
+			// server accepted — `notUpdated` rejections used to be dropped on
+			// the floor, reporting success while folders stayed empty. Returns
+			// the ids that were updated.
+			const applyUpdates = async (update: Record<string, Record<string, unknown>>): Promise<Set<string>> => {
+				const updatedIds = new Set<string>();
+				const entries = Object.entries(update);
+				for (let i = 0; i < entries.length; i += BATCH) {
+					const chunk = Object.fromEntries(entries.slice(i, i + BATCH));
+					const setRes = await client.request([['Email/set', { accountId, update: chunk }, '0']]);
+					const result = setRes.methodResponses[0][1] as SetResult;
+					for (const id of Object.keys(result.updated ?? {})) updatedIds.add(id);
+					const rejected = Object.values(result.notUpdated ?? {});
+					failed += rejected.length;
+					if (rejected.length > 0 && !failedReason) {
+						const first = rejected[0];
+						const where = first.properties?.length ? ` (${first.properties.join(', ')})` : '';
+						failedReason = `${first.description ?? first.type ?? 'rejected by server'}${where}`;
+					}
+				}
+				applied += updatedIds.size;
+				return updatedIds;
+			};
+
 			try {
 				if (activeRules.length === 0) {
 					send({ type: 'done', scanned: 0, matched: 0, applied: 0, failed: 0 });
@@ -66,8 +99,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 				const mailboxes = await getMailboxes(client, accountId);
 				const validIds = new Set(mailboxes.map((m) => m.id));
+				const inbox = mailboxes.find((m) => m.role === 'inbox');
 				const ctx: RuleActionCtx = {
-					inboxId: mailboxes.find((m) => m.role === 'inbox')?.id,
+					inboxId: inbox?.id,
 					trashId: mailboxes.find((m) => m.role === 'trash')?.id,
 					validMailboxIds: validIds
 				};
@@ -118,22 +152,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 							.filter(([, p]) => Object.keys(p).length > 0)
 					);
 					scanned = matched = emails.length;
-					const entries = Object.entries(patches);
-					for (let i = 0; i < entries.length; i += BATCH) {
-						const setRes = await client.request([
-							['Email/set', { accountId, update: Object.fromEntries(entries.slice(i, i + BATCH)) }, '0']
-						]);
-						const result = setRes.methodResponses[0][1] as {
-							updated?: Record<string, unknown> | null;
-							notUpdated?: Record<string, { type?: string; description?: string }> | null;
-						};
-						applied += Object.keys(result.updated ?? {}).length;
-						const rejected = Object.values(result.notUpdated ?? {});
-						failed += rejected.length;
-						if (rejected.length > 0 && !failedReason) {
-							failedReason = rejected[0].description ?? rejected[0].type ?? 'rejected by server';
-						}
-					}
+					await applyUpdates(patches);
 					send({ type: 'done', scanned, matched, applied, failed, failedReason });
 					return;
 				}
@@ -146,93 +165,71 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					});
 					return;
 				}
+				if (!inbox) {
+					send({ type: 'error', message: 'This account has no Inbox to apply rules to.' });
+					return;
+				}
 
-				// Estimate total up-front so the UI can render a progress bar.
-				for (const rule of activeRules) {
-					const filter = buildJmapFilter(rule);
-					if (!filter) continue;
+				// The candidates are the Inbox, page by page — the mail rules see
+				// as it arrives — and each message is judged by the matcher the
+				// scheduler uses, so "apply now" acts on exactly what a rule would
+				// act on at delivery. A JMAP filter used to stand in for the
+				// matcher, and acted on the wrong mail: the server's text filters
+				// are its search (word based, not substring), "is" and "starts
+				// with" had no counterpart, NOT plus "doesn't contain" came out as
+				// a single negation, and nothing kept it to the Inbox, so Sent and
+				// Trash were swept too.
+				const { properties, fetchTextBodyValues } = matcherProperties(activeRules);
+				total = inbox.totalEmails;
+				send({ type: 'start', total });
+
+				let position = 0;
+				// Bounded loop for safety; the real end is a page smaller than PAGE.
+				for (let safety = 0; safety < 10_000 && !cancelled; safety++) {
 					const response = await client.request([
 						[
 							'Email/query',
-							{ accountId, filter, calculateTotal: true, limit: 0 },
-							'0'
+							{
+								accountId,
+								filter: { inMailbox: inbox.id },
+								sort: [{ property: 'receivedAt', isAscending: false }],
+								position,
+								limit: PAGE
+							},
+							'q'
+						],
+						[
+							'Email/get',
+							{
+								accountId,
+								'#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
+								properties,
+								...(fetchTextBodyValues && { fetchTextBodyValues })
+							},
+							'g'
 						]
 					]);
-					const r = response.methodResponses[0][1] as { total?: number };
-					total += r.total ?? 0;
-				}
-				send({ type: 'start', total });
 
-				// Paginate matching emails per rule — no cap.
-				for (const rule of activeRules) {
-					const filter = buildJmapFilter(rule);
-					if (!filter) continue;
-					let position = 0;
+					const emails = (response.methodResponses[1][1] as { list: Email[] }).list ?? [];
+					if (emails.length === 0) break;
 
-					// Bounded loop for safety; real break condition is "page smaller than PAGE".
-					for (let safety = 0; safety < 10_000; safety++) {
-						const response = await client.request([
-							['Email/query', { accountId, filter, position, limit: PAGE }, 'q'],
-							[
-								'Email/get',
-								{
-									accountId,
-									'#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
-									properties: ['id', 'keywords', 'mailboxIds']
-								},
-								'g'
-							]
-						]);
+					const page = updatesForEmails(emails, activeRules, ctx);
+					scanned += emails.length;
+					matched += page.matched;
+					const updatedIds = await applyUpdates(page.update);
 
-						const emails = (response.methodResponses[1][1] as { list: Email[] }).list ?? [];
-						if (emails.length === 0) break;
+					send({ type: 'progress', scanned, matched, applied, failed, total });
 
-						// Build patches for this page.
-						const patches: Record<string, Record<string, unknown>> = {};
-						for (const email of emails) {
-							const p = buildUpdates(email, rule, ctx);
-							if (Object.keys(p).length > 0) patches[email.id] = p;
-						}
-
-						scanned += emails.length;
-						matched += emails.length; // pre-filtered, so every row matched
-
-						// Send updates in JMAP-safe chunks. Count what the server
-						// actually accepted — `notUpdated` rejections used to be
-						// dropped on the floor, reporting success while folders
-						// stayed empty.
-						const entries = Object.entries(patches);
-						for (let i = 0; i < entries.length; i += BATCH) {
-							const chunk = Object.fromEntries(entries.slice(i, i + BATCH));
-							const setRes = await client.request([
-								['Email/set', { accountId, update: chunk }, '0']
-							]);
-							const result = setRes.methodResponses[0][1] as {
-								updated?: Record<string, unknown> | null;
-								notUpdated?: Record<
-									string,
-									{ type?: string; description?: string; properties?: string[] }
-								> | null;
-							};
-							applied += Object.keys(result.updated ?? {}).length;
-							const rejected = Object.values(result.notUpdated ?? {});
-							if (rejected.length > 0) {
-								failed += rejected.length;
-								if (!failedReason) {
-									const first = rejected[0];
-									const where = first.properties?.length
-										? ` (${first.properties.join(', ')})`
-										: '';
-									failedReason = `${first.description ?? first.type ?? 'rejected by server'}${where}`;
-								}
-							}
-						}
-
-						send({ type: 'progress', scanned, matched, applied, failed, total });
-
-						if (emails.length < PAGE) break;
-						position += emails.length;
+					if (emails.length < PAGE) break;
+					// A message a move took out of the Inbox has left the listing,
+					// so the next page starts that many earlier or it would skip
+					// as many unseen messages.
+					let left = 0;
+					for (const id of updatedIds) {
+						const next = page.update[id]?.mailboxIds as Record<string, boolean> | undefined;
+						if (next && !next[inbox.id]) left++;
 					}
+					position += emails.length - left;
 				}
 
 				send({ type: 'done', scanned, matched, applied, failed, failedReason });
@@ -248,6 +245,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					// already closed
 				}
 			}
+		},
+		cancel() {
+			cancelled = true;
 		}
 	});
 

@@ -6,19 +6,15 @@
 	import { attachmentUrl } from '$lib/attachments/fetch';
 	import ViewerModal from './viewers/ViewerModal.svelte';
 
+	/**
+	 * `attachments` is the list as shown: which of an email's parts are cards
+	 * (and which the body already draws) is worked out by
+	 * `attachmentCards` in `$lib/attachments/list`.
+	 */
 	let { emailId, attachments }: {
 		emailId: string;
 		attachments: EmailAttachment[];
 	} = $props();
-
-	/**
-	 * Real attachments only — filter out inline parts (images referenced
-	 * via `cid:` inside the HTML body). Those render through the body,
-	 * not as downloadable files.
-	 */
-	const files = $derived(
-		attachments.filter((a) => a.disposition !== 'inline' && !a.cid)
-	);
 
 	let activeAttachment = $state<ViewerAttachment | null>(null);
 
@@ -63,18 +59,19 @@
 	}
 </script>
 
-{#if files.length > 0}
+{#if attachments.length > 0}
 	<div class="border-t border-border px-6 py-3 shrink-0">
 		<div class="text-xs text-text-tertiary mb-2">
-			{files.length} {files.length === 1 ? 'attachment' : 'attachments'}
+			{attachments.length} {attachments.length === 1 ? 'attachment' : 'attachments'}
 		</div>
 		<div class="flex flex-wrap gap-2">
-			{#each files as a (a.blobId)}
+			{#each attachments as a (a.blobId)}
 				{@const kind = iconKindFor(a.type)}
+				<!-- A body part's size is not always known (then it is 0). -->
 				<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 				<div
 					onclick={() => openViewer(a)}
-					title={`${a.name ?? 'attachment'} · ${formatSize(a.size)}`}
+					title={a.size > 0 ? `${a.name ?? 'attachment'} · ${formatSize(a.size)}` : (a.name ?? 'attachment')}
 					class="flex items-center gap-2 px-3 py-2 bg-surface-hover border border-border rounded-lg hover:border-accent hover:bg-accent/5 transition-colors cursor-pointer group max-w-[280px]"
 				>
 					<span class="shrink-0 text-text-secondary group-hover:text-accent-fg transition-colors">
@@ -96,7 +93,9 @@
 					</span>
 					<div class="min-w-0 flex-1">
 						<div class="text-sm text-text truncate">{a.name ?? 'unnamed'}</div>
-						<div class="text-xs text-text-tertiary">{formatSize(a.size)}</div>
+						{#if a.size > 0}
+							<div class="text-xs text-text-tertiary">{formatSize(a.size)}</div>
+						{/if}
 					</div>
 					<button
 						onclick={(e) => downloadAttachment(a, e)}

@@ -1,6 +1,6 @@
 import type { JMAPClient } from './client';
 import type { Mailbox } from './types';
-import { updateEmailMailboxes } from './email';
+import { emailMailboxMembership, updateEmailMailboxes, type EmailMailboxChange } from './email';
 import { LABELS_PARENT_NAME, findLabelsParentId } from '$lib/types/labels';
 
 export type CreateLabelResult = { id: string } | { error: string };
@@ -142,15 +142,70 @@ export async function renameLabelMailbox(
 	return { success: true, id };
 }
 
+/** Messages detached per round while a label is being deleted. */
+const DETACH_PAGE = 200;
+/** Rounds before giving up, so a server that keeps a message put can't loop us forever. */
+const DETACH_MAX_ROUNDS = 500;
+
 /**
- * Destroy a label mailbox. `onDestroyRemoveEmails: false` detaches messages
- * from the label without deleting them — they stay in Inbox/Archive/etc.
+ * Take every message out of a label. A message that is in nothing but the
+ * label (it was "moved to" the label) goes into `fallback()`, Archive in
+ * practice, since JMAP never lets a message have no mailbox at all. The
+ * fallback is only looked up when such a message turns up.
+ */
+async function detachAll(
+	client: JMAPClient,
+	accountId: string,
+	labelMailboxId: string,
+	fallback: () => Promise<string>
+): Promise<void> {
+	let fallbackId: string | null = null;
+	let lastFirst: string | null = null;
+	for (let round = 0; round < DETACH_MAX_ROUNDS; round++) {
+		const query = await client.request([
+			['Email/query', { accountId, filter: { inMailbox: labelMailboxId }, limit: DETACH_PAGE }, '0']
+		]);
+		const ids = (query.methodResponses[0][1] as { ids?: string[] }).ids ?? [];
+		if (ids.length === 0) return;
+		// The same page twice means the server kept them in: stop rather than spin.
+		if (ids[0] === lastFirst) throw new Error('Could not take the messages out of the label');
+		lastFirst = ids[0];
+
+		const membership = await emailMailboxMembership(client, accountId, ids);
+		const changes: Record<string, EmailMailboxChange> = {};
+		for (const emailId of ids) {
+			const cur = membership.get(emailId);
+			if (!cur) continue;
+			const alone = Object.keys(cur).every((mb) => mb === labelMailboxId);
+			if (alone) fallbackId ??= await fallback();
+			changes[emailId] = { remove: [labelMailboxId], add: alone && fallbackId ? [fallbackId] : [] };
+		}
+		await updateEmailMailboxes(client, accountId, changes);
+		if (ids.length < DETACH_PAGE) return;
+	}
+	throw new Error('Could not take the messages out of the label');
+}
+
+/**
+ * Destroy a label mailbox, keeping its messages. RFC 8621's
+ * `onDestroyRemoveEmails: false` does not detach them: it makes the server
+ * refuse to destroy a mailbox that still has any (`mailboxHasEmail`), which
+ * is how deleting a label that had ever been used always failed. So the
+ * messages are taken out first ({@link detachAll}), then the empty mailbox
+ * goes, still with `false` so nothing can ever be deleted by this call.
  */
 export async function deleteLabelMailbox(
 	client: JMAPClient,
 	accountId: string,
-	id: string
+	id: string,
+	fallback: () => Promise<string>
 ): Promise<MutateLabelResult> {
+	try {
+		await detachAll(client, accountId, id, fallback);
+	} catch (err) {
+		return { success: false, error: err instanceof Error ? err.message : 'Could not empty the label' };
+	}
+
 	const response = await client.request([
 		[
 			'Mailbox/set',
@@ -192,14 +247,22 @@ export async function applyLabel(
 	});
 }
 
-/** Remove `labelMailboxId` from the email's mailboxIds. */
+/**
+ * Remove `labelMailboxId` from the email's mailboxIds. A message that is in
+ * nothing but this label would be left with no mailbox, which JMAP refuses
+ * and the writer used to answer by quietly changing nothing; it goes into
+ * `fallback()` (Archive) instead, so removing the label always removes it.
+ */
 export async function removeLabel(
 	client: JMAPClient,
 	accountId: string,
 	emailId: string,
-	labelMailboxId: string
+	labelMailboxId: string,
+	fallback?: () => Promise<string>
 ): Promise<void> {
+	const cur = (await emailMailboxMembership(client, accountId, [emailId])).get(emailId);
+	const alone = !!cur && cur[labelMailboxId] === true && Object.keys(cur).every((mb) => mb === labelMailboxId);
 	await updateEmailMailboxes(client, accountId, {
-		[emailId]: { remove: [labelMailboxId] }
+		[emailId]: { remove: [labelMailboxId], add: alone && fallback ? [await fallback()] : [] }
 	});
 }

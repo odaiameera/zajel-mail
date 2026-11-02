@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchSession } from './auth';
+import { basicAuthHeader, fetchSession } from './auth';
 import { JMAPAuthError } from './client';
 import type { AuthState, JMAPSession } from './types';
 
@@ -12,6 +12,15 @@ const auth: AuthState = {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+});
+
+describe('basicAuthHeader', () => {
+	it('encodes the UTF-8 bytes, so a non-ASCII password links like any other', () => {
+		expect(basicAuthHeader('me@example.test', 'plain')).toBe(`Basic ${btoa('me@example.test:plain')}`);
+		expect(basicAuthHeader('me@example.test', 'pässwörd ✓')).toBe(
+			`Basic ${Buffer.from('me@example.test:pässwörd ✓', 'utf8').toString('base64')}`
+		);
+	});
 });
 
 describe('fetchSession', () => {

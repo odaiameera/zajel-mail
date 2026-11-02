@@ -83,7 +83,10 @@
 			// saving or applying — surface it as a warning instead.
 			deployWarning = deployData.error
 				? `Rules saved. Delivery-time (Sieve) deploy failed: ${deployData.error} — rules still run through the app's own engine.`
-				: '';
+				: deployData.deactivated
+					? // A mail server runs one active Sieve script; activating ours switched the other off.
+						`Rules saved. Your mail server's other Sieve script “${deployData.deactivated}” is no longer active; Zajel's rules run in its place.`
+					: '';
 			await invalidateAll();
 			return true;
 		} catch (err) {

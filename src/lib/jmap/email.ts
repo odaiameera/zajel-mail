@@ -252,7 +252,8 @@ export interface SendResult {
  * Sent before submitting, so a rejected submission left a copy in Sent that
  * never went anywhere. Now a failure leaves it in Drafts, and its id comes
  * back so the composer keeps working on it. `replaceDraftId` (the draft
- * being sent) is destroyed in the same Email/set.
+ * being sent) is destroyed afterwards, once this copy exists — see
+ * {@link destroyReplacedDraft}.
  */
 export async function sendEmail(
 	client: JMAPClient,
@@ -266,15 +267,7 @@ export async function sendEmail(
 	emailCreate.mailboxIds = { [mailboxes.drafts]: true };
 
 	const response = await client.request([
-		[
-			'Email/set',
-			{
-				accountId,
-				create: { draft1: emailCreate },
-				...(options.replaceDraftId && { destroy: [options.replaceDraftId] })
-			},
-			'0'
-		],
+		['Email/set', { accountId, create: { draft1: emailCreate } }, '0'],
 		[
 			'EmailSubmission/set',
 			{
@@ -310,6 +303,10 @@ export async function sendEmail(
 	const draftId = emailResult?.created?.draft1?.id;
 	if (!draftId) return { success: false, error: 'Email created but no ID returned' };
 
+	// This copy now holds the message, sent or not, so the draft it grew out
+	// of can go. A refused submission keeps the new copy, not the old one.
+	if (options.replaceDraftId) await destroyReplacedDraft(client, accountId, options.replaceDraftId);
+
 	if (!submission?.created?.sub1) {
 		const err = submission?.notCreated ? Object.values(submission.notCreated)[0] : undefined;
 		return { success: false, error: err?.description ?? err?.type ?? 'Failed to send email', draftId };
@@ -321,7 +318,8 @@ export type StoredSendResult =
 	| { status: 'sent' }
 	/** Deleted, moved out of Scheduled, or already sent: nothing to send. */
 	| { status: 'gone' }
-	| { status: 'failed'; error: string };
+	/** `type` is the server's SetError type, so the caller can tell a passing refusal from a final one. */
+	| { status: 'failed'; type?: string; error: string };
 
 /**
  * Send a message that is already stored, waiting in the Scheduled folder.
@@ -362,13 +360,21 @@ export async function submitStoredEmail(
 		| undefined;
 	if (submission?.created?.sub1) return { status: 'sent' };
 	const err = submission?.notCreated?.sub1;
-	return { status: 'failed', error: err?.description || err?.type || 'The mail server refused the message' };
+	return {
+		status: 'failed',
+		...(err?.type && { type: err.type }),
+		error: err?.description || err?.type || 'The mail server refused the message'
+	};
 }
 
 /**
  * Save a draft. JMAP messages are immutable, so updating a draft means
- * creating its new version and destroying the old one, in one Email/set.
- * Saving used to ignore the previous draft, leaving a duplicate every time.
+ * creating its new version and then destroying the old one. Saving used to
+ * ignore the previous draft, leaving a duplicate every time; then it
+ * destroyed it in the same Email/set as the create, which the server runs
+ * even when the create is refused (RFC 8620 §5.3), so an over-quota save
+ * deleted the last good copy. Now the old one goes only once the new one
+ * exists.
  */
 export async function saveDraft(
 	client: JMAPClient,
@@ -381,15 +387,7 @@ export async function saveDraft(
 	emailCreate.mailboxIds = { [draftsMailboxId]: true };
 
 	const response = await client.request([
-		[
-			'Email/set',
-			{
-				accountId,
-				create: { draft1: emailCreate },
-				...(replaceDraftId && { destroy: [replaceDraftId] })
-			},
-			'0'
-		]
+		['Email/set', { accountId, create: { draft1: emailCreate } }, '0']
 	]);
 
 	const result = response.methodResponses[0][1] as {
@@ -403,7 +401,24 @@ export async function saveDraft(
 	}
 
 	const created = result.created?.draft1;
+	if (created?.id && replaceDraftId) await destroyReplacedDraft(client, accountId, replaceDraftId);
 	return { success: true, id: created?.id };
+}
+
+/**
+ * Drop the draft a new version has replaced. Its own request, after the
+ * create: JMAP has no way to make a destroy conditional on an earlier call
+ * in the same request. Trouble here is not a failed save — the new copy is
+ * on the server and is what the composer carries on with — so it is logged
+ * and the old draft is left for the user to find rather than reported as a
+ * failure that would make the composer save yet another copy.
+ */
+async function destroyReplacedDraft(client: JMAPClient, accountId: string, id: string): Promise<void> {
+	try {
+		await destroyEmail(client, accountId, id);
+	} catch (err) {
+		console.warn(`[draft] could not remove the replaced draft ${id}:`, err instanceof Error ? err.message : err);
+	}
 }
 
 /** Which of `ids` are in `mailboxId` right now. */
@@ -422,14 +437,23 @@ export async function emailsInMailbox(
 	return new Set(list.filter((e) => e.mailboxIds?.[mailboxId]).map((e) => e.id));
 }
 
+/** Delete for good. A message that is already gone counts as deleted; any other refusal throws. */
 export async function destroyEmail(
 	client: JMAPClient,
 	accountId: string,
 	id: string
 ): Promise<void> {
-	await client.request([
+	const response = await client.request([
 		['Email/set', { accountId, destroy: [id] }, '0']
 	]);
+	const result = response.methodResponses[0][1] as {
+		notDestroyed?: Record<string, { type?: string; description?: string }> | null;
+	};
+	const err = result.notDestroyed?.[id];
+	if (err && err.type !== 'notFound') {
+		const failure = { id, type: err.type ?? 'serverFail', description: err.description ?? 'rejected by server' };
+		throw new EmailUpdateError(`delete rejected: ${failure.description}`, [failure]);
+	}
 }
 
 export async function markEmail(
@@ -610,13 +634,7 @@ export async function updateEmailMailboxes(
 	const ids = Object.keys(changes);
 	if (ids.length === 0) return;
 
-	const getResponse = await client.request([
-		['Email/get', { accountId, ids, properties: ['id', 'mailboxIds'] }, '0']
-	]);
-	const list =
-		((getResponse.methodResponses[0][1] as { list?: { id: string; mailboxIds?: Record<string, boolean> }[] })
-			.list ?? []);
-	const current = new Map(list.map((e) => [e.id, e.mailboxIds ?? {}]));
+	const current = await emailMailboxMembership(client, accountId, ids);
 
 	const failures: EmailUpdateFailure[] = [];
 	const update: Record<string, Record<string, unknown>> = {};
@@ -665,6 +683,25 @@ export async function updateEmailMailboxes(
 	if (failures.length > 0) {
 		throw new EmailUpdateError(failureMessage(failures), failures);
 	}
+}
+
+/**
+ * Which mailboxes each of these emails is in right now. An email the server
+ * no longer has is absent from the result. One Email/get, however many ids.
+ */
+export async function emailMailboxMembership(
+	client: JMAPClient,
+	accountId: string,
+	ids: string[]
+): Promise<Map<string, Record<string, boolean>>> {
+	if (ids.length === 0) return new Map();
+	const response = await client.request([
+		['Email/get', { accountId, ids, properties: ['id', 'mailboxIds'] }, '0']
+	]);
+	const list =
+		(response.methodResponses[0][1] as { list?: { id: string; mailboxIds?: Record<string, boolean> }[] })
+			.list ?? [];
+	return new Map(list.map((e) => [e.id, e.mailboxIds ?? {}]));
 }
 
 /**

@@ -20,12 +20,44 @@ import { sniffImage } from '$lib/server/avatars/image';
  *  - the body is capped and must sniff as an image — the upstream
  *    Content-Type is never trusted or echoed,
  *  - the response is locked down like the avatar endpoint, because a
- *    same-origin SVG opened directly would otherwise run its scripts.
+ *    same-origin SVG opened directly would otherwise run its scripts,
+ *  - only a few run at once. Each one holds its image in memory until it
+ *    has been read and sniffed, and the sender decides how many images a
+ *    message has and how big each is, so without a gate a message of 300
+ *    ten-megabyte pictures would have the server hold gigabytes.
  */
 
-const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 10_000;
 const ACCEPT = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
+
+// The gate: this many fetches in flight, this many more waiting their turn,
+// and a 503 beyond that so the browser's own retry (and the next scroll)
+// picks the image up rather than the queue growing without bound.
+const MAX_IN_FLIGHT = 8;
+const MAX_WAITING = 32;
+let inFlight = 0;
+const waiting: Array<() => void> = [];
+
+/** A turn to fetch, or false when the queue is full. */
+function acquire(): Promise<boolean> {
+	if (inFlight < MAX_IN_FLIGHT) {
+		inFlight++;
+		return Promise.resolve(true);
+	}
+	if (waiting.length >= MAX_WAITING) return Promise.resolve(false);
+	return new Promise((resolve) => {
+		waiting.push(() => {
+			inFlight++;
+			resolve(true);
+		});
+	});
+}
+
+function release(): void {
+	inFlight--;
+	waiting.shift()?.();
+}
 
 /** AVIF isn't in the avatar sniffer (favicons never use it); mail does. */
 function sniffAvif(bytes: Buffer): string | null {
@@ -52,12 +84,22 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	}
 	if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return failure(400);
 
-	const fetched = await safeFetch(parsed.toString(), {
-		accept: ACCEPT,
-		maxBytes: MAX_BYTES,
-		timeoutMs: TIMEOUT_MS,
-		allowHttp: true
-	});
+	if (!(await acquire())) {
+		const busy = failure(503);
+		busy.headers.set('Retry-After', '2');
+		return busy;
+	}
+	let fetched: Awaited<ReturnType<typeof safeFetch>>;
+	try {
+		fetched = await safeFetch(parsed.toString(), {
+			accept: ACCEPT,
+			maxBytes: MAX_BYTES,
+			timeoutMs: TIMEOUT_MS,
+			allowHttp: true
+		});
+	} finally {
+		release();
+	}
 	if (!fetched || fetched.status < 200 || fetched.status >= 300) return failure(502);
 
 	const type = sniffImage(fetched.bytes) ?? sniffAvif(fetched.bytes);

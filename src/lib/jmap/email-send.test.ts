@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildEnvelope, saveDraft, sendEmail, submitStoredEmail } from './email';
+import { EmailUpdateError, buildEnvelope, destroyEmail, saveDraft, sendEmail, submitStoredEmail } from './email';
 import type { JMAPClient } from './client';
 import type { ComposeEmail } from './types';
 
@@ -38,7 +38,9 @@ describe('sendEmail', () => {
 		const created = emailSet[1].create.draft1;
 		expect(created.mailboxIds).toEqual({ D: true });
 		expect(created.keywords).toEqual({ $draft: true, $seen: true });
-		expect(emailSet[1].destroy).toEqual(['OLD']);
+		// The draft being sent goes in a request of its own, after the create.
+		expect(emailSet[1].destroy).toBeUndefined();
+		expect(request.mock.calls[1][0]).toEqual([['Email/set', { accountId: 'acct', destroy: ['OLD'] }, '0']]);
 		// multipart/alternative: an HTML part and its plain-text rendering
 		expect(created.htmlBody).toEqual([{ partId: 'body', type: 'text/html' }]);
 		expect(created.textBody).toEqual([{ partId: 'text', type: 'text/plain' }]);
@@ -81,6 +83,29 @@ describe('sendEmail', () => {
 		expect(result).toEqual({ success: false, error: 'bad to' });
 	});
 
+	it('keeps the draft being sent when the server refuses the new copy', async () => {
+		// Over quota: the server would still have run a destroy sent in the
+		// same Email/set, and the only copy of the message would be gone.
+		const { client, request } = clientReturning([
+			['Email/set', { notCreated: { draft1: { type: 'overQuota', description: 'Quota exceeded' } } }, '0'],
+			['EmailSubmission/set', { notCreated: { sub1: { type: 'invalidProperties' } } }, '1']
+		]);
+		const result = await sendEmail(client, 'acct', compose, { drafts: 'D', sent: 'S' }, { id: 'I1', email: 'odai@example.test' }, { replaceDraftId: 'OLD' });
+		expect(result).toEqual({ success: false, error: 'Quota exceeded' });
+		expect(request).toHaveBeenCalledTimes(1);
+		expect(JSON.stringify(request.mock.calls)).not.toContain('destroy');
+	});
+
+	it('drops the old draft when the new copy exists but the submission is refused', async () => {
+		const { client, request } = clientReturning([
+			['Email/set', { created: { draft1: { id: 'M1' } } }, '0'],
+			['EmailSubmission/set', { notCreated: { sub1: { type: 'forbiddenToSend', description: 'Quota' } } }, '1']
+		]);
+		const result = await sendEmail(client, 'acct', compose, { drafts: 'D', sent: 'S' }, { id: 'I1', email: 'odai@example.test' }, { replaceDraftId: 'OLD' });
+		expect(result).toEqual({ success: false, error: 'Quota', draftId: 'M1' });
+		expect(request.mock.calls[1][0]).toEqual([['Email/set', { accountId: 'acct', destroy: ['OLD'] }, '0']]);
+	});
+
 	it('sets no importance headers for normal importance', async () => {
 		const { client, request } = clientReturning([
 			['Email/set', { created: { draft1: { id: 'M1' } } }, '0'],
@@ -94,19 +119,51 @@ describe('sendEmail', () => {
 });
 
 describe('saveDraft', () => {
-	it('replaces the previous version of the draft in the same Email/set', async () => {
-		const { client, request } = clientReturning([['Email/set', { created: { draft1: { id: 'M2' } }, destroyed: ['M1'] }, '0']]);
+	it('replaces the previous version of the draft once the new one exists', async () => {
+		const { client, request } = clientReturning([['Email/set', { created: { draft1: { id: 'M2' } } }, '0']]);
 		const result = await saveDraft(client, 'acct', 'D', compose, 'M1');
 		expect(result).toEqual({ success: true, id: 'M2' });
 		const args = request.mock.calls[0][0][0][1];
-		expect(args.destroy).toEqual(['M1']);
+		expect(args.destroy).toBeUndefined();
 		expect(args.create.draft1.mailboxIds).toEqual({ D: true });
+		expect(request.mock.calls[1][0]).toEqual([['Email/set', { accountId: 'acct', destroy: ['M1'] }, '0']]);
+	});
+
+	it('keeps the previous version when the server refuses the new one', async () => {
+		const { client, request } = clientReturning([
+			['Email/set', { notCreated: { draft1: { type: 'overQuota', description: 'Quota exceeded' } } }, '0']
+		]);
+		const result = await saveDraft(client, 'acct', 'D', compose, 'M1');
+		expect(result).toEqual({ success: false, error: 'Quota exceeded' });
+		expect(request).toHaveBeenCalledTimes(1);
+	});
+
+	it('still reports the save when only the old version could not be removed', async () => {
+		const request = vi
+			.fn()
+			.mockResolvedValueOnce({ methodResponses: [['Email/set', { created: { draft1: { id: 'M2' } } }, '0']] })
+			.mockRejectedValueOnce(new Error('network down'));
+		const client = { request } as unknown as JMAPClient;
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		expect(await saveDraft(client, 'acct', 'D', compose, 'M1')).toEqual({ success: true, id: 'M2' });
+		expect(warn).toHaveBeenCalledOnce();
+		warn.mockRestore();
 	});
 
 	it('creates a first draft without destroying anything', async () => {
 		const { client, request } = clientReturning([['Email/set', { created: { draft1: { id: 'M1' } } }, '0']]);
 		await saveDraft(client, 'acct', 'D', compose);
+		expect(request).toHaveBeenCalledTimes(1);
 		expect(request.mock.calls[0][0][0][1].destroy).toBeUndefined();
+	});
+});
+
+describe('destroyEmail', () => {
+	it('throws when the server refuses, and treats an already-deleted message as done', async () => {
+		const refused = clientReturning([['Email/set', { notDestroyed: { M1: { type: 'forbidden', description: 'No' } } }, '0']]);
+		await expect(destroyEmail(refused.client, 'acct', 'M1')).rejects.toBeInstanceOf(EmailUpdateError);
+		const gone = clientReturning([['Email/set', { notDestroyed: { M1: { type: 'notFound' } } }, '0']]);
+		await expect(destroyEmail(gone.client, 'acct', 'M1')).resolves.toBeUndefined();
 	});
 });
 
@@ -174,6 +231,7 @@ describe('scheduled messages', () => {
 		const client = { request } as unknown as JMAPClient;
 		expect(await submitStoredEmail(client, 'acct', 'M1', 'I1', envelope, boxes)).toEqual({
 			status: 'failed',
+			type: 'forbiddenToSend',
 			error: 'Quota exceeded'
 		});
 	});

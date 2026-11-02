@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import { listSchedulableAuths, markNeedsReauth } from './auth/accounts';
 import { JMAPAuthError } from '$lib/jmap/client';
 import { createClient } from '$lib/jmap/auth';
-import { EmailUpdateError, updateEmailMailboxes } from '$lib/jmap/email';
+import { emailMailboxMembership, EmailUpdateError, updateEmailMailboxes } from '$lib/jmap/email';
 import { getMailboxes, REMIND_ME_LATER_NAME } from '$lib/jmap/mailbox';
 import {
 	listDueReminders,
@@ -99,6 +99,16 @@ async function returnReminder(
 	const target =
 		mailboxes.find((m) => m.id === r.original_mailbox_id) ?? mailboxes.find((m) => m.role === 'inbox');
 	if (!target) throw new Error('No mailbox to return the reminder to');
+
+	// Only a message still waiting in Remind Me Later comes back. One the
+	// user trashed, archived or filed by hand meanwhile has moved on, and
+	// returning it would undo that (and mark it unread); its reminder is
+	// simply over.
+	const current = (await emailMailboxMembership(client, r.account_id, [r.jmap_email_id])).get(r.jmap_email_id);
+	if (!current || (rml && !current[rml.id])) {
+		deleteReminder(userEmail, r.jmap_email_id);
+		return;
+	}
 
 	try {
 		await updateEmailMailboxes(client, r.account_id, {

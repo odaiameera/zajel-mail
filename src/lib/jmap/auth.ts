@@ -1,8 +1,22 @@
 import type { AuthState, JMAPSession } from './types';
 import { JMAPAuthError, JMAPClient, JMAPError } from './client';
 
+/**
+ * HTTP Basic credentials: base64 of the UTF-8 bytes. `btoa` alone takes
+ * Latin-1 code points, so a password with an Arabic or accented character
+ * either came out as the wrong bytes or threw, and the account could not be
+ * linked while the server (and `authStateForAccount`, which uses Buffer)
+ * expected UTF-8. Byte by byte through btoa works in Node and browsers.
+ */
+export function basicAuthHeader(email: string, password: string): string {
+	const bytes = new TextEncoder().encode(`${email}:${password}`);
+	let latin1 = '';
+	for (const b of bytes) latin1 += String.fromCharCode(b);
+	return `Basic ${btoa(latin1)}`;
+}
+
 export async function authenticate(baseUrl: string, email: string, password: string): Promise<AuthState> {
-	const authHeader = `Basic ${btoa(`${email}:${password}`)}`;
+	const authHeader = basicAuthHeader(email, password);
 
 	const response = await fetch(`${baseUrl}/jmap/session`, {
 		headers: { Authorization: authHeader }

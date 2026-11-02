@@ -56,6 +56,47 @@ describe('GET /api/image-proxy', () => {
 		expect((await call('https://a.test/x.png')).status).toBe(415);
 	});
 
+	it('fetches a few at a time, queues the next few and turns the rest away', async () => {
+		// Every upstream fetch hangs until released, so the gate is what answers.
+		let finish: (() => void) | null = null;
+		const gate = new Promise<void>((resolve) => { finish = resolve; });
+		mocks.safeFetch.mockImplementation(async () => {
+			await gate;
+			return { bytes: PNG, contentType: 'image/png', status: 200 };
+		});
+
+		const IN_FLIGHT = 8;
+		const WAITING = 32;
+		const pending = Array.from({ length: IN_FLIGHT + WAITING }, (_, i) => call(`https://a.test/${i}.png`));
+		// Let the first wave reach safeFetch.
+		await new Promise((r) => setTimeout(r, 0));
+		expect(mocks.safeFetch).toHaveBeenCalledTimes(IN_FLIGHT);
+
+		const refused = await call('https://a.test/one-too-many.png');
+		expect(refused.status).toBe(503);
+		expect(refused.headers.get('retry-after')).toBe('2');
+		expect(refused.headers.get('cache-control')).toBe('no-store');
+		expect(mocks.safeFetch).toHaveBeenCalledTimes(IN_FLIGHT);
+
+		finish!();
+		const done = await Promise.all(pending);
+		expect(done.every((r) => r.status === 200)).toBe(true);
+		expect(mocks.safeFetch).toHaveBeenCalledTimes(IN_FLIGHT + WAITING);
+
+		// The gate is open again afterwards.
+		mocks.safeFetch.mockResolvedValue({ bytes: PNG, contentType: 'image/png', status: 200 });
+		expect((await call('https://a.test/after.png')).status).toBe(200);
+	});
+
+	it('caps what it will hold for one image', async () => {
+		mocks.safeFetch.mockResolvedValue({ bytes: PNG, contentType: 'image/png', status: 200 });
+		await call('https://a.test/x.png');
+		expect(mocks.safeFetch).toHaveBeenCalledWith(
+			'https://a.test/x.png',
+			expect.objectContaining({ maxBytes: 5 * 1024 * 1024 })
+		);
+	});
+
 	it('reports upstream failures without caching them', async () => {
 		mocks.safeFetch.mockResolvedValue(null); // blocked host, timeout, too big
 		const blocked = await call('https://10.0.0.1/x.png');

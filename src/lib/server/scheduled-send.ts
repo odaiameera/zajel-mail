@@ -77,7 +77,11 @@ export async function scheduleSend(opts: {
 
 export type CancelResult =
 	| { success: true; draftId: string }
-	| { success: false; code: 'sending' | 'not-found' | 'move-failed'; error: string };
+	/**
+	 * `unreachable`: nothing was changed and the message is still scheduled.
+	 * `move-failed`: it will not be sent, but it is still in Scheduled.
+	 */
+	| { success: false; code: 'sending' | 'not-found' | 'unreachable' | 'move-failed'; error: string };
 
 /** Stop a send and move the message to Drafts, where the composer can open it. */
 export async function cancelScheduledSend(
@@ -85,8 +89,17 @@ export async function cancelScheduledSend(
 	auth: AuthState,
 	emailId: string
 ): Promise<CancelResult> {
-	// The row goes first: once it's gone nothing will send the message,
-	// whatever happens to the move below.
+	// Reach the server before touching the row. Once the row is gone nothing
+	// will send the message, so a lookup that fails after it was deleted left
+	// the message stranded in Scheduled with the outbox reporting it sent.
+	const client = createClient(auth);
+	let drafts: string | undefined;
+	try {
+		drafts = (await getMailboxes(client, auth.accountId)).find((m) => m.role === 'drafts')?.id;
+	} catch {
+		return { success: false, code: 'unreachable', error: 'The mail server couldn’t be reached; the message is still scheduled' };
+	}
+
 	const row = cancelScheduledSendRow(mailAccountId, emailId);
 	if (!row) {
 		return getScheduledSend(mailAccountId, emailId)
@@ -94,18 +107,21 @@ export async function cancelScheduledSend(
 			: { success: false, code: 'not-found', error: 'This message isn’t scheduled' };
 	}
 
-	const client = createClient(auth);
-	const drafts = (await getMailboxes(client, auth.accountId)).find((m) => m.role === 'drafts');
 	if (drafts) {
-		const response = await client.request([
-			[
-				'Email/set',
-				{ accountId: auth.accountId, update: { [emailId]: { mailboxIds: { [drafts.id]: true } } } },
-				'0'
-			]
-		]);
-		const result = response.methodResponses[0][1] as { updated?: Record<string, unknown> };
-		if (result.updated && emailId in result.updated) return { success: true, draftId: emailId };
+		try {
+			const response = await client.request([
+				[
+					'Email/set',
+					{ accountId: auth.accountId, update: { [emailId]: { mailboxIds: { [drafts]: true } } } },
+					'0'
+				]
+			]);
+			const result = response.methodResponses[0][1] as { updated?: Record<string, unknown> };
+			if (result.updated && emailId in result.updated) return { success: true, draftId: emailId };
+		} catch {
+			// The row is gone, so the message stays unsent in Scheduled; the
+			// composer replaces it there on its next save.
+		}
 	}
 	return { success: false, code: 'move-failed', error: 'Not sent, but it couldn’t be moved to Drafts' };
 }
@@ -158,7 +174,7 @@ async function sweep(): Promise<void> {
 	try {
 		do {
 			state.again = false;
-			for (const row of claimDueSends()) await deliver(row);
+			for (const row of claimDueSends()) await deliverScheduledSend(row);
 		} while (state.again);
 	} catch (err) {
 		console.error('[scheduled-send] sweep failed', err);
@@ -167,7 +183,25 @@ async function sweep(): Promise<void> {
 	}
 }
 
-async function deliver(row: ScheduledSendRow): Promise<void> {
+/**
+ * Refusals the server may withdraw if the message is offered again later
+ * (RFC 8620 §3.6.2 method errors and §5.3 set errors). Anything else — bad
+ * properties, an unknown identity, a forbidden sender — would be refused
+ * again, so it fails the row for the user to look at.
+ */
+const TRANSIENT_ERRORS = new Set(['serverUnavailable', 'serverPartialFail', 'rateLimit']);
+const UNREACHABLE_ERROR = 'The mail server couldn’t be reached';
+const NO_SCHEDULED_FOLDER_ERROR = 'The Scheduled folder couldn’t be found. Restore it, then try again.';
+
+/** Try again later along the ladder; once it is used up, fail with `finalError`. */
+function retryOrFail(row: ScheduledSendRow, error: string, finalError = error): void {
+	const delay = RETRY_DELAYS_MS[row.attempts - 1];
+	if (delay === undefined) failScheduledSend(row.id, finalError);
+	else retryScheduledSendLater(row.id, new Date(Date.now() + delay).toISOString(), error);
+}
+
+/** One claimed row: send it, or record on the row why not. Exported for tests. */
+export async function deliverScheduledSend(row: ScheduledSendRow): Promise<void> {
 	const account = getAccount(row.mail_account_id);
 	if (!account) {
 		removeScheduledSend(row.id);
@@ -192,7 +226,9 @@ async function deliver(row: ScheduledSendRow): Promise<void> {
 		const scheduled = mailboxes.find(isScheduledMailbox);
 		const sent = mailboxes.find((m) => m.role === 'sent');
 		if (!scheduled) {
-			removeScheduledSend(row.id);
+			// An IMAP client can rename or move the folder. The row used to be
+			// dropped here, which read as "sent" everywhere; now it says why.
+			failScheduledSend(row.id, NO_SCHEDULED_FOLDER_ERROR);
 			return;
 		}
 		if (!sent) {
@@ -208,29 +244,29 @@ async function deliver(row: ScheduledSendRow): Promise<void> {
 			JSON.parse(row.envelope),
 			{ scheduled: scheduled.id, sent: sent.id }
 		);
-		if (result.status === 'failed') failScheduledSend(row.id, result.error);
-		else removeScheduledSend(row.id);
+		if (result.status === 'failed') {
+			if (result.type && TRANSIENT_ERRORS.has(result.type)) retryOrFail(row, result.error);
+			else failScheduledSend(row.id, result.error);
+		} else {
+			removeScheduledSend(row.id);
+		}
 	} catch (err) {
 		if (err instanceof JMAPAuthError) {
 			markNeedsReauth(account.id);
 			failScheduledSend(row.id, REAUTH_ERROR);
 			return;
 		}
-		if (err instanceof JMAPMethodError) {
+		if (err instanceof JMAPMethodError && !TRANSIENT_ERRORS.has(err.type)) {
 			failScheduledSend(row.id, err.description || err.type);
 			return;
 		}
-		// Network or server trouble: try again in a while, then give up.
+		// Network trouble, a timeout, or a refusal the server may withdraw:
+		// try again in a while, then give up.
 		console.error('[scheduled-send] send failed', row.id, err);
-		const delay = RETRY_DELAYS_MS[row.attempts - 1];
-		if (delay === undefined) {
-			failScheduledSend(row.id, 'The mail server couldn’t be reached');
-		} else {
-			retryScheduledSendLater(
-				row.id,
-				new Date(Date.now() + delay).toISOString(),
-				err instanceof Error ? err.message : String(err)
-			);
-		}
+		retryOrFail(
+			row,
+			err instanceof Error ? err.message : String(err),
+			err instanceof JMAPMethodError ? err.description || err.type : UNREACHABLE_ERROR
+		);
 	}
 }
