@@ -1235,11 +1235,11 @@
 		height: 84vh;
 		max-width: 1100px;
 	}
-	/* Beside the corner buttons, on their row: 68px rail gap + two 48px
-	   circles and the 10px between them + 12px. */
+	/* Beside the corner buttons, on their row: past the two circles, the
+	   10px between them and 12px more, centred on their 48px height. */
 	.composer--minimized {
-		bottom: calc(24px - var(--app-under));
-		right: 186px;
+		bottom: calc(var(--corner-buttons-bottom) + 4px);
+		right: calc(var(--corner-buttons-right) + 2 * var(--corner-button) + 10px + 12px);
 		width: 280px;
 		height: 40px;
 		border-radius: 10px;
