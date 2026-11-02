@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '$env/dynamic/private';
 import { MailAssistantError, type AIChatMessage } from './mail-assistant';
+import { errorFields, logEvent } from '$lib/server/log';
 
 /**
  * Claude through the Anthropic SDK. Two models with two jobs:
@@ -56,6 +57,7 @@ export function claudeClient(): Anthropic {
  * to the server log only, as with the other providers.
  */
 export function claudeError(err: unknown): MailAssistantError {
+	logEvent('error', 'ai', 'claude_error', errorFields(err));
 	if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
 		return new MailAssistantError('The AI service rejected its API key', 502);
 	}

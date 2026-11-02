@@ -1,16 +1,18 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { listAudit } from '$lib/server/agent/store';
+import { assistantStatus } from '$lib/server/ai/status';
 import { describeSchedule } from '$lib/server/jobs/schedule';
 import { describeSpec } from '$lib/server/jobs/specs';
 import { deleteJob, jobsPaused, listJobs, setJobEnabled, setJobsPaused } from '$lib/server/jobs/store';
 
-/** Settings → Agent: the scheduled jobs, the pause-all switch, and the activity log. */
+/** Settings → Agent: the AI in use, the scheduled jobs, the pause-all switch, and the activity log. */
 
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) error(401, 'Not signed in');
 	const userId = locals.user.id;
 	return json({
+		assistant: assistantStatus(),
 		paused: jobsPaused(userId),
 		jobs: listJobs(userId).map((job) => ({
 			id: job.id,

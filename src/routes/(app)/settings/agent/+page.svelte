@@ -14,6 +14,11 @@
 		lastRunAt: string | null;
 		lastResult: string | null;
 	}
+	interface Assistant {
+		provider: 'anthropic' | 'openai' | 'ollama' | null;
+		agentModel: string | null;
+		writerModel: string | null;
+	}
 	interface Activity {
 		tool: string;
 		tier: string;
@@ -23,6 +28,9 @@
 		createdAt: string;
 	}
 
+	let assistant = $state<Assistant | null>(null);
+	let checking = $state(false);
+	let check = $state<{ ok: boolean; error?: string } | null>(null);
 	let paused = $state(false);
 	let jobs = $state<Job[]>([]);
 	let activity = $state<Activity[]>([]);
@@ -32,6 +40,7 @@
 		const res = await fetch('/api/agent');
 		if (!res.ok) return;
 		const data = await res.json();
+		assistant = data.assistant;
 		paused = data.paused;
 		jobs = data.jobs;
 		activity = data.activity;
@@ -47,6 +56,19 @@
 		await load();
 	}
 
+	async function runCheck() {
+		checking = true;
+		check = null;
+		try {
+			const res = await fetch('/api/agent/check', { method: 'POST' });
+			check = res.ok ? await res.json() : { ok: false, error: `Check failed (${res.status})` };
+		} catch {
+			check = { ok: false, error: 'Check failed' };
+		} finally {
+			checking = false;
+		}
+	}
+
 	async function remove(id: string) {
 		await fetch(`/api/agent?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
 		await load();
@@ -58,6 +80,14 @@
 	}
 
 	const SOURCE: Record<string, string> = { chat: 'Chat', telegram: 'Telegram', job: 'Job' };
+	const PROVIDER: Record<string, string> = { anthropic: 'Claude', openai: 'OpenAI', ollama: 'Ollama' };
+
+	/** claude-opus-5-5 → Claude Opus 5.5; other ids as they are. */
+	function modelName(id: string): string {
+		const m = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(id);
+		if (!m) return id;
+		return `Claude ${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ''}`;
+	}
 
 	onMount(load);
 </script>
@@ -67,6 +97,41 @@
 <header class="mb-6">
 	<h1 class="text-xl font-semibold text-text">Agent</h1>
 </header>
+
+{#if assistant}
+	<section class="mb-8">
+		<h2 class="text-sm font-medium text-text mb-1">Assistant</h2>
+		<SettingRow title="Provider">
+			{#snippet control()}
+				<span class="text-sm text-text-secondary">{assistant?.provider ? PROVIDER[assistant.provider] : 'Off'}</span>
+			{/snippet}
+		</SettingRow>
+		{#if assistant.provider && assistant.agentModel}
+			<SettingRow title={assistant.writerModel === assistant.agentModel ? 'Model' : 'Agent model'}>
+				{#snippet control()}
+					<span class="text-sm text-text-secondary" title={assistant?.agentModel}>{modelName(assistant?.agentModel ?? '')}</span>
+				{/snippet}
+			</SettingRow>
+			{#if assistant.writerModel && assistant.writerModel !== assistant.agentModel}
+				<SettingRow title="Writing model">
+					{#snippet control()}
+						<span class="text-sm text-text-secondary" title={assistant?.writerModel}>{modelName(assistant?.writerModel ?? '')}</span>
+					{/snippet}
+				</SettingRow>
+			{/if}
+			<SettingRow title="Connection" state={check && !check.ok ? 'error' : 'idle'} errorMessage={check?.error}>
+				{#snippet control()}
+					{#if check?.ok}
+						<span class="text-xs text-success">Working</span>
+					{/if}
+					<button type="button" class="btn btn-secondary btn-sm" disabled={checking} onclick={runCheck}>
+						{checking ? 'Checking…' : 'Check'}
+					</button>
+				{/snippet}
+			</SettingRow>
+		{/if}
+	</section>
+{/if}
 
 <section class="mb-8">
 	<h2 class="text-sm font-medium text-text mb-1">Scheduled jobs</h2>
