@@ -9,7 +9,7 @@ import {
 	FALLBACK_BETA,
 	supportsFallbacks
 } from '$lib/server/ai/claude';
-import { logEvent } from '$lib/server/log';
+import { errorFields, logEvent } from '$lib/server/log';
 import { recordAudit, type AgentSource, type PendingAction } from './store';
 import { mailboxCache, toolsFor, type AgentTool, type ToolContext } from './tools';
 
@@ -23,8 +23,13 @@ const MAX_ROUNDS = 10;
 const MAX_TOOL_CALLS = 30;
 const TURN_BUDGET_MS = 150_000;
 const RESULT_CAP = 12_000;
-// The API refuses a request with more than 20 strict tools.
-export const STRICT_TOOL_LIMIT = 20;
+/**
+ * Strict decoding has request-wide budgets, summed over every strict tool:
+ * 20 tools, 16 parameters with a union type (`anyOf` or a type array) and
+ * 24 optional parameters. Over any one of them the API refuses the whole
+ * request with a 400, so every turn fails before Claude runs.
+ */
+export const STRICT_LIMITS = { tools: 20, unions: 16, optional: 24 };
 
 // Stable across requests, so it and the tool list stay in the prompt cache.
 // Anything that changes per request goes in the second system block.
@@ -68,8 +73,8 @@ export interface AgentTurnResult {
 }
 
 /**
- * Strict tool schemas take `anyOf` but not type arrays, so a nullable
- * `type: ['string', 'null']` (and its enum) becomes `anyOf` of the two.
+ * A nullable `type: ['string', 'null']` (and its enum) becomes `anyOf` of
+ * the two. Either form counts toward the union budget in STRICT_LIMITS.
  */
 export function strictSchema(node: unknown): unknown {
 	if (Array.isArray(node)) return node.map(strictSchema);
@@ -93,6 +98,87 @@ export function strictSchema(node: unknown): unknown {
 				: { type: t, ...rest, ...(values ? { enum: values.filter((v) => v !== null) } : {}) }
 		)
 	};
+}
+
+/** A schema's parameters, at any depth, with a union type or left out of `required`. */
+export function schemaCost(node: unknown): { unions: number; optional: number } {
+	const cost = { unions: 0, optional: 0 };
+	const visit = (schema: unknown) => {
+		if (!schema || typeof schema !== 'object') return;
+		const s = schema as { properties?: Record<string, unknown>; required?: string[]; items?: unknown; anyOf?: unknown[] };
+		if (s.properties) {
+			const required = new Set(s.required ?? []);
+			for (const [name, property] of Object.entries(s.properties)) {
+				if (!required.has(name)) cost.optional += 1;
+				const p = property as { type?: unknown; anyOf?: unknown } | null;
+				if (p && (Array.isArray(p.type) || Array.isArray(p.anyOf))) cost.unions += 1;
+				visit(property);
+			}
+		}
+		visit(s.items);
+		s.anyOf?.forEach(visit);
+	};
+	visit(node);
+	return cost;
+}
+
+/**
+ * Which tools get strict decoding: the ones that act, outward first, since
+ * those carry what will be sent. Read tools parse their own input, and a bad
+ * search comes back as a result the model can correct. A tool that would
+ * take any budget past STRICT_LIMITS goes without; its input is still
+ * checked by the tool itself, as for every tool.
+ */
+export function strictToolNames(tools: AgentTool[]): Set<string> {
+	const order = [...tools.filter((t) => t.tier === 'outward'), ...tools.filter((t) => t.tier === 'self')];
+	const names = new Set<string>();
+	let unions = 0;
+	let optional = 0;
+	for (const tool of order) {
+		const cost = schemaCost(strictSchema(tool.input_schema));
+		if (
+			names.size + 1 > STRICT_LIMITS.tools ||
+			unions + cost.unions > STRICT_LIMITS.unions ||
+			optional + cost.optional > STRICT_LIMITS.optional
+		) {
+			continue;
+		}
+		names.add(tool.name);
+		unions += cost.unions;
+		optional += cost.optional;
+	}
+	return names;
+}
+
+/** The tools as the API takes them, strict where the budgets allow. */
+export function apiToolsFor(tools: AgentTool[], strict: boolean): Anthropic.Beta.BetaTool[] {
+	const strictNames = strict ? strictToolNames(tools) : new Set<string>();
+	return tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		input_schema: strictSchema(tool.input_schema) as Anthropic.Beta.BetaTool.InputSchema,
+		...(strictNames.has(tool.name) ? { strict: true } : {})
+	}));
+}
+
+/**
+ * A 400 about the tool schemas themselves. Besides the documented budgets
+ * the API has grammar limits it doesn't put numbers on ("Schema is too
+ * complex for compilation"), so this can't be ruled out ahead of time.
+ */
+export function schemasRefused(err: unknown): boolean {
+	const e = err as { status?: unknown; message?: unknown } | null;
+	return e?.status === 400 && typeof e.message === 'string' && /strict|schema|grammar|compil|union|optional param/i.test(e.message);
+}
+
+// Strict tool sets the API refused, by their names. Later turns send those
+// without strict decoding instead of being refused first. Process-wide; a
+// restart tries strict again.
+const refusedStrictSets = new Set<string>();
+
+/** For tests: forget refused strict sets. */
+export function forgetStrictRefusals(): void {
+	refusedStrictSets.clear();
 }
 
 function textOf(content: Anthropic.Beta.BetaContentBlock[]): string {
@@ -139,20 +225,8 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 			}`
 		}
 	];
-	// Strict decoding goes to the tools that act, where a malformed input
-	// would do the wrong thing. Read tools parse their own input, and a bad
-	// search comes back as a result the model can correct. The cap holds even
-	// if acting tools alone outgrow the limit one day.
-	let strictLeft = STRICT_TOOL_LIMIT;
-	const apiTools: Anthropic.Beta.BetaTool[] = tools.map((tool) => {
-		const strict = tool.tier !== 'read' && strictLeft-- > 0;
-		return {
-			name: tool.name,
-			description: tool.description,
-			input_schema: strictSchema(tool.input_schema) as Anthropic.Beta.BetaTool.InputSchema,
-			...(strict ? { strict: true } : {})
-		};
-	});
+	const strictKey = [...strictToolNames(tools)].sort().join(',');
+	let apiTools = apiToolsFor(tools, !refusedStrictSets.has(strictKey));
 	const messages: Anthropic.Beta.BetaMessageParam[] = [
 		...input.history.map((turn) => ({ role: turn.role, content: turn.content })),
 		{ role: 'user', content: input.message }
@@ -185,9 +259,8 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 		if (remaining < 5_000) break;
 		rounds = round + 1;
 
-		let response: Anthropic.Beta.BetaMessage;
-		try {
-			response = await claudeClient().beta.messages.create(
+		const ask = () =>
+			claudeClient().beta.messages.create(
 				{
 					model,
 					max_tokens: 16000,
@@ -197,8 +270,22 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 					messages,
 					...(supportsFallbacks(model) ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {})
 				},
-				{ timeout: remaining }
+				{ timeout: Math.max(deadline - Date.now(), 1_000) }
 			);
+		let response: Anthropic.Beta.BetaMessage;
+		try {
+			try {
+				response = await ask();
+			} catch (err) {
+				// The schemas themselves were refused: answer without strict
+				// decoding rather than not at all. The refusal happens before
+				// Claude runs, so nothing in this turn depends on the old tools.
+				if (!schemasRefused(err) || !apiTools.some((tool) => tool.strict)) throw err;
+				logEvent('error', 'agent', 'strict_refused', { source: input.source, model, ...errorFields(err) });
+				apiTools = apiToolsFor(tools, false);
+				response = await ask();
+				refusedStrictSets.add(strictKey);
+			}
 		} catch (err) {
 			const failure = claudeError(err);
 			logEvent('error', 'agent', 'turn_failed', {

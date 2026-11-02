@@ -49,7 +49,8 @@ vi.mock('$lib/server/db/queries/jev-decisions', () => ({ getDecision: () => null
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
 import { listAudit } from './store';
-import { runAgentTurn, STRICT_TOOL_LIMIT, type AgentTurnInput } from './runtime';
+import { forgetStrictRefusals, runAgentTurn, schemaCost, STRICT_LIMITS, strictToolNames, type AgentTurnInput } from './runtime';
+import type { AgentTool } from './tools';
 import type { AuthState } from '$lib/jmap/types';
 
 const USER = 'user-1';
@@ -87,6 +88,7 @@ beforeAll(() => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	forgetStrictRefusals();
 	getDb().prepare('DELETE FROM agent_actions').run();
 	getDb().prepare('DELETE FROM agent_audit').run();
 	mocks.getEmailDetail.mockResolvedValue({
@@ -162,12 +164,85 @@ describe('runAgentTurn', () => {
 		expect(strict).not.toContain('search_mail');
 	});
 
-	// Over the limit, the API refuses every turn with a 400 before Claude runs.
-	it.each(['chat', 'telegram', 'job'] as const)('keeps strict tools within the API limit for %s', async (source) => {
+	// Over any limit, the API refuses every turn with a 400 before Claude runs.
+	it.each(['chat', 'telegram', 'job'] as const)('keeps strict tools within every API limit for %s', async (source) => {
 		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
 		await runAgentTurn(turn({ source }));
-		const tools = mocks.create.mock.calls[0][0].tools as { strict?: boolean }[];
-		expect(tools.filter((t) => t.strict).length).toBeLessThanOrEqual(STRICT_TOOL_LIMIT);
+		const strict = (mocks.create.mock.calls[0][0].tools as { strict?: boolean; input_schema: unknown }[]).filter((t) => t.strict);
+		const costs = strict.map((t) => schemaCost(t.input_schema));
+		expect(strict.length).toBeLessThanOrEqual(STRICT_LIMITS.tools);
+		expect(costs.reduce((n, c) => n + c.unions, 0)).toBeLessThanOrEqual(STRICT_LIMITS.unions);
+		expect(costs.reduce((n, c) => n + c.optional, 0)).toBeLessThanOrEqual(STRICT_LIMITS.optional);
+	});
+
+	it('answers without strict tools when the API refuses their schemas, and remembers', async () => {
+		const refused = Object.assign(new Error('400 Schema is too complex for compilation.'), { status: 400 });
+		mocks.create
+			.mockRejectedValueOnce(refused)
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Here you go' }], 'end_turn'))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Again' }], 'end_turn'));
+		const first = await runAgentTurn(turn());
+		expect(first.message).toBe('Here you go');
+		const strictIn = (call: number) => (mocks.create.mock.calls[call][0].tools as { strict?: boolean }[]).some((t) => t.strict);
+		expect(strictIn(0)).toBe(true);
+		expect(strictIn(1)).toBe(false);
+
+		// The next turn goes straight to the form that worked.
+		await runAgentTurn(turn());
+		expect(mocks.create).toHaveBeenCalledTimes(3);
+		expect(strictIn(2)).toBe(false);
+	});
+
+	it('does not retry other refusals', async () => {
+		mocks.create.mockRejectedValueOnce(Object.assign(new Error('400 messages: roles must alternate'), { status: 400 }));
+		await expect(runAgentTurn(turn())).rejects.toBeTruthy();
+		expect(mocks.create).toHaveBeenCalledTimes(1);
+	});
+
+	it('keeps the outward tools strict', async () => {
+		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
+		await runAgentTurn(turn());
+		const strict = (mocks.create.mock.calls[0][0].tools as { name: string; strict?: boolean }[]).filter((t) => t.strict).map((t) => t.name);
+		expect(strict).toEqual(expect.arrayContaining(['send_email', 'delete_event', 'schedule_job', 'create_event']));
+	});
+
+	it('counts union and optional parameters the way the API does', () => {
+		// The deployed tool set came to 17 unions, which the API reported as 17.
+		expect(
+			schemaCost({
+				type: 'object',
+				properties: {
+					a: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+					b: { type: ['string', 'null'] },
+					c: { type: 'object', properties: { d: { type: 'string' } }, required: [] },
+					e: { type: 'array', items: { type: 'object', properties: { f: { anyOf: [{ type: 'number' }, { type: 'null' }] } }, required: ['f'] } }
+				},
+				required: ['a', 'b', 'c', 'e']
+			})
+		).toEqual({ unions: 3, optional: 1 });
+	});
+
+	it('leaves a tool without strict when it would take a budget past its limit', () => {
+		const tool = (name: string, tier: AgentTool['tier'], unions: number): AgentTool => ({
+			name,
+			tier,
+			description: name,
+			input_schema: {
+				type: 'object',
+				properties: Object.fromEntries(Array.from({ length: unions }, (_, i) => [`p${i}`, { type: ['string', 'null'] }])),
+				required: Array.from({ length: unions }, (_, i) => `p${i}`),
+				additionalProperties: false
+			},
+			run: async () => ({ content: '' })
+		});
+		const names = strictToolNames([
+			tool('look', 'read', 0),
+			tool('tidy', 'self', 10),
+			tool('small', 'self', 2),
+			tool('send', 'outward', 8)
+		]);
+		// Outward first (8), then 'tidy' (10) would make 18, so it goes without; 'small' fits.
+		expect([...names]).toEqual(['send', 'small']);
 	});
 
 	it('sends only schema features strict tool use accepts', async () => {
@@ -179,6 +254,14 @@ describe('runAgentTurn', () => {
 			const n = node as Record<string, unknown>;
 			expect(Array.isArray(n.type), `type array at ${path}`).toBe(false);
 			if (n.type === 'object') expect(n.additionalProperties, `additionalProperties at ${path}`).toBe(false);
+			// Keywords strict decoding refuses with a 400.
+			for (const k of ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'maxItems', 'uniqueItems']) {
+				expect(k in n, `${k} at ${path}`).toBe(false);
+			}
+			if (typeof n.minItems === 'number') expect(n.minItems, `minItems at ${path}`).toBeLessThanOrEqual(1);
+			if (typeof n.format === 'string') {
+				expect(['date-time', 'time', 'date', 'duration', 'email', 'hostname', 'uri', 'ipv4', 'ipv6', 'uuid'], `format at ${path}`).toContain(n.format);
+			}
 			for (const [k, v] of Object.entries(n)) {
 				if (Array.isArray(v)) v.forEach((item, i) => visit(item, `${path}.${k}[${i}]`));
 				else if (typeof v === 'object') visit(v, `${path}.${k}`);
