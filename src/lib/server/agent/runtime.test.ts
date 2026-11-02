@@ -49,7 +49,17 @@ vi.mock('$lib/server/db/queries/jev-decisions', () => ({ getDecision: () => null
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
 import { listAudit } from './store';
-import { runAgentTurn, STRICT_TOOL_LIMIT, type AgentTurnInput } from './runtime';
+import {
+	forgetStrictRefusals,
+	inputProblem,
+	runAgentTurn,
+	schemaCost,
+	STRICT_LIMITS,
+	strictSchema,
+	strictToolNames,
+	type AgentTurnInput
+} from './runtime';
+import { toolsFor, type AgentTool } from './tools';
 import type { AuthState } from '$lib/jmap/types';
 
 const USER = 'user-1';
@@ -73,6 +83,9 @@ function turn(overrides: Partial<AgentTurnInput> = {}): AgentTurnInput {
 
 const toolUse = (id: string, name: string, input: Record<string, unknown>) => ({ type: 'tool_use', id, name, input });
 const reply = (content: unknown[], stop_reason = 'tool_use') => ({ content, stop_reason });
+/** The names of the tools sent as strict in the nth request to Claude. */
+const strictIn = (call: number) =>
+	(mocks.create.mock.calls[call][0].tools as { name: string; strict?: boolean }[]).filter((t) => t.strict).map((t) => t.name);
 
 beforeAll(() => {
 	runMigrations();
@@ -87,6 +100,9 @@ beforeAll(() => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	// A failed test can leave queued replies behind; start each one clean.
+	mocks.create.mockReset();
+	forgetStrictRefusals();
 	getDb().prepare('DELETE FROM agent_actions').run();
 	getDb().prepare('DELETE FROM agent_audit').run();
 	mocks.getEmailDetail.mockResolvedValue({
@@ -162,12 +178,161 @@ describe('runAgentTurn', () => {
 		expect(strict).not.toContain('search_mail');
 	});
 
-	// Over the limit, the API refuses every turn with a 400 before Claude runs.
-	it.each(['chat', 'telegram', 'job'] as const)('keeps strict tools within the API limit for %s', async (source) => {
+	// Over any limit, the API refuses every turn with a 400 before Claude runs.
+	it.each(['chat', 'telegram', 'job'] as const)('keeps strict tools within every API limit for %s', async (source) => {
 		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
 		await runAgentTurn(turn({ source }));
-		const tools = mocks.create.mock.calls[0][0].tools as { strict?: boolean }[];
-		expect(tools.filter((t) => t.strict).length).toBeLessThanOrEqual(STRICT_TOOL_LIMIT);
+		const strict = (mocks.create.mock.calls[0][0].tools as { strict?: boolean; input_schema: unknown }[]).filter((t) => t.strict);
+		const costs = strict.map((t) => schemaCost(t.input_schema));
+		expect(strict.length).toBeLessThanOrEqual(STRICT_LIMITS.tools);
+		expect(costs.reduce((n, c) => n + c.unions, 0)).toBeLessThanOrEqual(STRICT_LIMITS.unions);
+		expect(costs.reduce((n, c) => n + c.optional, 0)).toBeLessThanOrEqual(STRICT_LIMITS.optional);
+	});
+
+	it('steps down to strict outward tools when the API refuses the schemas, and remembers', async () => {
+		const refused = Object.assign(new Error('400 Schema is too complex for compilation.'), { status: 400 });
+		mocks.create
+			.mockRejectedValueOnce(refused)
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Here you go' }], 'end_turn'))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Again' }], 'end_turn'));
+		const first = await runAgentTurn(turn());
+		expect(first.message).toBe('Here you go');
+		expect(strictIn(0)).toEqual(expect.arrayContaining(['send_email', 'mark_read']));
+		expect(strictIn(1).sort()).toEqual(['delete_event', 'schedule_job', 'send_email']);
+
+		// The next turn starts from the form that worked.
+		await runAgentTurn(turn());
+		expect(mocks.create).toHaveBeenCalledTimes(3);
+		expect(strictIn(2).sort()).toEqual(['delete_event', 'schedule_job', 'send_email']);
+	});
+
+	it('drops strict altogether when the outward tools alone are refused too', async () => {
+		const refused = Object.assign(new Error('400 Schema is too complex for compilation.'), { status: 400 });
+		mocks.create
+			.mockRejectedValueOnce(refused)
+			.mockRejectedValueOnce(refused)
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Here you go' }], 'end_turn'));
+		expect((await runAgentTurn(turn())).message).toBe('Here you go');
+		expect(strictIn(2)).toEqual([]);
+	});
+
+	it('goes straight to no strict for runs without outward tools', async () => {
+		const refused = Object.assign(new Error('400 Schema is too complex for compilation.'), { status: 400 });
+		mocks.create.mockRejectedValueOnce(refused).mockResolvedValueOnce(reply([{ type: 'text', text: 'Done' }], 'end_turn'));
+		await runAgentTurn(turn({ source: 'job' }));
+		expect(mocks.create).toHaveBeenCalledTimes(2);
+		expect(strictIn(1)).toEqual([]);
+	});
+
+	it('does not retry other refusals', async () => {
+		mocks.create.mockRejectedValueOnce(Object.assign(new Error('400 messages: roles must alternate'), { status: 400 }));
+		await expect(runAgentTurn(turn())).rejects.toBeTruthy();
+		expect(mocks.create).toHaveBeenCalledTimes(1);
+	});
+
+	it('refuses a malformed call instead of coercing it', async () => {
+		// Without strict decoding a model can send one address as a string;
+		// read as "no recipients", the draft would go to the original sender.
+		mocks.create
+			.mockResolvedValueOnce(reply([toolUse('t1', 'save_draft', { to: 'dana@example.test', cc: [], subject: null, reply_to_email_id: 'e2', points: 'Thursday works', exact_body: null })]))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Fixed it' }], 'end_turn'));
+		await runAgentTurn(turn());
+		const sent = mocks.create.mock.calls[1][0].messages as { role: string; content: unknown }[];
+		const results = sent.find((m) => Array.isArray(m.content) && (m.content as { type: string }[])[0]?.type === 'tool_result')!
+			.content as { content: string; is_error?: boolean }[];
+		expect(results[0].is_error).toBe(true);
+		expect(results[0].content).toContain('input.to must be array, not string');
+		expect(mocks.runChat).not.toHaveBeenCalled();
+	});
+
+	it('checks inputs against the schema', () => {
+		const schema = strictSchema({
+			type: 'object',
+			properties: {
+				event_id: { type: 'string' },
+				occurrence: { type: ['string', 'null'] },
+				kind: { type: 'string', enum: ['a', 'b'] },
+				ids: { type: 'array', items: { type: 'string' } }
+			},
+			required: ['event_id', 'occurrence', 'kind', 'ids'],
+			additionalProperties: false
+		}) as Parameters<typeof inputProblem>[0];
+		const ok = { event_id: 'e', occurrence: null, kind: 'a', ids: ['x'] };
+		expect(inputProblem(schema, ok)).toBeNull();
+		// Leaving out a field that may be null is the same as null.
+		expect(inputProblem(schema, { event_id: 'e', kind: 'a', ids: [] })).toBeNull();
+		expect(inputProblem(schema, { ...ok, recurrence_id: 'r' })).toContain('has no field recurrence_id');
+		expect(inputProblem(schema, { occurrence: null, kind: 'a', ids: [] })).toBe('input.event_id is missing');
+		expect(inputProblem(schema, { ...ok, kind: 'c' })).toContain('input.kind must be one of');
+		expect(inputProblem(schema, { ...ok, ids: [1] })).toBe('input.ids[0] must be string, not integer');
+		expect(inputProblem(schema, { ...ok, occurrence: 3 })).toContain('input.occurrence must be');
+	});
+
+	it('keeps the outward tools strict', async () => {
+		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
+		await runAgentTurn(turn());
+		const strict = (mocks.create.mock.calls[0][0].tools as { name: string; strict?: boolean }[]).filter((t) => t.strict).map((t) => t.name);
+		expect(strict).toEqual(expect.arrayContaining(['send_email', 'delete_event', 'schedule_job', 'create_event']));
+	});
+
+	it('counts the deployed tool set the way the API did', () => {
+		// Before the fix every acting chat tool was strict, and the API refused
+		// the request for "17 parameters with type arrays or anyOf".
+		const acting = toolsFor('chat').filter((t) => t.tier !== 'read');
+		const unions = acting.reduce((n, t) => n + schemaCost(strictSchema(t.input_schema)).unions, 0);
+		expect(unions).toBe(17);
+	});
+
+	it('counts union and optional parameters at any depth', () => {
+		expect(
+			schemaCost({
+				type: 'object',
+				properties: {
+					g: {
+						anyOf: [
+							{ type: 'object', properties: { h: { anyOf: [{ type: 'string' }, { type: 'null' }] } }, required: ['h'] },
+							{ type: 'null' }
+						]
+					}
+				},
+				required: ['g']
+			})
+		).toEqual({ unions: 2, optional: 0 });
+		expect(
+			schemaCost({
+				type: 'object',
+				properties: {
+					a: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+					b: { type: ['string', 'null'] },
+					c: { type: 'object', properties: { d: { type: 'string' } }, required: [] },
+					e: { type: 'array', items: { type: 'object', properties: { f: { anyOf: [{ type: 'number' }, { type: 'null' }] } }, required: ['f'] } }
+				},
+				required: ['a', 'b', 'c', 'e']
+			})
+		).toEqual({ unions: 3, optional: 1 });
+	});
+
+	it('leaves a tool without strict when it would take a budget past its limit', () => {
+		const tool = (name: string, tier: AgentTool['tier'], unions: number): AgentTool => ({
+			name,
+			tier,
+			description: name,
+			input_schema: {
+				type: 'object',
+				properties: Object.fromEntries(Array.from({ length: unions }, (_, i) => [`p${i}`, { type: ['string', 'null'] }])),
+				required: Array.from({ length: unions }, (_, i) => `p${i}`),
+				additionalProperties: false
+			},
+			run: async () => ({ content: '' })
+		});
+		const names = strictToolNames([
+			tool('look', 'read', 0),
+			tool('tidy', 'self', 10),
+			tool('small', 'self', 2),
+			tool('send', 'outward', 8)
+		]);
+		// Outward first (8), then 'tidy' (10) would make 18, so it goes without; 'small' fits.
+		expect([...names]).toEqual(['send', 'small']);
 	});
 
 	it('sends only schema features strict tool use accepts', async () => {
@@ -179,6 +344,14 @@ describe('runAgentTurn', () => {
 			const n = node as Record<string, unknown>;
 			expect(Array.isArray(n.type), `type array at ${path}`).toBe(false);
 			if (n.type === 'object') expect(n.additionalProperties, `additionalProperties at ${path}`).toBe(false);
+			// Keywords strict decoding refuses with a 400.
+			for (const k of ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'maxItems', 'uniqueItems']) {
+				expect(k in n, `${k} at ${path}`).toBe(false);
+			}
+			if (typeof n.minItems === 'number') expect(n.minItems, `minItems at ${path}`).toBeLessThanOrEqual(1);
+			if (typeof n.format === 'string') {
+				expect(['date-time', 'time', 'date', 'duration', 'email', 'hostname', 'uri', 'ipv4', 'ipv6', 'uuid'], `format at ${path}`).toContain(n.format);
+			}
 			for (const [k, v] of Object.entries(n)) {
 				if (Array.isArray(v)) v.forEach((item, i) => visit(item, `${path}.${k}[${i}]`));
 				else if (typeof v === 'object') visit(v, `${path}.${k}`);
