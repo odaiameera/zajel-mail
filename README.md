@@ -177,7 +177,7 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
 **On Claude, Zajel acts.** With `ANTHROPIC_API_KEY` set, Zajel runs on **Claude Opus 5.5** for the agent and **Claude Haiku 5.5** for writing, with native tool use.
 - **Your own mailbox:** it marks, stars, archives, moves, labels, snoozes and drafts. These changes are reversible, happen straight away and are logged.
 - **Anything that leaves your account** (sending, invitations, deleting an event) becomes a card you confirm.
-- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), sends reminders, and answers there too.
+- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), with **Mark read**, **Snooze 1h** and **Archive** buttons, and sends reminders. It doesn't take typed messages.
 - **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools only. They run once, hourly, daily, on weekdays or weekly.
 - **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from what each provider offers. **Check** sends a real request.
 
