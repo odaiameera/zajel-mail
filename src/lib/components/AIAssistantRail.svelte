@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import type { IconName } from '$lib/icons';
 	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import { tick } from 'svelte';
 
@@ -102,6 +103,17 @@
 	let loadingHistory = $state(false);
 	let retentionDays = $state(7);
 	let messages = $state<ChatMessage[]>([]);
+
+	const hasConversation = $derived(messages.some((message) => message.role === 'user'));
+
+	// Starting points for an empty conversation, shown as chips above the field.
+	const suggestions = $derived<{ action: AgentAction; icon: IconName; label: string; prompt: string }[]>([
+		{ action: 'summarize_today', icon: 'inbox', label: 'Summarize today', prompt: "Summarize today's email and highlight anything that needs my attention." },
+		{ action: 'calendar_tomorrow', icon: 'calendar', label: 'Tomorrow’s schedule', prompt: 'Check my calendar for tomorrow and help me prepare.' },
+		...(currentEmailId
+			? [{ action: 'summarize_current' as AgentAction, icon: 'mail' as IconName, label: 'Summarize this email', prompt: 'Summarize this email and tell me what I need to do.' }]
+			: [])
+	]);
 
 	function id(): string {
 		sequence += 1;
@@ -206,8 +218,8 @@
 		if (open) void loadSessions();
 	});
 
-	async function ask(action: AgentAction) {
-		const prompt = input.trim();
+	async function ask(action: AgentAction, suggestedPrompt?: string) {
+		const prompt = (suggestedPrompt ?? input).trim();
 		if (busy || !prompt) return;
 
 		messages = [...messages, { id: id(), role: 'user', content: prompt }];
@@ -678,6 +690,21 @@
 		<div class="shrink-0 px-3 pb-3">
 			{#if error}
 				<p class="mb-2 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>
+			{/if}
+			{#if !hasConversation && !busy}
+				<div class="mb-2 flex flex-wrap gap-1.5">
+					{#each suggestions as suggestion (suggestion.action)}
+						<button
+							type="button"
+							onclick={() => ask(suggestion.action, suggestion.prompt)}
+							disabled={!aiEnabled}
+							class="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-text-tertiary/50 hover:bg-surface-hover hover:text-text disabled:cursor-default disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-transparent disabled:hover:text-text-secondary"
+						>
+							<Icon name={suggestion.icon} size={14} />
+							{suggestion.label}
+						</button>
+					{/each}
+				</div>
 			{/if}
 			<!--
 				The frame is the field: the textarea inside opts out of the global
