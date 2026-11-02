@@ -84,6 +84,8 @@
 	let pendingUploads = $state<{ id: number; name: string; size: number }[]>([]);
 	let nextUploadId = 0;
 	let fileInputEl = $state<HTMLInputElement | undefined>();
+	/** The composer window itself; keyboard shortcuts act only while focus is inside it. */
+	let shellEl = $state<HTMLDivElement | undefined>();
 
 	// --- Inline link popover (replaces window.prompt) ---
 	// Toolbar menus and popovers: one open at a time, closed by any click
@@ -633,12 +635,16 @@
 			setMode('popup');
 			return;
 		}
-		// Cmd/Ctrl+Enter sends from anywhere in the composer.
+		// Cmd/Ctrl+Enter sends from anywhere in the composer: the editor, the
+		// recipients, the subject. Not from the rest of the page, where the
+		// search box or Zajel's prompt may have the focus while a draft sits
+		// open in the corner.
 		if (
 			(e.metaKey || e.ctrlKey) &&
 			e.key === 'Enter' &&
 			$composer.mode !== 'closed' &&
 			$composer.mode !== 'minimized' &&
+			shellEl?.contains(document.activeElement) &&
 			!sending &&
 			!savingDraft
 		) {
@@ -790,6 +796,7 @@
 		onchange={(e) => handleFiles((e.target as HTMLInputElement).files)}
 	/>
 	<div
+		bind:this={shellEl}
 		class="composer-shell bg-bg border border-border shadow-[0_16px_48px_rgba(0,0,0,0.5)] flex flex-col z-50"
 		in:cornerWindow={{ duration: 200, easing: expoOut }}
 		out:cornerWindow={{ duration: 140, easing: expoOut }}
@@ -1283,54 +1290,17 @@
 	}
 
 	/*
-	 * The .fc-* toolbar rules live in routes/layout.css. They were duplicated
-	 * here as :global() overrides, which shipped in a second chunk and silently
-	 * won on some properties — including a plain :hover that highlighted
-	 * disabled buttons. One definition now.
+	 * The .fc-* toolbar rules and the editor's own typography (including the
+	 * account's default font and size from Settings > Composer, via
+	 * --composer-font / --composer-size) live in routes/layout.css. They were
+	 * duplicated here as :global() overrides, which shipped in a second chunk
+	 * and silently won on some properties — a hard-coded Calibri 14px hid the
+	 * setting entirely. One definition now; only the image rule, which
+	 * layout.css lacks, stays here.
 	 */
-	:global(.full-composer-editor .ProseMirror) {
-		outline: none;
-		min-height: 200px;
-		font-family: Calibri, 'Segoe UI', Arial, sans-serif;
-		font-size: 14px;
-		line-height: 1.5;
-		color: var(--color-text);
-	}
-	/* Outlook-style single-spacing: Enter starts a new paragraph that sits
-	   directly below the previous one. No per-paragraph bottom margin, so the
-	   text doesn't read as double-spaced. An explicit blank line still creates
-	   a real gap. */
-	:global(.full-composer-editor .ProseMirror p) {
-		margin: 0;
-	}
-	:global(.full-composer-editor .ProseMirror ul) {
-		list-style: disc;
-		padding-left: 1.5em;
-	}
-	:global(.full-composer-editor .ProseMirror ol) {
-		list-style: decimal;
-		padding-left: 1.5em;
-	}
-	:global(.full-composer-editor .ProseMirror a) {
-		color: var(--color-accent);
-		text-decoration: underline;
-	}
 	:global(.full-composer-editor .ProseMirror img) {
 		max-width: 100%;
 		height: auto;
 		border-radius: 4px;
-	}
-	:global(.full-composer-editor .ProseMirror blockquote) {
-		border-left: 3px solid var(--color-border);
-		padding-left: 1em;
-		margin-left: 0;
-		color: var(--color-text-secondary);
-	}
-	:global(.full-composer-editor .ProseMirror .is-editor-empty:first-child::before) {
-		content: attr(data-placeholder);
-		color: var(--color-text-tertiary);
-		pointer-events: none;
-		float: left;
-		height: 0;
 	}
 </style>
