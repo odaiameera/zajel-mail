@@ -23,6 +23,8 @@ const MAX_ROUNDS = 10;
 const MAX_TOOL_CALLS = 30;
 const TURN_BUDGET_MS = 150_000;
 const RESULT_CAP = 12_000;
+// The API refuses a request with more than 20 strict tools.
+export const STRICT_TOOL_LIMIT = 20;
 
 // Stable across requests, so it and the tool list stay in the prompt cache.
 // Anything that changes per request goes in the second system block.
@@ -137,12 +139,20 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 			}`
 		}
 	];
-	const apiTools: Anthropic.Beta.BetaTool[] = tools.map((tool) => ({
-		name: tool.name,
-		description: tool.description,
-		input_schema: strictSchema(tool.input_schema) as Anthropic.Beta.BetaTool.InputSchema,
-		strict: true
-	}));
+	// Strict decoding goes to the tools that act, where a malformed input
+	// would do the wrong thing. Read tools parse their own input, and a bad
+	// search comes back as a result the model can correct. The cap holds even
+	// if acting tools alone outgrow the limit one day.
+	let strictLeft = STRICT_TOOL_LIMIT;
+	const apiTools: Anthropic.Beta.BetaTool[] = tools.map((tool) => {
+		const strict = tool.tier !== 'read' && strictLeft-- > 0;
+		return {
+			name: tool.name,
+			description: tool.description,
+			input_schema: strictSchema(tool.input_schema) as Anthropic.Beta.BetaTool.InputSchema,
+			...(strict ? { strict: true } : {})
+		};
+	});
 	const messages: Anthropic.Beta.BetaMessageParam[] = [
 		...input.history.map((turn) => ({ role: turn.role, content: turn.content })),
 		{ role: 'user', content: input.message }

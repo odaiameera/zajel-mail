@@ -101,6 +101,30 @@ export async function notifyUrgent(
 	});
 }
 
+/**
+ * Settings → Notifications → Test alert: laid out like an urgent alert, so
+ * you see what one looks like when it arrives. It names no email, so the only
+ * button is Open (when ORIGIN is set). It counts toward the hourly cap, and
+ * goes out even while paused, since you just asked for it.
+ */
+export async function sendTestAlert(userId: string): Promise<'sent' | 'not_linked' | 'limited'> {
+	const link = getLink(userId);
+	if (!link) return 'not_linked';
+	if (!allowSend(userId)) return 'limited';
+	const origin = env.ORIGIN?.replace(/\/+$/, '');
+	await sendMessage(link.chatId, '<b>Urgent</b> · Zajel\nTest alert', origin ? [[{ text: 'Open', url: `${origin}/` }]] : []);
+	recordAudit({
+		userId,
+		accountId: null,
+		source: 'telegram',
+		tool: 'notify_test',
+		tier: 'self',
+		summary: 'Sent a test alert',
+		outcome: 'done'
+	});
+	return 'sent';
+}
+
 /** Send the agent's reminders that are due. */
 export async function sendDueReminders(nowMs = Date.now()): Promise<void> {
 	if (!telegramConfigured()) return;

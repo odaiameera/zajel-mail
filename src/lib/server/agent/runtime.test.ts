@@ -49,7 +49,7 @@ vi.mock('$lib/server/db/queries/jev-decisions', () => ({ getDecision: () => null
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
 import { listAudit } from './store';
-import { runAgentTurn, type AgentTurnInput } from './runtime';
+import { runAgentTurn, STRICT_TOOL_LIMIT, type AgentTurnInput } from './runtime';
 import type { AuthState } from '$lib/jmap/types';
 
 const USER = 'user-1';
@@ -156,7 +156,18 @@ describe('runAgentTurn', () => {
 		expect(params).toMatchObject({ betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default', output_config: { effort: 'medium' } });
 		expect(params.system[0].cache_control).toEqual({ type: 'ephemeral' });
 		expect(params.system[1].text).toContain('Today is 2026-11-01 (Sunday)');
-		expect(params.tools.every((t: { strict: boolean }) => t.strict)).toBe(true);
+		const strict = (params.tools as { name: string; strict?: boolean }[]).filter((t) => t.strict).map((t) => t.name);
+		expect(strict).toContain('send_email');
+		expect(strict).toContain('mark_read');
+		expect(strict).not.toContain('search_mail');
+	});
+
+	// Over the limit, the API refuses every turn with a 400 before Claude runs.
+	it.each(['chat', 'telegram', 'job'] as const)('keeps strict tools within the API limit for %s', async (source) => {
+		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
+		await runAgentTurn(turn({ source }));
+		const tools = mocks.create.mock.calls[0][0].tools as { strict?: boolean }[];
+		expect(tools.filter((t) => t.strict).length).toBeLessThanOrEqual(STRICT_TOOL_LIMIT);
 	});
 
 	it('sends only schema features strict tool use accepts', async () => {
