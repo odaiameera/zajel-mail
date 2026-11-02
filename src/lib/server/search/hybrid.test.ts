@@ -19,10 +19,11 @@ import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import type { JMAPClient } from '$lib/jmap/client';
 import type { AuthState } from '$lib/jmap/types';
-import { FakeMailbox, fakeOllama, type FakeOllama } from './__fixtures__/fakes';
+import { FAKE_DIMS, fakeEmbedding, FakeMailbox, fakeOllama, type FakeOllama } from './__fixtures__/fakes';
+import { normalize } from './embed';
 import { reciprocalRankFusion, resetSearchPauseForTests, searchMail, type MailSearchInput } from './hybrid';
-import { getIndexState, pendingEmailIds, setIndexEnabled } from './store';
-import { forgetVectors } from './vectors';
+import { getIndexState, pendingEmailIds, setIndexEnabled, storeVectors, upsertEmails } from './store';
+import { forgetVectors, LOAD_STEP, loadVectors, quantize } from './vectors';
 import { embedBatch, syncAccount } from './worker';
 
 const ACCT = 'acct-1';
@@ -129,6 +130,22 @@ describe('searchMail', () => {
 		expect(inSmall.emails.map((e) => e.id)).toEqual(['q1']);
 		const nothing = await search({ operator: 'AND', conditions: [{ text: 'flight' }, { inMailbox: 'small' }] });
 		expect(nothing).toMatchObject({ ranked: false, total: 0 });
+	});
+
+	it('answers by keyword while a large index is still being read into memory, then by meaning', async () => {
+		await buildIndex();
+		// More vectors than one load step: after a restart they are read in the background.
+		const many = Array.from({ length: LOAD_STEP }, (_, i) => ({ id: `big${i}`, receivedAt: minute(2000 + i), mailboxIds: ['inbox'] }));
+		upsertEmails(ACCT, many, 0);
+		const filler = [quantize(normalize(fakeEmbedding('lorem ipsum')))];
+		getDb().transaction(() => {
+			for (const e of many) storeVectors(ACCT, e.id, filler);
+		})();
+		forgetVectors(ACCT);
+
+		expect(await search({ text: 'plumber quote' })).toMatchObject({ ranked: false, total: 1 });
+		await loadVectors(ACCT, FAKE_DIMS);
+		expect(await search({ text: 'plumber quote' })).toMatchObject({ ranked: true, total: 3 });
 	});
 
 	it('falls back to keyword results when Ollama is down, logs it, and stops asking for a while', async () => {

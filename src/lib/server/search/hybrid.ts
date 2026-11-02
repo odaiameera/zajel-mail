@@ -113,8 +113,12 @@ async function vectorSide(
 	rest: JmapFilter | null,
 	keywordIds: Promise<Set<string>>
 ): Promise<VectorSide> {
+	const vectors = accountVectors(input.accountRowId!, index.dims);
+	// A large index still being read into memory, as after a restart: the
+	// keyword results stand alone until it is.
+	if (!vectors) return { ranked: [], fetched: new Map() };
 	const query = await queryVector(text, index.model);
-	const neighbours = accountVectors(input.accountRowId!, index.dims).search(query, VECTOR_POOL, indexPrefilter(rest), MIN_Z);
+	const neighbours = vectors.search(query, VECTOR_POOL, indexPrefilter(rest), MIN_Z);
 	const keyword = await keywordIds;
 	// Keyword matches already meet the filter; the rest are checked as fetched.
 	const toCheck = neighbours.map((n) => n.id).filter((id) => !keyword.has(id));

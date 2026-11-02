@@ -181,6 +181,8 @@ export interface FakeOllama {
 	failure: number | 'down' | null;
 	/** A request with an input matching this gets a 400, like text the model can't take. */
 	refuses: RegExp | null;
+	/** Every other address answers with a redirect here, as a proxy in front of Ollama might. */
+	redirectTo: string | null;
 	fetch: typeof fetch;
 }
 
@@ -190,8 +192,12 @@ export function fakeOllama(): FakeOllama {
 		requests: [],
 		failure: null,
 		refuses: null,
+		redirectTo: null,
 		fetch: (async (url: string | URL, init?: RequestInit) => {
 			if (!String(url).endsWith('/api/embed')) throw new Error(`unexpected fetch ${url}`);
+			if (fake.redirectTo && String(url) !== fake.redirectTo) {
+				return new Response(null, { status: 302, headers: { location: fake.redirectTo } });
+			}
 			if (fake.failure === 'down') throw new TypeError('fetch failed');
 			if (typeof fake.failure === 'number') return new Response('model not found', { status: fake.failure });
 			const body = JSON.parse(String(init?.body)) as { input: string[] };

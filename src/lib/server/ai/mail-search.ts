@@ -105,17 +105,21 @@ export function parseMailSearchSpec(raw: unknown): MailSearchSpec {
  * archive. That is the point: "all mail" means all mail.
  */
 export function buildMailFilter(spec: MailSearchSpec): Record<string, unknown> | null {
-	const conditions: Record<string, unknown>[] = [];
+	const conditions = mailFilterConditions(spec);
+	if (!conditions.length) return null;
+	if (conditions.length === 1) return conditions[0];
+	return { operator: 'AND', conditions };
+}
 
+/** The spec's constraints as JMAP conditions, one each, for a caller that adds its own. */
+export function mailFilterConditions(spec: MailSearchSpec): Record<string, unknown>[] {
+	const conditions: Record<string, unknown>[] = [];
 	if (spec.text) conditions.push({ text: spec.text });
 	if (spec.from) conditions.push({ from: spec.from });
 	if (spec.after) conditions.push({ after: spec.after });
 	if (spec.before) conditions.push({ before: spec.before });
 	if (spec.hasAttachment) conditions.push({ hasAttachment: true });
-
-	if (!conditions.length) return null;
-	if (conditions.length === 1) return conditions[0];
-	return { operator: 'AND', conditions };
+	return conditions;
 }
 
 /** One-line description of what was searched, for the reply's own context. */

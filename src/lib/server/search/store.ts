@@ -131,11 +131,11 @@ function prepareStmts() {
 		),
 		dropEmails: db.prepare('DELETE FROM search_emails WHERE account_id = ?'),
 		vectors: db.prepare(
-			`SELECT v.email_id, v.scale, v.vector, e.received_at, e.mailbox_ids
+			`SELECT v.id, v.email_id, v.scale, v.vector, e.received_at, e.mailbox_ids
 			 FROM search_vectors v
 			 JOIN search_emails e ON e.account_id = v.account_id AND e.email_id = v.email_id
-			 WHERE v.account_id = ?
-			 ORDER BY v.email_id, v.chunk`
+			 WHERE v.account_id = ? AND v.id > ?
+			 ORDER BY v.id LIMIT ?`
 		)
 	};
 }
@@ -259,29 +259,35 @@ export function restartWithModel(accountId: string, model: string, now = Date.no
 }
 
 export interface VectorRow {
+	id: number;
 	emailId: string;
 	receivedAt: string;
 	mailboxIds: string[];
 	vector: StoredVector;
 }
 
-/** Every stored vector for an account, grouped by message. */
-export function* iterateVectors(accountId: string): Generator<VectorRow> {
-	for (const row of stmts().vectors.iterate(accountId) as Iterable<{
+/**
+ * Up to `limit` of an account's stored vectors after row `after`, in row
+ * order. A message's chunks are stored in one transaction, so they come
+ * together, though a page may end between them.
+ */
+export function readVectors(accountId: string, after: number, limit: number): VectorRow[] {
+	const rows = stmts().vectors.all(accountId, after, limit) as {
+		id: number;
 		email_id: string;
 		scale: number;
 		vector: Buffer;
 		received_at: string;
 		mailbox_ids: string;
-	}>) {
-		yield {
-			emailId: row.email_id,
-			receivedAt: row.received_at,
-			mailboxIds: row.mailbox_ids ? row.mailbox_ids.split(' ') : [],
-			vector: {
-				scale: row.scale,
-				data: new Int8Array(row.vector.buffer, row.vector.byteOffset, row.vector.byteLength)
-			}
-		};
-	}
+	}[];
+	return rows.map((row) => ({
+		id: row.id,
+		emailId: row.email_id,
+		receivedAt: row.received_at,
+		mailboxIds: row.mailbox_ids ? row.mailbox_ids.split(' ') : [],
+		vector: {
+			scale: row.scale,
+			data: new Int8Array(row.vector.buffer, row.vector.byteOffset, row.vector.byteLength)
+		}
+	}));
 }

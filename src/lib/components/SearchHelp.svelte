@@ -13,7 +13,7 @@
 		{ token: 'after:2025-10-01', meaning: 'On or after that date' },
 		{ token: 'in:inbox', meaning: 'Restrict to a system folder' },
 		{ token: 'label:"Work Stuff"', meaning: 'Messages with that label' },
-		{ token: 'quarterly q4', meaning: 'Bare words search all fields' }
+		{ token: 'quarterly q4', meaning: 'Bare words search every field, and by meaning once the index is ready' }
 	];
 </script>
 
@@ -30,6 +30,8 @@
 	<p class="text-xs font-semibold text-text mb-2">Search operators</p>
 	<p class="text-2xs text-text-tertiary mb-3">
 		Combine operators with spaces (implicit AND). Quote values with spaces.
+		With semantic search on (Settings → Search), bare words also find mail that means the same, in any
+		language, and matches are ranked by relevance; <code class="font-mono">body:</code> turns that off.
 	</p>
 	<div class="grid grid-cols-[180px_1fr] gap-x-3 gap-y-1.5 text-xs">
 		{#each examples as ex}

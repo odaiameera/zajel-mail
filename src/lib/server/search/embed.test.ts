@@ -103,6 +103,18 @@ describe('embed', () => {
 		await expect(embed(['x'], 1000)).rejects.toMatchObject({ name: 'EmbedError', status: 404 });
 	});
 
+	it('follows a redirect on the same host, and refuses one to another', async () => {
+		const ollama = fakeOllama();
+		vi.stubGlobal('fetch', ollama.fetch);
+		ollama.redirectTo = 'http://ollama:11434/v1/api/embed';
+		expect(await embed(['x'], 1000)).toHaveLength(1);
+		expect(ollama.requests).toEqual([['x']]);
+		ollama.redirectTo = 'http://elsewhere.example/api/embed';
+		await expect(embed(['x'], 1000)).rejects.toThrow('Redirects to elsewhere.example');
+		// Nothing was sent there.
+		expect(ollama.requests).toEqual([['x']]);
+	});
+
 	it('refuses a reply that doesn’t hold one vector per input', async () => {
 		vi.stubGlobal('fetch', async () => Response.json({ embeddings: [[1, 0]] }));
 		await expect(embed(['a', 'b'], 1000)).rejects.toThrow('no embeddings');

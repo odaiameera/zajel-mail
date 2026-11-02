@@ -103,7 +103,7 @@ The inbox is built for getting through mail, not just reading it.
 With **semantic search** switched on in Settings → Search, it also finds mail by meaning. For example, *"the plumber's quote from spring"* finds the estimate for the leaking pipe, in Arabic or English.
 - Keyword and meaning results are merged, so a message both find comes first. A match has to stand out from the rest of the mailbox, so a mailbox with fewer than ten messages, or a folder where nothing does, gets keyword results alone.
 - The embedding model runs on **your own Ollama**. Mail text never goes to the chat AI's endpoint.
-- Each account is indexed in the background, newest mail first. Until its index is complete, search is keyword-only.
+- Each account is indexed in the background, newest mail first. Until its index is complete, and for a minute at most after a restart while the index is read back into memory, search is keyword-only. Results found by meaning are shown best match first.
 
 ![Search results for "Northpeak", with the matching contract email open](docs/screenshots/search.png)
 
@@ -334,7 +334,7 @@ Zajel Mail holds the keys to your mail, so security comes first.
 
 ### Where your data goes
 
-- **AI.** Email content goes only to the AI service you choose: Anthropic, OpenAI or your own Ollama endpoint. **Semantic search** sends mail text only to the Ollama you name for it. OpenAI requests are sent with `store: false`, but OpenAI's abuse-monitoring logs keep API content for up to 30 days unless you have Zero Data Retention.
+- **AI.** Email content goes only to the AI service you choose: Anthropic, OpenAI or your own Ollama endpoint. **Semantic search** sends mail text only to the Ollama you name for it: the endpoint is reached from the server, receives the text of every indexed message, and a redirect to another host is refused. OpenAI requests are sent with `store: false`, but OpenAI's abuse-monitoring logs keep API content for up to 30 days unless you have Zero Data Retention.
 - **Jev.** Mail goes to TypeSafe only for accounts where you switch Jev on.
   - Each new email is sent **once**: sender, recipients, subject, the first 2,000 characters of the body with quoted replies removed, and the facts the app works out about it.
   - Jev returns probabilities. The app keeps those and the facts; it **never stores the email text**.

@@ -1,4 +1,4 @@
-import { iterateVectors, type StoredVector } from './store';
+import { readVectors, type StoredVector } from './store';
 
 /**
  * Brute-force nearest neighbours over each account's vectors, held in memory.
@@ -231,35 +231,97 @@ class MinHeap {
 	}
 }
 
+/**
+ * Vectors read from SQLite per step. A step takes a few milliseconds; a large
+ * index is read in many, with the event loop running between them, so no
+ * request waits on the whole read.
+ */
+export const LOAD_STEP = 4096;
+
+interface Load {
+	index: AccountVectors;
+	done: Promise<AccountVectors>;
+}
+
+/** Complete copies, by account. */
 const loaded = new Map<string, AccountVectors>();
+/** Copies still being read. */
+const loading = new Map<string, Load>();
 
-/** The account's vectors, read from SQLite on first use. */
-export function accountVectors(accountId: string, dims: number): AccountVectors {
-	const cached = loaded.get(accountId);
-	if (cached && cached.dims === dims) return cached;
+/** Read an account's vectors into memory, at once when they fit in one step. */
+function load(accountId: string, dims: number): Load {
 	const index = new AccountVectors(dims);
-	// Rows arrive grouped by message.
-	let meta = null as EmailMeta | null;
+	let meta: EmailMeta | null = null;
 	let vectors: StoredVector[] = [];
-	for (const row of iterateVectors(accountId)) {
-		if (row.vector.data.length !== dims) continue;
-		if (meta?.id !== row.emailId) {
-			if (meta) index.add(meta, vectors);
-			meta = { id: row.emailId, receivedAt: Date.parse(row.receivedAt), mailboxIds: row.mailboxIds };
-			vectors = [];
+	let after = 0;
+	// Rows arrive grouped by message; a group may run on into the next step.
+	const step = (): boolean => {
+		const rows = readVectors(accountId, after, LOAD_STEP);
+		for (const row of rows) {
+			after = row.id;
+			if (row.vector.data.length !== dims) continue;
+			if (meta?.id !== row.emailId) {
+				if (meta) index.add(meta, vectors);
+				meta = { id: row.emailId, receivedAt: Date.parse(row.receivedAt), mailboxIds: row.mailboxIds };
+				vectors = [];
+			}
+			vectors.push(row.vector);
 		}
-		vectors.push(row.vector);
+		if (rows.length === LOAD_STEP) return false;
+		if (meta) index.add(meta, vectors);
+		return true;
+	};
+	if (step()) {
+		loaded.set(accountId, index);
+		return { index, done: Promise.resolve(index) };
 	}
-	if (meta) index.add(meta, vectors);
-	loaded.set(accountId, index);
-	return index;
+	const entry: Load = {
+		index,
+		done: (async () => {
+			do {
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				// Forgotten meanwhile (switched off, another model): leave it.
+				if (loading.get(accountId)?.index !== index) return index;
+			} while (!step());
+			loading.delete(accountId);
+			loaded.set(accountId, index);
+			return index;
+		})()
+	};
+	loading.set(accountId, entry);
+	return entry;
 }
 
-/** The loaded copy, if a search has loaded one: the indexer updates only that. */
+/**
+ * The account's vectors, if they are in memory. An index that fits in one
+ * step is read on first use; a larger one is read in the background (see
+ * `loadVectors`) and this is null until it has been. The indexer warms every
+ * ready index on its pass, so after a restart a search seldom finds none.
+ */
+export function accountVectors(accountId: string, dims: number): AccountVectors | null {
+	const cached = loaded.get(accountId);
+	if (cached?.dims === dims) return cached;
+	if (loading.get(accountId)?.index.dims === dims) return null;
+	const { index } = load(accountId, dims);
+	return loaded.get(accountId) === index ? index : null;
+}
+
+/** Read the account's vectors into memory, in steps; resolves once they all are. */
+export function loadVectors(accountId: string, dims: number): Promise<AccountVectors> {
+	const cached = loaded.get(accountId);
+	if (cached?.dims === dims) return Promise.resolve(cached);
+	const running = loading.get(accountId);
+	if (running?.index.dims === dims) return running.done;
+	return load(accountId, dims).done;
+}
+
+/** The copy in memory, complete or still being read: the indexer keeps it current. */
 export function loadedVectors(accountId: string): AccountVectors | undefined {
-	return loaded.get(accountId);
+	return loaded.get(accountId) ?? loading.get(accountId)?.index;
 }
 
+/** Drop the copy in memory, as when the index is switched off or the account unlinked. */
 export function forgetVectors(accountId: string): void {
 	loaded.delete(accountId);
+	loading.delete(accountId);
 }
