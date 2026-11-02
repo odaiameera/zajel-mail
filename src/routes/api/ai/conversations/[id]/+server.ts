@@ -7,6 +7,9 @@ import {
 	listMessages
 } from '$lib/server/db/queries/ai-conversations';
 import { renderAgentMarkdown } from '$lib/server/ai/markdown';
+import { pendingView } from '$lib/server/agent/actions';
+import { listPendingActions } from '$lib/server/agent/store';
+import { turnRunning } from '$lib/server/agent/turns';
 
 /**
  * Replay one session.
@@ -15,6 +18,9 @@ import { renderAgentMarkdown } from '$lib/server/ai/markdown';
  * write time, so a change to the sanitising allowlist covers history too.
  * User turns stay plain text — they are echoed back into the user's own
  * bubble and never need markup.
+ *
+ * Cards still waiting for a click come with it, and whether a turn is still
+ * running, so a reply the browser never received (or a reload) loses nothing.
  */
 export const GET: RequestHandler = async ({ locals, params }) => {
 	if (!locals.auth) return json({ error: 'Unauthorized' }, { status: 401 });
@@ -34,7 +40,9 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 			content: message.content,
 			html: message.role === 'assistant' ? renderAgentMarkdown(message.content) : '',
 			createdAt: message.createdAt
-		}))
+		})),
+		pending: locals.user ? listPendingActions(locals.user.id, params.id).map(pendingView) : [],
+		running: turnRunning(params.id)
 	});
 };
 

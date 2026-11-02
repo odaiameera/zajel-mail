@@ -8,7 +8,10 @@ import {
 	claudeClient,
 	claudeConfigured,
 	claudeError,
+	claudeErrorFields,
 	FALLBACK_BETA,
+	fallbackModel,
+	modelUnavailable,
 	supportsFallbacks
 } from '$lib/server/ai/claude';
 import { errorFields, logEvent } from '$lib/server/log';
@@ -24,6 +27,11 @@ import { mailboxCache, toolsFor, type AgentTool, type ToolContext } from './tool
 const MAX_ROUNDS = 10;
 const MAX_TOOL_CALLS = 30;
 const TURN_BUDGET_MS = 150_000;
+// A round with less time than this left would likely time out half way, so
+// the turn ends with what it has instead.
+const MIN_ROUND_MS = 30_000;
+// One tool call, however long the mail server takes to answer.
+const TOOL_TIMEOUT_MS = 60_000;
 const RESULT_CAP = 12_000;
 /**
  * Strict decoding has request-wide budgets, summed over every strict tool:
@@ -67,6 +75,8 @@ export interface AgentTurnInput {
 }
 
 export interface AgentTurnResult {
+	/** How the turn ended. A refused turn stays out of the transcript. */
+	outcome: 'answered' | 'refused' | 'stopped';
 	message: string;
 	/** Self-tier changes made this turn, in order. */
 	done: string[];
@@ -277,6 +287,13 @@ export function inputProblem(schema: Schema, value: unknown, path = 'input'): st
 	return null;
 }
 
+/** The wait an overloaded or rate-limited model asks for, or a short default. */
+function retryWaitMs(err: unknown): number {
+	const header = (err as { headers?: Headers }).headers?.get?.('retry-after');
+	const seconds = Number(header);
+	return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 2_000;
+}
+
 function textOf(content: Anthropic.Beta.BetaContentBlock[]): string {
 	return content
 		.filter((block): block is Anthropic.Beta.BetaTextBlock => block.type === 'text')
@@ -293,6 +310,18 @@ function auditSummary(tool: AgentTool, input: Record<string, unknown>, done?: st
 		.map(([k, v]) => `${k}=${String(v).slice(0, 60)}`)
 		.join(' ');
 	return `${tool.name}${detail ? ` ${detail}` : ''}`;
+}
+
+/**
+ * `work`, or `onTimeout()` once `ms` passes first. The work isn't cancelled:
+ * it carries on and still records its own outcome when it ends.
+ */
+function withDeadline<T>(work: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<T>((resolve) => {
+		timer = setTimeout(() => resolve(onTimeout()), ms);
+	});
+	return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
@@ -316,6 +345,10 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 
 	const model = agentModel();
 	const effort = agentEffort();
+	// The model the turn runs on: the agent model, or the fallback when the
+	// agent model was down as the turn began.
+	let active = model;
+	let retried = false;
 	const system: Anthropic.Beta.BetaTextBlockParam[] = [
 		{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } },
 		{
@@ -336,25 +369,78 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 	const deadline = started + TURN_BUDGET_MS;
 	let toolCalls = 0;
 	let rounds = 0;
+	// Summed over the rounds, so the log shows what drains the rate limits.
+	const usage = { inputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 };
 
 	// One line per turn in the event log: how it ended and what it cost.
-	const finish = (outcome: 'answered' | 'refused' | 'stopped', message: string): AgentTurnResult => {
+	const finish = (outcome: AgentTurnResult['outcome'], message: string, fields: Record<string, unknown> = {}): AgentTurnResult => {
 		logEvent(outcome === 'answered' ? 'info' : 'warn', 'agent', 'turn', {
 			source: input.source,
-			model,
+			model: active,
 			outcome,
 			rounds,
 			toolCalls,
 			done: done.length,
 			pending: pending.length,
+			...usage,
+			...fields,
 			ms: Date.now() - started
 		});
-		return { message, done, pending };
+		return { outcome, message, done, pending };
+	};
+
+	// For a turn that ends early: the changes it made stand, and its cards
+	// still wait for a click.
+	const progress = () =>
+		`${done.length ? ` So far: ${done.join('; ')}.` : ''}${
+			pending.length ? ` ${pending.length === 1 ? 'One change waits' : `${pending.length} changes wait`} for your confirmation.` : ''
+		}`;
+
+	// One tool call and its audit entry. A failure becomes the result, so the
+	// model can carry on around it.
+	const runTool = async (
+		tool: AgentTool,
+		id: string,
+		toolInput: Record<string, unknown>
+	): Promise<Anthropic.Beta.BetaToolResultBlockParam> => {
+		try {
+			const result = await tool.run(ctx, toolInput);
+			if (result.done) done.push(result.done);
+			if (result.pending) pending.push(result.pending);
+			recordAudit({
+				userId: input.userId,
+				accountId: input.accountRowId,
+				source: input.source,
+				tool: tool.name,
+				tier: tool.tier,
+				summary: auditSummary(tool, toolInput, result.done, result.pending),
+				outcome: result.isError ? 'failed' : result.pending ? 'proposed' : 'done'
+			});
+			return {
+				type: 'tool_result',
+				tool_use_id: id,
+				content: result.content.slice(0, RESULT_CAP),
+				...(result.isError ? { is_error: true } : {})
+			};
+		} catch (err) {
+			const reason = err instanceof Error ? err.message.slice(0, 200) : 'failed';
+			logEvent('warn', 'agent', 'tool_failed', { source: input.source, tool: tool.name, error: reason });
+			recordAudit({
+				userId: input.userId,
+				accountId: input.accountRowId,
+				source: input.source,
+				tool: tool.name,
+				tier: tool.tier,
+				summary: `${tool.name}: ${reason}`,
+				outcome: 'failed'
+			});
+			return { type: 'tool_result', tool_use_id: id, content: `Failed: ${reason}`, is_error: true };
+		}
 	};
 
 	for (let round = 0; round < MAX_ROUNDS; round += 1) {
 		const remaining = deadline - Date.now();
-		if (remaining < 5_000) break;
+		if (remaining < MIN_ROUND_MS) break;
 		rounds = round + 1;
 
 		let response: Anthropic.Beta.BetaMessage;
@@ -364,33 +450,78 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 				(apiTools) =>
 					claudeClient().beta.messages.create(
 						{
-							model,
+							model: active,
 							max_tokens: 16000,
 							output_config: { effort },
 							system,
 							tools: apiTools,
 							messages,
-							...(supportsFallbacks(model) ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {})
+							// Lands on the newest block each round, so the next round reads
+							// everything before it from the cache.
+							cache_control: { type: 'ephemeral' },
+							...(supportsFallbacks(active) ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {})
 						},
-						{ timeout: Math.max(deadline - Date.now(), 1_000) }
+						// No retries inside the SDK: it would sleep through a long
+						// retry-after and leave no time for the fallback model. The
+						// loop below retries once itself, within the budget.
+						{ timeout: Math.max(deadline - Date.now(), 1_000), signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1_000)), maxRetries: 0 }
 					),
-				{ source: input.source, model }
+				{ source: input.source, model: active }
 			);
 		} catch (err) {
+			// Until the first reply nothing ties the turn to its model (no
+			// thinking blocks yet), so an outage or a rate limit on the agent
+			// model alone gets one go on the fallback, which has its own.
+			const backup = fallbackModel();
+			if (round === 0 && active === model && backup !== model && modelUnavailable(err) && deadline - Date.now() >= MIN_ROUND_MS) {
+				logEvent('warn', 'agent', 'model_fallback', { source: input.source, from: model, to: backup, ...claudeErrorFields(err) });
+				active = backup;
+				round -= 1; // round 0 again, on the fallback
+				continue;
+			}
+			// Otherwise, while still on the agent model and where the fallback
+			// can't be used (after the first reply, or none set apart), one more
+			// try after the wait it asks for, if a round's time is left after it.
+			// On the fallback, a failure ends the turn.
+			const wait = retryWaitMs(err);
+			if (!retried && active === model && (round > 0 || backup === model) && modelUnavailable(err) && deadline - Date.now() - wait >= MIN_ROUND_MS) {
+				retried = true;
+				await new Promise((resolve) => setTimeout(resolve, wait));
+				round -= 1;
+				continue;
+			}
 			const failure = claudeError(err);
 			logEvent('error', 'agent', 'turn_failed', {
 				source: input.source,
-				model,
+				model: active,
 				rounds,
 				toolCalls,
 				error: failure.message,
 				ms: Date.now() - started
 			});
+			// The turn is kept, not thrown away, once it has changed something
+			// or left a card: the route then saves it and shows the cards.
+			if (done.length || pending.length) return finish('stopped', `${failure.message.replace(/\.?$/, '.')}${progress()}`);
 			throw failure;
 		}
+		usage.inputTokens += response.usage?.input_tokens ?? 0;
+		usage.cacheWriteTokens += response.usage?.cache_creation_input_tokens ?? 0;
+		usage.cacheReadTokens += response.usage?.cache_read_input_tokens ?? 0;
+		usage.outputTokens += response.usage?.output_tokens ?? 0;
 
 		if (response.stop_reason === 'refusal') {
-			return finish('refused', 'I can’t help with that request.');
+			const refusal = {
+				category: response.stop_details?.category ?? null,
+				recommendedModel: response.stop_details?.recommended_model ?? null
+			};
+			if (done.length || pending.length) return finish('stopped', `I stopped before finishing.${progress()}`, refusal);
+			// A recommended model means the fallback that would have answered
+			// was busy, so the same request can work a little later.
+			return finish(
+				'refused',
+				refusal.recommendedModel ? 'I couldn’t answer that just now. Try again in a few minutes.' : 'I can’t help with that request.',
+				refusal
+			);
 		}
 		// Thinking blocks go back exactly as they came, so the whole content is kept.
 		messages.push({ role: 'assistant', content: response.content });
@@ -420,43 +551,25 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 				results.push({ type: 'tool_result', tool_use_id: block.id, content: `Not run: ${problem}. Call it again with the fields it takes.`, is_error: true });
 				continue;
 			}
-			try {
-				const result = await tool.run(ctx, toolInput);
-				if (result.done) done.push(result.done);
-				if (result.pending) pending.push(result.pending);
-				recordAudit({
-					userId: input.userId,
-					accountId: input.accountRowId,
-					source: input.source,
-					tool: tool.name,
-					tier: tool.tier,
-					summary: auditSummary(tool, toolInput, result.done, result.pending),
-					outcome: result.isError ? 'failed' : result.pending ? 'proposed' : 'done'
-				});
-				results.push({
-					type: 'tool_result',
-					tool_use_id: block.id,
-					content: result.content.slice(0, RESULT_CAP),
-					...(result.isError ? { is_error: true } : {})
-				});
-			} catch (err) {
-				const reason = err instanceof Error ? err.message.slice(0, 200) : 'failed';
-				logEvent('warn', 'agent', 'tool_failed', { source: input.source, tool: tool.name, error: reason });
-				recordAudit({
-					userId: input.userId,
-					accountId: input.accountRowId,
-					source: input.source,
-					tool: tool.name,
-					tier: tool.tier,
-					summary: `${tool.name}: ${reason}`,
-					outcome: 'failed'
-				});
-				results.push({ type: 'tool_result', tool_use_id: block.id, content: `Failed: ${reason}`, is_error: true });
-			}
+			// A stalled mail-server call would otherwise hold the turn (and the
+			// job worker behind it) for minutes. When no further round can run
+			// anyway, cutting the tool short gains nothing, so it gets its full time.
+			const left = deadline - Date.now();
+			const ms = left < MIN_ROUND_MS ? TOOL_TIMEOUT_MS : Math.max(Math.min(TOOL_TIMEOUT_MS, left), 1_000);
+			results.push(
+				await withDeadline(runTool(tool, block.id, toolInput), ms, () => {
+					logEvent('warn', 'agent', 'tool_timeout', { source: input.source, tool: tool.name, ms });
+					return {
+						type: 'tool_result',
+						tool_use_id: block.id,
+						content: 'Timed out. It may still finish, so check before trying it again.',
+						is_error: true
+					};
+				})
+			);
 		}
 		messages.push({ role: 'user', content: results });
 	}
 
-	const changes = done.length ? ` So far: ${done.join('; ')}.` : '';
-	return finish('stopped', `I stopped before finishing.${changes}`);
+	return finish('stopped', `I stopped before finishing.${progress()}`);
 }

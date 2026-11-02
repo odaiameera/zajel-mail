@@ -9,6 +9,7 @@ import {
 import { claudeConfigured } from '$lib/server/ai/claude';
 import { runAgentTurn } from '$lib/server/agent/runtime';
 import { pendingView } from '$lib/server/agent/actions';
+import { trackTurn } from '$lib/server/agent/turns';
 import { aiProvider, MailAssistantError, type AIChatMessage } from '$lib/server/ai/mail-assistant';
 import { taskAdapterProviders } from '$lib/server/ai/task-adapter';
 import { renderAgentMarkdown } from '$lib/server/ai/markdown';
@@ -39,6 +40,19 @@ function failure(error: unknown, provider: string, started: number): Record<stri
 	console.error('[ai-agent] request failed', error);
 	logEvent('error', 'agent', 'request_failed', { provider, ...errorFields(error), ms: Date.now() - started });
 	return { error: 'The mail agent could not load your account context' };
+}
+
+/**
+ * The held-open reply, with the session id and how many messages it held
+ * before this turn in headers. They arrive before the turn ends, so a panel
+ * whose body is cut off still knows which session to ask for the reply and
+ * its cards, and can tell this turn's reply from an earlier one.
+ */
+function reply(conversationId: string, storedBefore: number, work: Promise<Record<string, unknown>>): Response {
+	const response = heldOpen(trackTurn(conversationId, work));
+	response.headers.set('X-Conversation-Id', conversationId);
+	response.headers.set('X-Turn-Base', String(storedBefore));
+	return response;
 }
 
 function safeTimeZone(value: unknown): string {
@@ -87,7 +101,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	// History comes from storage, not from the request. The client used to
 	// send the transcript back with every turn, which meant it could invent
 	// assistant turns the agent had never produced.
-	const conversation: AIChatMessage[] = listMessages(conversationId, userEmail)
+	const stored = listMessages(conversationId, userEmail);
+	const conversation: AIChatMessage[] = stored
 		.slice(-12)
 		.map((stored) => ({ role: stored.role, content: stored.content.slice(0, 1500) }));
 	const [todayStartMs, todayEndMs] = range(body?.todayStart, body?.todayEnd, 0);
@@ -108,7 +123,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (claudeConfigured() && locals.user && locals.activeAccountId) {
 		const userId = locals.user.id;
 		const accountRowId = locals.activeAccountId;
-		return heldOpen(
+		return reply(
+			conversationId,
+			stored.length,
 			(async () => {
 				try {
 					const result = await runAgentTurn({
@@ -124,8 +141,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						today: localDate(todayStartMs, timeZone),
 						currentEmailId
 					});
-					appendMessage(conversationId, userEmail, 'user', message);
-					appendMessage(conversationId, userEmail, 'assistant', result.message);
+					// A refusal stays out of the transcript: replayed as history in
+					// every later turn, it would only invite another.
+					if (result.outcome !== 'refused') {
+						appendMessage(conversationId, userEmail, 'user', message);
+						appendMessage(conversationId, userEmail, 'assistant', result.message);
+					}
 					return {
 						message: result.message,
 						html: renderAgentMarkdown(result.message),
@@ -141,7 +162,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		);
 	}
 
-	return heldOpen(
+	return reply(
+		conversationId,
+		stored.length,
 		(async () => {
 			try {
 				const result = await runMailAgent(auth, userEmail, {

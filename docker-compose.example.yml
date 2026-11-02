@@ -35,6 +35,9 @@ services:
       # - ANTHROPIC_API_KEY=sk-ant-...
       # - ANTHROPIC_MODEL=claude-opus-5-5
       # - ANTHROPIC_FAST_MODEL=claude-haiku-5-5
+      # A turn that finds the agent's model overloaded or rate limited as it
+      # starts runs on this one instead:
+      # - ANTHROPIC_FALLBACK_MODEL=claude-sonnet-5-5
       # - AI_PROVIDER=anthropic
       # The agent's Telegram bot: create one with @BotFather and put its
       # token here, then link your chat in Settings → Notifications. It
