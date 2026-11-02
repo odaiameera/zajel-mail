@@ -71,7 +71,9 @@ Three principles shape it:
 
 - 📬 **Several mail accounts under one sign-in.** Each account has its own colour, photo and unread badges.
 - 🗂️ **Inbox tabs** (Important, Updates, Newsletters, Promotions). Sort by hand, by dragging, or with Jev.
-- 🪶 **Zajel, the AI agent.** It searches your whole mailbox and calendar, summarises your day, drafts replies and proposes events and tasks. It runs on **OpenAI GPT-5.6** or on any **Ollama** model, including one on your own machine.
+- 🪶 **Zajel, the AI agent.** It searches your whole mailbox and calendar, summarises your day and drafts replies. On **Claude** it also files, archives, labels and snoozes mail for you, while anything that leaves your account waits for your click. It runs on **Claude**, **OpenAI GPT-5.6** or any **Ollama** model, chosen in Settings.
+- 🔎 **Search that understands what you mean.** Keyword search plus semantic search, from a small model on your own Ollama, in Arabic and English.
+- 💬 **Zajel on Telegram.** Urgent mail and reminders reach your phone, and scheduled jobs send digests or tidy the Inbox.
 - 🧠 **Jev rules in plain English**, such as *"it's an invoice or a request for payment"*, with a strictness you choose and a test run on recent mail.
 - ⏰ **Send later and Undo send, handled by the server.** A scheduled message goes out on time even with every tab closed.
 - 🔑 **Sign-in codes detected**, with a one-click **Copy code** that can also send the email to Trash.
@@ -80,7 +82,7 @@ Three principles shape it:
 - 🎨 **Icons and colours for folders and labels**, picked from the full Lucide set of about 1,900 icons.
 - 🌗 **Dark and light themes**, two densities and a reading pane you can turn off.
 - 📱 **Built for phones too.** It installs as a PWA, with a bottom tab bar and drawers.
-- 🔒 **Secure by default**: passkeys, scrypt-hashed master password, AES-256-GCM encrypted mail credentials, sandboxed message rendering and a remote-image proxy.
+- 🔒 **Secure by default**: two-step sign-in, passkeys, scrypt-hashed master password, AES-256-GCM encrypted mail credentials, sandboxed message rendering and a remote-image proxy.
 
 ---
 
@@ -97,6 +99,11 @@ The inbox is built for getting through mail, not just reading it.
 **Folders and labels.** Folders are real JMAP mailboxes and can nest. Labels are mailboxes too, grouped under a `Labels` parent, so they show up cleanly in any other client. Both can have a colour and an icon.
 
 **Search** sits at the top of every page (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>, or <kbd>/</kbd>). It looks across every folder, and active filters show as chips you can clear.
+
+With **semantic search** switched on in Settings → Search, it also finds mail by meaning. For example, *"the plumber's quote from spring"* finds the estimate for the leaking pipe, in Arabic or English.
+- Keyword and meaning results are merged, so a message both find comes first.
+- The embedding model runs on **your own Ollama**. Mail text never goes to the chat AI's endpoint.
+- Each account is indexed in the background, newest mail first. Until its index is complete, search is keyword-only.
 
 ![Search results for "Northpeak", with the matching contract email open](docs/screenshots/search.png)
 
@@ -167,7 +174,14 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
 - **Task proposals** go to **Todoist**, **Linear**, **Notion**, a generic **webhook**, or an **MCP-to-HTTP bridge**, again only after you confirm.
 - **Persistent conversations** with history. Answers are rendered in Markdown.
 
-Zajel runs on **OpenAI's GPT-5.6** when `OPENAI_API_KEY` is set:
+**On Claude, Zajel acts.** With `ANTHROPIC_API_KEY` set, Zajel runs on **Claude Opus 5.5** for the agent and **Claude Haiku 5.5** for writing, with native tool use.
+- **Your own mailbox:** it marks, stars, archives, moves, labels, snoozes and drafts. These changes are reversible, happen straight away and are logged.
+- **Anything that leaves your account** (sending, invitations, deleting an event) becomes a card you confirm.
+- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), sends reminders, and answers there too.
+- **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools only. They run once, hourly, daily, on weekdays or weekly.
+- **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from what each provider offers. **Check** sends a real request.
+
+Without an Anthropic key, Zajel answers and proposes but doesn't act. It runs on **OpenAI's GPT-5.6** when `OPENAI_API_KEY` is set:
 - `gpt-5.6-terra` by default, the balanced tier
 - `gpt-5.6-luna` for speed and price
 
@@ -295,6 +309,8 @@ Zajel Mail holds the keys to your mail, so security comes first.
 **Signing in**
 - **One master login** for the app, separate from your mail accounts' passwords. It's hashed with **scrypt** (N=2¹⁷, r=8, p=1).
 - **Passkeys** (WebAuthn) for passwordless sign-in.
+- **Two-step sign-in** with an authenticator app (TOTP), with ten one-time recovery codes. A passkey counts as both steps.
+- **Fresh re-checks** before risky changes, such as linking Telegram, choosing the AI provider or the search endpoint.
 - **Active sessions** are listed in Settings → Security, where you can sign them out.
 - **Brute-force protection.** After 10 failed sign-ins in 15 minutes, sign-in locks for 15 minutes.
 - **Session cookies** are `HttpOnly`, `Secure` and `SameSite=Strict`. SvelteKit's origin check (`ORIGIN`) guards every form post.
@@ -313,11 +329,12 @@ Zajel Mail holds the keys to your mail, so security comes first.
 - **Spam and authentication signals** are visible: the spam score, authentication results and sender trust are shown, not hidden.
 
 **AI that asks first**
-- **Zajel only proposes.** Replies, events, deletions and tasks wait for your click. The confirmation card names exactly what will happen.
+- **Anything that leaves your account waits for your click.** Sending, invitations, event deletions and tasks are cards that name exactly what will happen.
+- **What Zajel does on its own stays in your mailbox and can be undone.** Marking, filing, labelling, snoozing and drafts are logged in Settings → Agent.
 
 ### Where your data goes
 
-- **AI.** Email content goes only to the AI service you configure: OpenAI or your own Ollama endpoint. OpenAI requests are sent with `store: false`, but OpenAI's abuse-monitoring logs keep API content for up to 30 days unless you have Zero Data Retention.
+- **AI.** Email content goes only to the AI service you choose: Anthropic, OpenAI or your own Ollama endpoint. **Semantic search** sends mail text only to the Ollama you name for it. OpenAI requests are sent with `store: false`, but OpenAI's abuse-monitoring logs keep API content for up to 30 days unless you have Zero Data Retention.
 - **Jev.** Mail goes to TypeSafe only for accounts where you switch Jev on.
   - Each new email is sent **once**: sender, recipients, subject, the first 2,000 characters of the body with quoted replies removed, and the facts the app works out about it.
   - Jev returns probabilities. The app keeps those and the facts; it **never stores the email text**.
@@ -425,7 +442,17 @@ environment:
 
 ### Setting up Zajel
 
-Zajel is optional too, and hidden until an AI service is configured. Pick one of these.
+Zajel is optional too, and hidden until an AI service is configured. Pick one of these. When several keys are set, Settings → Agent chooses between them.
+
+**Claude (the agent that acts):**
+
+```yaml
+environment:
+  - ANTHROPIC_API_KEY=<your Anthropic API key>
+  # Optional overrides; Settings → Agent can also pick these.
+  # - ANTHROPIC_MODEL=claude-opus-5-5
+  # - ANTHROPIC_FAST_MODEL=claude-haiku-5-5
+```
 
 **OpenAI (GPT-5.6):**
 
@@ -469,7 +496,11 @@ To let Zajel create tasks, configure any combination of Todoist, Linear, Notion 
 | `JMAP_BASE_URL` | Recommended | Default mail-server URL offered when linking an account. |
 | `ORIGIN` | Production | Public URL used by SvelteKit's request-origin checks. |
 | `DATABASE_PATH` | No | SQLite path. Defaults to a local development database, or `/data/ameera.db` in production. |
-| `OPENAI_API_KEY` | AI only | Runs Zajel and event extraction on OpenAI instead of Ollama. |
+| `ANTHROPIC_API_KEY` | AI only | Runs Zajel on Claude, as an agent that acts on your mailbox. |
+| `ANTHROPIC_MODEL`, `ANTHROPIC_FAST_MODEL` | No | The agent and writing models. Default to Claude Opus 5.5 and Claude Haiku 5.5; Settings → Agent can override them. |
+| `ANTHROPIC_FALLBACK_MODEL` | No | Takes a turn when the agent model is rate-limited. Defaults to Claude Sonnet 5.5. |
+| `AI_PROVIDER` | No | `anthropic`, `openai` or `ollama`, when more than one key is set. Settings → Agent overrides it. |
+| `OPENAI_API_KEY` | AI only | Runs Zajel and event extraction on OpenAI. |
 | `OPENAI_MODEL` | No | OpenAI model. Defaults to `gpt-5.6-terra`; `gpt-5.6-luna` is faster and cheaper. |
 | `OLLAMA_URL` | AI only | Ollama-compatible endpoint. |
 | `OLLAMA_API_KEY` | AI only | Bearer token, when the endpoint requires one. |
@@ -477,6 +508,9 @@ To let Zajel create tasks, configure any combination of Todoist, Linear, Notion 
 | `EMBED_URL` | Semantic search only | Ollama on your own server that embeds mail for search, such as `http://host.docker.internal:11434`. Settings → Search can set or override it. Never falls back to `OLLAMA_URL`. |
 | `EMBED_MODEL` | No | Embedding model. Defaults to `embeddinggemma-2:270m`; Settings → Search can override it. Changing it rebuilds the index. |
 | `EMBED_QUERY_PREFIX`, `EMBED_DOCUMENT_PREFIX` | No | Retrieval prompts for a model Zajel has none built in for. |
+| `TELEGRAM_BOT_TOKEN` | Telegram only | Zajel's bot, from @BotFather. Link your chat in Settings → Notifications. |
+| `LOG_FILE` | No | Writes an event log, one JSON object per line and never mail content, for a monitor on the host. |
+| `VAPID_SUBJECT` | No | Contact for Web Push, a `mailto:` or `https:` address. |
 | `TYPESAFE_API_KEY` | Jev only | TypeSafe API key. Jev stays unavailable without it. |
 | `JEV_MODEL` | No | Jev model version. Defaults to the pinned `jev-1.13.0`. |
 | `TYPESAFE_BASE_URL` | No | Override the TypeSafe endpoint, for example to route through LiteLLM. |
@@ -556,13 +590,15 @@ Open an issue with steps to reproduce, what you expected and what happened. For 
 
 This started as a mail client and is growing into a full personal workspace: a small set of well-integrated apps that share context, rather than a large set of shallow ones.
 
-**Next: Tasks and Notes.** Tasks is already stubbed in the app rail. Tasks and Notes will both be backed by a **dedicated local SQLite store, independent of Stalwart**. Mail, calendar and contacts belong to the mail server; personal notes and tasks don't, and forcing them through a mail protocol would constrain the data model for no benefit.
+**Next: IMAP and POP3, including Gmail.** JMAP is the right protocol, but most mail lives behind IMAP.
+- **Gmail first,** through IMAP and SMTP with Google sign-in, so a Gmail account can sit beside a Stalwart one.
+- **IMAP** lets Zajel Mail front Dovecot, Cyrus or any provider without a JMAP endpoint. **POP3** covers accounts that offer nothing else, with a smaller feature set.
+- **Not every feature will be the same on every server.** Server-side rules and auto-reply (Sieve), sending scheduled mail from the mail server, and JMAP's change tracking may be limited or handled by Zajel's own workers. Each feature will say where it works.
+- The mail layer already sits behind a typed client boundary, so this means adding a backend, not a rewrite.
+
+**Then: Tasks and Notes.** Tasks is already stubbed in the app rail. Tasks and Notes will both be backed by a **dedicated local SQLite store, independent of Stalwart**. Mail, calendar and contacts belong to the mail server; personal notes and tasks don't, and forcing them through a mail protocol would constrain the data model for no benefit.
 - **Tasks** becomes a first-class app, so Zajel's task proposals can land in the product. External adapters stay for people who live in Todoist or Linear.
 - **Notes** are durable and searchable, and can be linked to mail threads, events and contacts.
-
-**Then: broader server support.** JMAP is the right protocol, but most mail still lives behind IMAP.
-- **IMAP**, and **POP3** for accounts that only offer it, would let Zajel Mail front Dovecot, Cyrus or a provider with no JMAP endpoint.
-- The mail layer already sits behind a typed client boundary, so this means adding a backend, not a rewrite.
 
 **Then: a shared canvas.** With Notes and Tasks in place, Zajel can work across all five apps:
 - turn a thread into a task with the message attached
