@@ -22,8 +22,8 @@
 <header class="mb-6">
 	<h1 class="text-xl font-semibold text-text">Reset</h1>
 	<p class="text-sm text-text-tertiary mt-1 max-w-prose">
-		Clear every cookie-backed preference for this browser. Your mail, signatures, label colors, and
-		signed-in identity live on the mail server and are <strong>not</strong> affected.
+		Put every preference back to its default, on every browser you use. Your mail, rules, signatures,
+		label colours, linked accounts and sign-in are <strong>not</strong> affected.
 	</p>
 </header>
 
@@ -32,9 +32,9 @@
 		<div class="flex-1">
 			<p class="text-sm font-medium text-danger">Reset all preferences</p>
 			<p class="text-xs text-text-tertiary mt-1">
-				Clears theme, density, reading-pane, composer defaults, mail display options, notification
-				toggles, auto-reply text, folder-expand state, and rule definitions back to their defaults.
-				You'll be returned to the Account page.
+				Clears theme, density, reading-pane, composer defaults, mail display options, messages per
+				page, notification toggles, calendar settings, auto-reply text and folder-expand state back to
+				their defaults. You'll be returned to the Account page.
 			</p>
 		</div>
 		<button

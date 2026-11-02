@@ -15,7 +15,12 @@ function prepareStmts() {
 		byEmail: db.prepare(`SELECT id, email, password_hash FROM app_user WHERE email = ?`),
 		byId: db.prepare(`SELECT id, email FROM app_user WHERE id = ?`),
 		first: db.prepare(`SELECT id, email FROM app_user ORDER BY created_at LIMIT 1`),
-		insert: db.prepare(`INSERT INTO app_user (id, email, password_hash) VALUES (?, ?, ?)`),
+		// The single master login is created in one statement, so two setup
+		// submissions racing past hasAppUser() can't both insert a row.
+		insert: db.prepare(
+			`INSERT INTO app_user (id, email, password_hash)
+			 SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM app_user)`
+		),
 		setPassword: db.prepare(
 			`UPDATE app_user SET password_hash = ?, updated_at = datetime('now') WHERE id = ?`
 		),
@@ -31,11 +36,13 @@ export function hasAppUser(): boolean {
 	return (stmts().count.get() as { n: number }).n > 0;
 }
 
-export async function createAppUser(email: string, password: string): Promise<AppUser> {
+/** The new master login, or undefined when one already exists. */
+export async function createAppUser(email: string, password: string): Promise<AppUser | undefined> {
 	const id = randomUUID();
+	const normalized = email.trim().toLowerCase();
 	const hash = await hashPassword(password);
-	stmts().insert.run(id, email.trim().toLowerCase(), hash);
-	return { id, email: email.trim().toLowerCase() };
+	if (stmts().insert.run(id, normalized, hash).changes !== 1) return undefined;
+	return { id, email: normalized };
 }
 
 export function getUserById(id: string): AppUser | undefined {

@@ -6,9 +6,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 // Point the lazy SQLite singleton at a throwaway file before anything opens it.
 process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'ameera-rate-')), 'test.db');
 
+const mocks = vi.hoisted(() => ({ logEvent: vi.fn() }));
+vi.mock('$lib/server/log', () => ({ logEvent: mocks.logEvent }));
+
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
-import { isLockedOut, recordFailure, recordSuccess } from './rate-limit';
+import { isIpLockedOut, isLockedOut, isPrivateAddress, recordFailure, recordIpFailure, recordSuccess } from './rate-limit';
 
 const IP = '203.0.113.7';
 const rows = () =>
@@ -24,10 +27,13 @@ beforeAll(() => {
 
 beforeEach(() => {
 	getDb().prepare('DELETE FROM login_attempts').run();
+	mocks.logEvent.mockClear();
+	vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
 afterEach(() => {
 	vi.useRealTimers();
+	vi.restoreAllMocks();
 });
 
 describe('login rate limiting', () => {
@@ -64,5 +70,31 @@ describe('login rate limiting', () => {
 		vi.setSystemTime(new Date('2026-11-01T09:25:00Z'));
 		recordFailure('other@example.test', IP);
 		expect(isLockedOut('again@example.test', IP)).toBe(true);
+	});
+});
+
+describe('the per-address limit behind a proxy', () => {
+	it('knows a private or loopback address when it sees one', () => {
+		for (const ip of ['127.0.0.1', '::1', '10.0.0.4', '172.18.0.1', '172.31.255.1', '192.168.1.9', '::ffff:172.17.0.1', 'fd00::1', 'fe80::1']) {
+			expect(isPrivateAddress(ip), ip).toBe(true);
+		}
+		for (const ip of ['203.0.113.7', '172.32.0.1', '8.8.8.8', '2001:db8::1', '::ffff:8.8.8.8']) {
+			expect(isPrivateAddress(ip), ip).toBe(false);
+		}
+	});
+
+	it('names ADDRESS_HEADER once when a private address trips it, since then every client shares it', () => {
+		for (let i = 0; i < 31; i++) recordIpFailure('172.18.0.1');
+		expect(isIpLockedOut('172.18.0.1')).toBe(true);
+		const warnings = mocks.logEvent.mock.calls.filter((c) => c[2] === 'ip_lockout_behind_proxy');
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0][3]).toMatchObject({ ip: '172.18.0.1', hint: 'ADDRESS_HEADER' });
+		expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toContain('ADDRESS_HEADER=X-Forwarded-For');
+	});
+
+	it('says nothing for a public address, which is one client', () => {
+		for (let i = 0; i < 31; i++) recordIpFailure(IP);
+		expect(isIpLockedOut(IP)).toBe(true);
+		expect(mocks.logEvent).not.toHaveBeenCalled();
 	});
 });

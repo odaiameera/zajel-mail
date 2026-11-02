@@ -401,6 +401,14 @@ The example binds to `127.0.0.1:3001`. Put it behind a TLS reverse proxy (Caddy,
 
 The SQLite database lives at `/data/ameera.db`, so mount a volume there. Back up `WEBMAIL_SECRET` with it: if you rotate the secret, you have to re-enter every linked account's mail password.
 
+**Backups.** The database runs in SQLite's WAL mode, so copying `ameera.db` on its own can miss writes still in `ameera.db-wal`. Take backups with SQLite itself, which writes one consistent file:
+
+```sh
+docker compose exec webmail node -e "require('better-sqlite3')('/data/ameera.db').backup('/data/backup-' + new Date().toISOString().slice(0,10) + '.db')"
+```
+
+Or, with the `sqlite3` tool on the host: `sqlite3 /path/to/ameera.db ".backup '/path/to/ameera-backup.db'"`. Keep `WEBMAIL_SECRET` with the backup, since the linked mail passwords in it only decrypt with the secret they were saved under. To restore, stop the container, replace `ameera.db`, delete any `ameera.db-wal` and `ameera.db-shm` beside it, and start it again.
+
 ### Installing with Jev
 
 Jev is optional and off by default. Here's how to switch it on.
@@ -495,6 +503,7 @@ To let Zajel create tasks, configure any combination of Todoist, Linear, Notion 
 | `WEBMAIL_SECRET` | Yes | Encrypts linked mail-account passwords at rest. Use a stable random value of at least 32 characters. |
 | `JMAP_BASE_URL` | Recommended | Default mail-server URL offered when linking an account. |
 | `ORIGIN` | Production | Public URL used by SvelteKit's request-origin checks. |
+| `ADDRESS_HEADER`, `XFF_DEPTH` | Behind a proxy | `X-Forwarded-For` and `1`, so sign-in limits count each client on its own instead of all of them as the proxy. The log warns (`ip_lockout_behind_proxy`) when a private address trips the limit without them. |
 | `DATABASE_PATH` | No | SQLite path. Defaults to a local development database, or `/data/ameera.db` in production. |
 | `ANTHROPIC_API_KEY` | AI only | Runs Zajel on Claude, as an agent that acts on your mailbox. |
 | `ANTHROPIC_MODEL`, `ANTHROPIC_FAST_MODEL` | No | The agent and writing models. Default to Claude Opus 5.5 and Claude Haiku 5.5; Settings → Agent can override them. |

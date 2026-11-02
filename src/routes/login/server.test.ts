@@ -137,6 +137,22 @@ describe('code step', () => {
 		expect(mocks.createAppSession).not.toHaveBeenCalled();
 	});
 
+	it('is not barred by the per-address lock, which a proxy without ADDRESS_HEADER makes everyone share', async () => {
+		mocks.isIpLockedOut.mockReturnValue(true);
+		mocks.takeMfaAttempt.mockReturnValue('u1');
+		mocks.verifySecondFactorCode.mockReturnValue('totp');
+		const { redirect } = await run('code', { code: '123456' }, cookieJar({ mfa: 'challenge-1' }));
+		expect(redirect).toBe('/inbox');
+	});
+
+	it('still stops once this login has guessed wrong too often', async () => {
+		mocks.isLockedOut.mockImplementation((scope: string) => scope === 'second-step:u1');
+		mocks.takeMfaAttempt.mockReturnValue('u1');
+		const { result } = await run('code', { code: '123456' }, cookieJar({ mfa: 'challenge-1' }));
+		expect(result?.status).toBe(429);
+		expect(mocks.verifySecondFactorCode).not.toHaveBeenCalled();
+	});
+
 	it('starts over when the second step has expired or was never begun', async () => {
 		mocks.takeMfaAttempt.mockReturnValue(null);
 		expect((await run('code', { code: '123456' }, cookieJar({ mfa: 'old' }))).result?.status).toBe(401);

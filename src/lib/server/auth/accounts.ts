@@ -66,6 +66,10 @@ function prepareStmts() {
 		getAvatar: db.prepare(`SELECT avatar_data FROM mail_accounts WHERE id = ?`),
 		setReauth: db.prepare(`UPDATE mail_accounts SET needs_reauth = ? WHERE id = ?`),
 		flagReauth: db.prepare(`UPDATE mail_accounts SET needs_reauth = 1 WHERE id = ? AND needs_reauth = 0`),
+		// Rows that go with the account (ON DELETE CASCADE), for the unlink confirm.
+		pendingSends: db.prepare(`SELECT COUNT(*) AS n FROM scheduled_sends WHERE mail_account_id = ?`),
+		enabledJobs: db.prepare(`SELECT COUNT(*) AS n FROM agent_jobs WHERE account_id = ? AND enabled = 1`),
+		searchIndexed: db.prepare(`SELECT enabled FROM search_index WHERE account_id = ?`),
 		updateSecret: db.prepare(
 			`UPDATE mail_accounts
 			 SET secret_enc = ?, jmap_account_id = ?, needs_reauth = 0, last_verified_at = datetime('now')
@@ -175,6 +179,32 @@ export function listAllMailAccounts(): MailAccountRow[] {
 
 export function getAccount(id: string): MailAccountRow | undefined {
 	return stmts().get.get(id) as MailAccountRow | undefined;
+}
+
+/**
+ * What unlinking takes with it. Tables keyed by the account row cascade
+ * away with it: scheduled sends, the agent's jobs and pending actions,
+ * Telegram alerts, Jev's settings and learning, the search index. Tables
+ * keyed by the address (label and folder colours and icons, signatures,
+ * rules, reminders, calendar colours) stay and re-attach when the same
+ * address is linked again.
+ */
+export interface UnlinkLosses {
+	/** Emails waiting in Scheduled that would never be sent. */
+	pendingSends: number;
+	/** Agent jobs that would stop running. */
+	enabledJobs: number;
+	/** Whether a semantic search index would be deleted. */
+	searchIndexed: boolean;
+}
+
+export function unlinkLosses(id: string): UnlinkLosses {
+	const s = stmts();
+	return {
+		pendingSends: (s.pendingSends.get(id) as { n: number }).n,
+		enabledJobs: (s.enabledJobs.get(id) as { n: number }).n,
+		searchIndexed: (s.searchIndexed.get(id) as { enabled: number } | undefined)?.enabled === 1
+	};
 }
 
 export function removeAccount(userId: string, id: string): void {

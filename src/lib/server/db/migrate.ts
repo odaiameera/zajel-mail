@@ -1,4 +1,5 @@
 import { getDb } from './index';
+import { repairAiSettingsColumns } from '$lib/server/ai/settings';
 import { errorFields, logEvent } from '$lib/server/log';
 
 /**
@@ -15,7 +16,28 @@ const MIGRATION_SOURCES = import.meta.glob('./migrations/*.sql', {
 	eager: true
 }) as Record<string, string>;
 
-export function runMigrations(): void {
+/** A migration that did not apply. The server refuses requests until it does. */
+export class MigrationError extends Error {
+	constructor(
+		readonly migration: string,
+		cause: string
+	) {
+		super(
+			`Database migration ${migration} failed: ${cause}. Later migrations were not attempted. ` +
+				`Fix the database at DATABASE_PATH (restore a backup, or apply the migration by hand) and restart.`
+		);
+		this.name = 'MigrationError';
+	}
+}
+
+/**
+ * Apply every migration not yet recorded in `_migrations`, in name order,
+ * each in its own transaction with its marker. Stops at the first failure:
+ * the app used to carry on to the next migration and then serve requests on
+ * a schema missing whatever the failed one added, so the first symptom was
+ * an unrelated-looking query error much later. `sources` is for tests.
+ */
+export function runMigrations(sources: Record<string, string> = MIGRATION_SOURCES): void {
 	const db = getDb();
 
 	db.exec(`
@@ -28,13 +50,13 @@ export function runMigrations(): void {
 	const seen = db.prepare('SELECT 1 FROM _migrations WHERE name = ?');
 	const mark = db.prepare('INSERT INTO _migrations (name) VALUES (?)');
 
-	const ordered = Object.keys(MIGRATION_SOURCES).sort();
+	const ordered = Object.keys(sources).sort();
 
 	for (const path of ordered) {
 		const name = path.split('/').pop() ?? path;
 		if (seen.get(name)) continue;
 
-		const sql = MIGRATION_SOURCES[path];
+		const sql = sources[path];
 		const tx = db.transaction(() => {
 			db.exec(sql);
 			mark.run(name);
@@ -43,17 +65,15 @@ export function runMigrations(): void {
 		try {
 			tx();
 		} catch (err) {
-			// A failed migration used to be swallowed entirely, on the theory
-			// that it would surface through later request errors. It does not:
-			// the app boots, the build passes and the tests pass, while the
-			// schema silently lacks whatever the migration was adding, and the
-			// first symptom is an unrelated-looking query error much later.
-			// One line per failure, once per start, is not log spam.
-			console.error(
-				`[migrate] ${name} failed and was not applied:`,
-				err instanceof Error ? err.message : err
-			);
+			const cause = err instanceof Error ? err.message : String(err);
+			console.error(`[migrate] ${name} failed and was not applied:`, cause);
 			logEvent('error', 'db', 'migration_failed', { migration: name, ...errorFields(err) });
+			throw new MigrationError(name, cause);
 		}
 	}
+
+	// Migration 026 gained two columns after it first shipped, and a migration
+	// runs once by name, so databases that ran the first version are patched
+	// here. Only once 026 itself has run: before that there is no ai_settings.
+	if (seen.get('026_search_index.sql')) repairAiSettingsColumns();
 }

@@ -9,6 +9,9 @@ import { getDb } from '../db/index';
  *
  * Sliding expiration: every authenticated request inside the renewal
  * window pushes expires_at forward, capped at SESSION_TTL from last use.
+ * The hook re-issues the cookie whenever that happens (`extended`), so its
+ * Max-Age slides with the row. Expired rows go on the next sign-in, and
+ * their push subscriptions with them (ON DELETE CASCADE).
  */
 
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -68,6 +71,7 @@ export function createAppSession(
 	ip?: string,
 	verified = false
 ): string {
+	stmts().prune.run();
 	const id = randomUUID();
 	stmts().insert.run(id, userId, expiryFromNow(), userAgent ?? null, ip ?? null, verified ? 1 : 0);
 	return id;
@@ -83,7 +87,8 @@ export function verifiedAtMs(row: AppSessionRow): number | null {
 	return row.verified_at ? new Date(row.verified_at + 'Z').getTime() : null;
 }
 
-export function getAppSession(id: string): AppSessionRow | undefined {
+/** `extended`: this read pushed expires_at forward, so the cookie should follow. */
+export function getAppSession(id: string): (AppSessionRow & { extended: boolean }) | undefined {
 	const row = stmts().get.get(id) as (AppSessionRow & { expires_at: string }) | undefined;
 	if (!row) return undefined;
 	if (new Date(row.expires_at + 'Z').getTime() < Date.now()) {
@@ -91,10 +96,9 @@ export function getAppSession(id: string): AppSessionRow | undefined {
 		return undefined;
 	}
 	// Slide the expiry forward, throttled so static-asset bursts stay cheap.
-	if (Date.now() - new Date(row.last_seen_at + 'Z').getTime() > TOUCH_INTERVAL_MS) {
-		stmts().touch.run(expiryFromNow(), id);
-	}
-	return row;
+	const extended = Date.now() - new Date(row.last_seen_at + 'Z').getTime() > TOUCH_INTERVAL_MS;
+	if (extended) stmts().touch.run(expiryFromNow(), id);
+	return { ...row, extended };
 }
 
 export function deleteAppSession(id: string): void {

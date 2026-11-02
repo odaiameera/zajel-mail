@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/index';
+import { logEvent } from '$lib/server/log';
 
 /**
  * Fixed-window login rate limiting, persisted in SQLite so a container
@@ -51,7 +52,8 @@ export function isLockedOut(email: string, ip: string): boolean {
 	return new Date(row.locked_until).getTime() > Date.now();
 }
 
-export function recordFailure(email: string, ip: string, maxFailures = MAX_FAILURES): void {
+/** Counts one failure; returns how many the window now holds. */
+export function recordFailure(email: string, ip: string, maxFailures = MAX_FAILURES): number {
 	const key = keyFor(email, ip);
 	const now = Date.now();
 	const row = stmts().get.get(key) as
@@ -72,6 +74,7 @@ export function recordFailure(email: string, ip: string, maxFailures = MAX_FAILU
 		count,
 		lockedUntil
 	});
+	return count;
 }
 
 export function recordSuccess(email: string, ip: string): void {
@@ -89,5 +92,28 @@ export function isIpLockedOut(ip: string): boolean {
 }
 
 export function recordIpFailure(ip: string): void {
-	recordFailure(ANY_EMAIL, ip, MAX_IP_FAILURES);
+	if (recordFailure(ANY_EMAIL, ip, MAX_IP_FAILURES) !== MAX_IP_FAILURES || !isPrivateAddress(ip)) return;
+	// Every client arriving as one private address means a reverse proxy in
+	// front that isn't passing the real one on, so this lock holds everyone
+	// out of the password form, the owner included. Say so where the operator
+	// looks.
+	const message =
+		`${ip} is locked out after ${MAX_IP_FAILURES} failed sign-ins, and it is a private address: ` +
+		`behind a reverse proxy, set ADDRESS_HEADER=X-Forwarded-For and XFF_DEPTH=1 so each client is counted on its own.`;
+	console.warn(`[auth] ${message}`);
+	logEvent('warn', 'auth', 'ip_lockout_behind_proxy', { ip, hint: 'ADDRESS_HEADER' });
+}
+
+/**
+ * Loopback and private ranges: what every request's address is when a
+ * reverse proxy in front hasn't been told to pass the client's own.
+ */
+export function isPrivateAddress(ip: string): boolean {
+	const v4 = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+	if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v4)) {
+		const [a, b] = v4.split('.').map(Number);
+		return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+	}
+	const lower = ip.toLowerCase();
+	return lower === '::1' || /^f[cd][0-9a-f]{2}:/.test(lower) || lower.startsWith('fe80:');
 }

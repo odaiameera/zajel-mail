@@ -28,6 +28,9 @@
 
 	// --- Per-row state ---
 	let confirmRemoveId = $state<string | null>(null);
+	// What unlinking the account under confirm would take with it (GET /api/accounts/[id]).
+	type UnlinkLosses = { pendingSends: number; enabledJobs: number; searchIndexed: boolean };
+	let removeLosses = $state<UnlinkLosses | null>(null);
 	let colorPickerId = $state<string | null>(null);
 	let rowBusy = $state(false);
 
@@ -163,6 +166,29 @@
 		} finally {
 			addBusy = false;
 		}
+	}
+
+	/** Open the confirm, then add what the server says would go with the link. */
+	async function askRemove(id: string) {
+		confirmRemoveId = id;
+		removeLosses = null;
+		try {
+			const res = await fetch(`/api/accounts/${id}`);
+			if (res.ok && confirmRemoveId === id) removeLosses = (await res.json()).unlink;
+		} catch {
+			// The confirm still works without the counts.
+		}
+	}
+
+	/** "2 scheduled emails won’t be sent, 1 job stops, the search index goes", or '' when nothing would. */
+	function lossSummary(losses: UnlinkLosses): string {
+		const parts: string[] = [];
+		if (losses.pendingSends > 0) {
+			parts.push(`${losses.pendingSends} scheduled ${losses.pendingSends === 1 ? 'email' : 'emails'} won’t be sent`);
+		}
+		if (losses.enabledJobs > 0) parts.push(`${losses.enabledJobs} ${losses.enabledJobs === 1 ? 'job stops' : 'jobs stop'}`);
+		if (losses.searchIndexed) parts.push('the search index goes');
+		return parts.join(', ');
 	}
 
 	async function removeAccount(id: string) {
@@ -363,7 +389,12 @@
 				</div>
 
 				{#if confirmRemoveId === account.id}
-					<span class="text-xs text-text-secondary mr-1">Unlink this account?</span>
+					<span class="text-xs text-text-secondary mr-1">
+						Unlink this account?
+						{#if removeLosses && lossSummary(removeLosses)}
+							<span class="block text-danger">{lossSummary(removeLosses)}.</span>
+						{/if}
+					</span>
 					<button type="button" disabled={rowBusy} onclick={() => removeAccount(account.id)}
 						class="btn btn-danger-solid btn-sm transition-opacity">
 						Unlink
@@ -374,7 +405,7 @@
 					</button>
 				{:else}
 					<button type="button" title="Remove account" aria-label="Remove account"
-						onclick={() => (confirmRemoveId = account.id)}
+						onclick={() => askRemove(account.id)}
 						disabled={accounts.length === 1}
 						class="text-text-tertiary hover:text-danger disabled:opacity-30 disabled:cursor-default transition-colors cursor-pointer p-1.5 rounded-lg hover:bg-surface-hover">
 						<Icon name="delete" size={16} />
@@ -393,8 +424,10 @@
 </section>
 
 <p class="mt-4 text-xs text-text-tertiary leading-relaxed">
-	Removing an account only unlinks it from the webmail — nothing is deleted on the mail server, and
-	its labels, rules, and other data here are restored if you link it again.
+	Unlinking removes nothing on the mail server. Folder and label colours and icons, signatures,
+	rules and reminders are kept here by address and come back if you link the same address again.
+	What belongs to the link itself goes: Jev’s tabs, settings and what it learned, scheduled emails
+	waiting to be sent, the agent’s jobs, Telegram alerts on their way, and the search index.
 </p>
 
 {#if adding}
