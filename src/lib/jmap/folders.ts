@@ -120,7 +120,36 @@ export async function deleteFolder(
 	return { success: true, id };
 }
 
-/** Reparent a folder (drag-to-move backend; no UI in this phase). */
+/**
+ * Place several mailboxes at once: their `sortOrder`, and for the one being
+ * moved its `parentId`. One Mailbox/set, so a rearranged level lands whole
+ * or not at all as far as one request can promise.
+ */
+export async function reorderMailboxes(
+	client: JMAPClient,
+	accountId: string,
+	placements: Record<string, { parentId: string | null; sortOrder: number }>
+): Promise<MutateFolderResult> {
+	const ids = Object.keys(placements);
+	if (ids.length === 0) return { success: true };
+
+	const response = await client.request([
+		['Mailbox/set', { accountId, update: placements }, '0']
+	]);
+
+	const result = response.methodResponses[0][1] as {
+		notUpdated?: Record<string, { type: string; description?: string }>;
+	};
+
+	const failed = ids.find((id) => result.notUpdated?.[id]);
+	if (failed) {
+		const err = result.notUpdated![failed];
+		return { success: false, error: err.description ?? err.type ?? 'Move failed' };
+	}
+	return { success: true };
+}
+
+/** Reparent a folder (the Edit dialog's parent picker; drags use {@link reorderMailboxes}). */
 export async function moveFolder(
 	client: JMAPClient,
 	accountId: string,

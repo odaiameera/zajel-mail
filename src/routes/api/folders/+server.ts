@@ -7,16 +7,35 @@ import {
 	deleteFolder,
 	moveFolder,
 	renameFolder,
+	reorderMailboxes,
 	validateFolderName
 } from '$lib/jmap/folders';
 import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
+import { planReorder } from '$lib/utils/folder-tree';
 import type { Mailbox } from '$lib/jmap/types';
 
 type CreateBody = { action: 'create'; name: string; parentId?: string | null };
 type RenameBody = { action: 'rename'; id: string; name: string };
 type DeleteBody = { action: 'delete'; id: string };
 type MoveBody = { action: 'move'; id: string; newParentId: string | null };
-type Body = CreateBody | RenameBody | DeleteBody | MoveBody;
+/**
+ * Rearrange: put a folder or label under `parentId` (null for the top level;
+ * for a label, the Labels container), just before `beforeId` or last.
+ */
+type ReorderBody = { action: 'reorder'; id: string; parentId: string | null; beforeId?: string | null };
+type Body = CreateBody | RenameBody | DeleteBody | MoveBody | ReorderBody;
+
+/** True if putting `id` under `newParentId` would make it its own ancestor. */
+function wouldCycle(byId: Map<string, Mailbox>, id: string, newParentId: string): boolean {
+	let cur: Mailbox | undefined = byId.get(newParentId);
+	const seen = new Set<string>();
+	while (cur?.parentId && !seen.has(cur.parentId)) {
+		if (cur.parentId === id) return true;
+		seen.add(cur.parentId);
+		cur = byId.get(cur.parentId);
+	}
+	return false;
+}
 
 /**
  * True if any `labels/*` mailbox has `id` somewhere in its parent chain.
@@ -127,19 +146,49 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				if (!parent) return json({ success: false, error: 'Parent folder not found' }, { status: 404 });
 				if (isLabel(parent, labelsParentId)) return json({ success: false, error: 'Cannot nest folders under labels' }, { status: 400 });
 
-				// Walk the new parent's ancestor chain — prevent creating a cycle.
-				let cur: Mailbox | undefined = parent;
-				const seen = new Set<string>();
-				while (cur?.parentId && !seen.has(cur.parentId)) {
-					if (cur.parentId === body.id) {
-						return json({ success: false, error: 'Cannot move a folder into one of its descendants' }, { status: 400 });
-					}
-					seen.add(cur.parentId);
-					cur = byId.get(cur.parentId);
+				if (wouldCycle(byId, body.id, body.newParentId)) {
+					return json({ success: false, error: 'Cannot move a folder into one of its descendants' }, { status: 400 });
 				}
 			}
 
 			const result = await moveFolder(client, accountId, body.id, body.newParentId);
+			if (!result.success) return json({ success: false, error: result.error }, { status: 400 });
+
+			const refreshed = await getMailboxes(client, accountId);
+			return json({ success: true, mailboxes: refreshed });
+		}
+
+		case 'reorder': {
+			const target = byId.get(body.id);
+			if (!target) return json({ success: false, error: 'Folder not found' }, { status: 404 });
+			if (isSystem(target)) return json({ success: false, error: 'System folders keep their place' }, { status: 403 });
+			if (isLabelsParent(target, labelsParentId)) return json({ success: false, error: 'Folder not found' }, { status: 404 });
+
+			const parentId = body.parentId ?? null;
+			const beforeId = body.beforeId ?? null;
+			if (isLabelMailbox(target, labelsParentId)) {
+				// A label's place is among the labels, nowhere else.
+				if (parentId !== labelsParentId) return json({ success: false, error: 'Labels stay under Labels' }, { status: 400 });
+			} else if (parentId) {
+				if (parentId === body.id) return json({ success: false, error: 'A folder cannot be its own parent' }, { status: 400 });
+				const parent = byId.get(parentId);
+				if (!parent) return json({ success: false, error: 'Parent folder not found' }, { status: 404 });
+				if (isLabel(parent, labelsParentId)) return json({ success: false, error: 'Cannot nest folders under labels' }, { status: 400 });
+				if (wouldCycle(byId, body.id, parentId)) {
+					return json({ success: false, error: 'Cannot move a folder into one of its descendants' }, { status: 400 });
+				}
+			}
+			if (beforeId) {
+				const before = byId.get(beforeId);
+				if (!before || (before.parentId ?? null) !== parentId) {
+					return json({ success: false, error: 'That folder is not at the destination' }, { status: 400 });
+				}
+			}
+
+			const plan = planReorder(mailboxes, { id: body.id, parentId, beforeId });
+			if ('error' in plan) return json({ success: false, error: plan.error }, { status: 400 });
+
+			const result = await reorderMailboxes(client, accountId, plan);
 			if (!result.success) return json({ success: false, error: result.error }, { status: 400 });
 
 			const refreshed = await getMailboxes(client, accountId);

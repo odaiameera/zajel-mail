@@ -8,7 +8,7 @@
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
 	import { userState } from '$lib/stores/userState';
 	import { colorByHex, DEFAULT_LABEL_COLOR, type LabelColor } from '$lib/constants/colors';
-	import { buildFolderTree, flattenFolderTree } from '$lib/utils/folder-tree';
+	import { buildFolderTree, flattenFolderTree, moveStep } from '$lib/utils/folder-tree';
 	import CreateMailboxModal from '$lib/components/modals/CreateMailboxModal.svelte';
 	import MailboxIcon from '$lib/components/MailboxIcon.svelte';
 
@@ -54,6 +54,24 @@
 		modalOpen = true;
 	}
 
+	// One place up or down among its siblings: what a drag in the sidebar
+	// does, for keyboards and touch screens.
+	async function step(folder: Mailbox, direction: 'up' | 'down') {
+		const request = moveStep(data.mailboxes, folder.id, direction);
+		if (!request) return;
+		const res = await fetch('/api/folders', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ action: 'reorder', ...request })
+		});
+		const payload = await res.json().catch(() => ({}));
+		if (!res.ok || payload?.success === false) {
+			alert(payload?.error ?? 'Failed to move folder');
+			return;
+		}
+		await invalidateAll();
+	}
+
 	async function deleteFolder(folder: Mailbox) {
 		const msg = `Delete "${folder.name}"? Messages inside will not be deleted — move them first if you want to keep them somewhere else.`;
 		if (!confirm(msg)) return;
@@ -81,7 +99,8 @@
 		<h1 class="text-xl font-semibold text-text">Folders</h1>
 		<p class="text-sm text-text-tertiary mt-1 max-w-prose">
 			Folders are real JMAP mailboxes — they show up in Apple Mail, Outlook, and any other client
-			connected to the same account. Create, rename, recolor, and reparent them here.
+			connected to the same account. Create, rename, recolor, reorder and reparent them here, or
+			drag them in the sidebar.
 		</p>
 	</div>
 	<button
@@ -118,6 +137,22 @@
 								href={`/folder/${folder.id}`}
 								class="text-xs text-text-tertiary hover:text-text transition-colors"
 							>View →</a>
+							<button
+								type="button"
+								onclick={() => step(folder, 'up')}
+								disabled={!moveStep(data.mailboxes, folder.id, 'up')}
+								title="Move up"
+								aria-label="Move {folder.name} up"
+								class="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-surface transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default"
+							><Icon name="move-up" size={14} /></button>
+							<button
+								type="button"
+								onclick={() => step(folder, 'down')}
+								disabled={!moveStep(data.mailboxes, folder.id, 'down')}
+								title="Move down"
+								aria-label="Move {folder.name} down"
+								class="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-surface transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default"
+							><Icon name="move-down" size={14} /></button>
 							<button
 								type="button"
 								onclick={() => openEdit(folder)}
