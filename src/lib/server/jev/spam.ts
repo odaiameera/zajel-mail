@@ -3,7 +3,7 @@ import type { SpamRow } from '$lib/server/db/queries/jev-decisions';
 import type { JevAnswer, JevQuestion } from './types';
 
 /**
- * Jev as the spam layer (JEV_PLAN.md, Phase 4): the evidence our code
+ * Jev as the spam layer: the evidence our code
  * works out about an email's origin, two narrow questions, and the table
  * that turns Jev's answers into what happens. Stalwart's filter still runs
  * at delivery; this is a second opinion that can see the content.

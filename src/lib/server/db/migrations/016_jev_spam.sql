@@ -1,4 +1,4 @@
--- Jev as the spam layer (JEV_PLAN.md, Phase 4).
+-- Jev as the spam layer.
 
 -- Per account: 'off'; 'watch' — Jev's verdict is recorded and shown beside
 -- Stalwart's, and nothing moves; 'active' — confident verdicts move mail

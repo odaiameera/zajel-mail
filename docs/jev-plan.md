@@ -1,0 +1,44 @@
+# Jev: what is left to build
+
+Jev is TypeSafe's decision model. Zajel Mail uses it to sort the Inbox into tabs, judge plain-English rule conditions, and act as a spam layer. The README's [Jev section](../README.md#jev-an-inbox-that-sorts-itself) describes what is built: tabs, Jev conditions in rules, learning from your moves and pins, the spam layer with its watch-only mode, and sorting the mail already in the Inbox.
+
+This page keeps what is not built yet, and the rules any new Jev work has to keep.
+
+---
+
+## Still to build
+
+- **Judge within seconds instead of on the one-minute run.** Subscribe on the server to Stalwart's push channel, which [api/events](../src/routes/api/events/+server.ts) already proxies for the browser. This matters most for phishing. Until then, sorting can lag delivery by up to a minute.
+- **An urgency `score`**, so notifications fire only for urgent mail. Telegram alerts already ask Jev whether mail is urgent; browser and push notifications don't.
+- **A Jev activity log**, with undo for each move.
+
+---
+
+## Rules new Jev work keeps
+
+1. **Jev never deletes.** A rule with a Jev condition can't delete or move mail to Trash, since Trash empties itself and a misjudgement would become permanent. Spam goes to Junk, which can be undone.
+2. **Act only above a confidence threshold, and require more for bigger moves.** Categories need a minimum `choice` confidence. Rule conditions use the rule's strictness: Loose 0.6, Normal 0.8, Strict 0.95. Moving mail to Junk needs at least 0.9; rescuing it from Junk needs spam at most 0.1.
+3. **When Jev is unsure, nothing happens.** No keyword means the message stays in Important; a failed call is retried, then treated as if every Jev condition were false.
+4. **Jev's own moves never train Stalwart.** Only your Spam and Not spam clicks set `$junk` and `$notjunk`.
+5. **What Jev sees is fixed:** sender, recipients, subject, list headers, the facts our code works out (in their own fields, so the email can't pose as one), and the first 2,000 characters of the plain-text body without quoted replies. `jev_decisions` keeps answers and probabilities, never the email text.
+6. **Opt-in for each linked account**, since that account's mail is what leaves the server.
+7. **Every decision explains itself** in the message view.
+
+---
+
+## Risks and open questions
+
+- **Non-English mail** is more likely to get low confidence. That is safe, because it ends up in Important or is left to Stalwart, but it is less useful.
+- **TypeSafe's default retention** isn't documented, and zero data retention is enterprise-only. Recheck before turning Jev on for a sensitive account.
+- **Thresholds belong to a model version.** Revisit them before moving the pin from `jev-1.13.0`.
+- **An email can argue with Jev.** Its text can only move probabilities on fixed questions; facts sit in separate fields, moves need high confidence, contacts are never sent to Junk, and the worst automatic result can be undone.
+
+---
+
+## Sources
+
+- [TypeSafe API reference](https://docs.typesafe.ai/api)
+- [Models, limits and data handling](https://docs.typesafe.ai/models)
+- [Confidence](https://docs.typesafe.ai/confidence)
+- [Patterns](https://docs.typesafe.ai/patterns)
+- [Legal](https://docs.typesafe.ai/legal)

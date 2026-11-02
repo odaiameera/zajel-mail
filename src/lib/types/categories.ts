@@ -9,8 +9,7 @@
  * Important has no keyword of its own: it is the Inbox minus the other
  * three. A message nobody has sorted (or that Jev was unsure about, or
  * couldn't reach) therefore lands in Important by construction, and nothing
- * can be hidden in Promotions because a classification failed. See
- * JEV_PLAN.md.
+ * can be hidden in Promotions because a classification failed.
  */
 
 export type InboxCategory = 'important' | 'updates' | 'newsletters' | 'promotions';

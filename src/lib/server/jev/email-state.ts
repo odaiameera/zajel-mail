@@ -6,7 +6,7 @@ import type { JevSecurityFacts } from './spam';
  * What Jev is shown about one email: the email itself, cut down to the
  * agreed excerpt, and the facts our own code worked out. The two sit in
  * separate fields so text inside the email can't pass itself off as one of
- * the facts. See JEV_PLAN.md, decision 4.
+ * the facts. The list is fixed (docs/jev-plan.md).
  */
 
 /** Characters of plain-text body sent, after quoted replies are removed. */
