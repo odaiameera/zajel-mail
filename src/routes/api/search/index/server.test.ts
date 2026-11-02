@@ -12,6 +12,7 @@ import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import { aiSettings, forgetAiSettingsForTests } from '$lib/server/ai/settings';
 import { getIndexState, indexProgress, recordAttempt, updateIndexState, upsertEmails } from '$lib/server/search/store';
+import { accountVectors, loadedVectors } from '$lib/server/search/vectors';
 import { GET, POST, PUT } from './+server';
 
 const user = { id: 'user-1', email: 'me@example.test' };
@@ -88,7 +89,11 @@ describe('GET and POST /api/search/index', () => {
 		expect((await send(POST, 'POST', { accountId: 'acct-1', enabled: true })).status).toBe(200);
 		const overview = await send(GET, 'GET');
 		expect(overview.body.accounts[0]).toMatchObject({ enabled: true, ready: false, total: 0 });
+		// Switching off also drops the copy a search had in memory.
+		accountVectors('acct-1', 8);
+		expect(loadedVectors('acct-1')).toBeDefined();
 		await send(POST, 'POST', { accountId: 'acct-1', enabled: false });
+		expect(loadedVectors('acct-1')).toBeUndefined();
 	});
 
 	it('refuses an account that isn’t this login’s', async () => {

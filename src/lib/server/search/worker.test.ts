@@ -22,7 +22,7 @@ import { runMigrations } from '$lib/server/db/migrate';
 import type { AuthState } from '$lib/jmap/types';
 import { FakeMailbox, fakeOllama, FAKE_DIMS, type FakeOllama } from './__fixtures__/fakes';
 import { getIndexState, indexProgress, pendingEmailIds, setIndexEnabled, updateIndexState } from './store';
-import { accountVectors, forgetVectors } from './vectors';
+import { accountVectors, forgetVectors, loadedVectors } from './vectors';
 import { embedBatch, runIndexer, syncAccount } from './worker';
 
 const ACCT = 'acct-1';
@@ -109,14 +109,14 @@ describe('the search indexer', () => {
 		await drain();
 		expect(getIndexState(ACCT)).toMatchObject({ ready: true, dimensions: FAKE_DIMS, lastError: null });
 		expect(events('index_ready')).toHaveLength(1);
-		expect(accountVectors(ACCT, FAKE_DIMS).size).toBe(1203);
+		expect(accountVectors(ACCT, FAKE_DIMS)!.size).toBe(1203);
 	});
 
 	it('picks up new mail, moves and deletions from Email/changes', async () => {
 		box.add({ id: 'a', receivedAt: minute(1), body: 'flight' }, { id: 'b', receivedAt: minute(2), body: 'school' });
 		await syncAccount(ACCT, auth);
 		await drain();
-		const loaded = accountVectors(ACCT, FAKE_DIMS);
+		const loaded = accountVectors(ACCT, FAKE_DIMS)!;
 		expect(loaded.size).toBe(2);
 
 		box.add({ id: 'c', receivedAt: minute(3), body: 'pipe leak' });
@@ -234,6 +234,18 @@ describe('the search indexer', () => {
 		expect(await embedding).toBe(true);
 		expect(indexProgress(ACCT)).toMatchObject({ pending: 1, done: 0 });
 		expect(getDb().prepare('SELECT COUNT(*) AS n FROM search_vectors').get()).toEqual({ n: 0 });
+	});
+
+	it('warms a ready index on its pass, so a search after a restart finds it in memory', async () => {
+		await scheduleBoth();
+		box.add({ id: 'a', receivedAt: minute(1) });
+		await syncAccount(ACCT, auth);
+		await drain();
+		forgetVectors(ACCT);
+		expect(loadedVectors(ACCT)).toBeUndefined();
+		await runIndexer();
+		expect(loadedVectors(ACCT)?.size).toBe(1);
+		vi.restoreAllMocks();
 	});
 
 	it('goes on with the other accounts when one’s turn fails', async () => {

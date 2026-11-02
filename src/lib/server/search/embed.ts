@@ -122,6 +122,41 @@ export function normalize(values: ArrayLike<number>): Float32Array {
 	return out;
 }
 
+/** Redirects followed before giving up. */
+const MAX_REDIRECTS = 3;
+
+/**
+ * POST `body` to `url`, following redirects only within the same host. A
+ * redirect elsewhere would send the mail's text somewhere the operator never
+ * named, so it is refused and reported instead.
+ */
+async function post(url: string, body: string, timeoutMs: number): Promise<Response> {
+	const signal = AbortSignal.timeout(timeoutMs);
+	for (let hop = 0; ; hop++) {
+		const response = await fetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body,
+			signal,
+			redirect: 'manual'
+		});
+		if (response.status < 300 || response.status > 399) return response;
+		let next: URL | null = null;
+		try {
+			const location = response.headers.get('location');
+			if (location) next = new URL(location, url);
+		} catch {
+			// A destination that isn't an address is no destination.
+		}
+		if (!next) throw new EmbedError(`${response.status} from /api/embed with nowhere to go`);
+		if (next.host !== new URL(url).host) {
+			throw new EmbedError(`Redirects to ${next.host}: set the endpoint to the address it should use`);
+		}
+		if (hop >= MAX_REDIRECTS) throw new EmbedError('Too many redirects');
+		url = next.href;
+	}
+}
+
 /**
  * Embed `inputs` (already prompted) in one `/api/embed` call. Throws
  * EmbedError when the endpoint is unset, unreachable or answers badly.
@@ -133,13 +168,9 @@ export async function embed(inputs: string[], timeoutMs: number): Promise<Float3
 
 	let response: Response;
 	try {
-		response = await fetch(`${settings.url}/api/embed`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ model: settings.model, input: inputs, truncate: true }),
-			signal: AbortSignal.timeout(timeoutMs)
-		});
+		response = await post(`${settings.url}/api/embed`, JSON.stringify({ model: settings.model, input: inputs, truncate: true }), timeoutMs);
 	} catch (err) {
+		if (err instanceof EmbedError) throw err;
 		const timedOut = err instanceof Error && err.name === 'TimeoutError';
 		throw new EmbedError(timedOut ? `No answer within ${timeoutMs} ms` : `Unreachable: ${err instanceof Error ? err.message : err}`);
 	}

@@ -12,10 +12,11 @@
 	import { parseListUnsubscribe, type UnsubInfo } from '$lib/utils/list-unsubscribe';
 	import { detectEmailVerificationCode } from '$lib/utils/otp';
 	import FolderPicker from './FolderPicker.svelte';
+	import SenderAvatar from './SenderAvatar.svelte';
+	import { isPhone } from '$lib/stores/viewport';
 	import AttachmentBar from './AttachmentBar.svelte';
 	import { attachmentCards } from '$lib/attachments/list';
 	import InvitationCard from './InvitationCard.svelte';
-	import JevWhy, { type JevSpamCheck } from './JevWhy.svelte';
 	import EventModal from './calendar/EventModal.svelte';
 	import { apiCreateEvent } from '$lib/calendar/api';
 	import { fromDayKey } from '$lib/calendar/dates';
@@ -169,7 +170,6 @@
 	const backLabel = $derived(sourceMailbox?.name ?? 'Inbox');
 
 	// Jev's spam verdict for this email (from the "Why is this here?" chip).
-	let jevSpam = $state<JevSpamCheck | null>(null);
 
 	// --- Spam classifier output (read-only for display + contextual button) ---
 	const spamScore = $derived.by<number | null>(() => {
@@ -207,6 +207,44 @@
 
 	let actionLoading = $state('');
 	let showLabelMenu = $state(false);
+
+	// --- The header's fold ---
+	//
+	// The subject and its labels are always shown. Who sent the message, to
+	// whom, when, and the spam score sit in a fold
+	// below: open on a wide page, folded in the reading pane and on phones,
+	// where the old four-row header took the top third of the screen before a
+	// word of the message showed. `null` is the screen's default (decided in
+	// CSS, so the first paint is right before any script runs); a toggle sets
+	// it for this message, and the next message starts from the default again.
+	let headerOpen = $state<boolean | null>(null);
+	$effect(() => {
+		email.id;
+		headerOpen = null;
+	});
+	const headerIsOpen = $derived(headerOpen ?? !(compact || $isPhone));
+	// While the fold animates its content is clipped; once open it may
+	// overflow, so the spam-score breakdown can hang over the message.
+	let headerAnimating = $state(false);
+	let headerAnimTimer: ReturnType<typeof setTimeout> | undefined;
+	function toggleHeader() {
+		headerOpen = !headerIsOpen;
+		headerAnimating = true;
+		clearTimeout(headerAnimTimer);
+		headerAnimTimer = setTimeout(() => (headerAnimating = false), 180);
+	}
+	/** The folded line's date: the time today, the day this year, the year otherwise. */
+	function shortDate(iso: string): string {
+		const d = new Date(iso);
+		const now = new Date();
+		if (d.toDateString() === now.toDateString()) {
+			return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+		}
+		const options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' };
+		if (d.getFullYear() !== now.getFullYear()) options.year = 'numeric';
+		else Object.assign(options, { hour: 'numeric', minute: '2-digit' });
+		return d.toLocaleString(undefined, options);
+	}
 	let showMovePicker = $state(false);
 	let moveTriggerEl = $state<HTMLButtonElement | undefined>(undefined);
 	/**
@@ -985,150 +1023,221 @@
 		</div>
 	</div>
 
-	<header class="{compact ? 'px-4 py-3' : 'px-6 py-4 max-md:px-4'} border-b border-border shrink-0">
-		<h1 class="{compact ? 'text-base' : 'text-xl'} font-semibold text-text mb-1">
-			{email.subject || '(no subject)'}
-		</h1>
+	<!--
+		Two parts. The subject with its labels is always there, on a line that
+		truncates when the header is folded. The fold below holds the sender,
+		the recipients, the date and the spam score; see `headerOpen` for when it
+		is open. The chevron toggles it, and on a phone so does the row.
+	-->
+	<header class="shrink-0 border-b border-border {compact ? 'px-4' : 'px-6 max-md:px-4'}">
+		<div class="flex items-start gap-3 {compact ? 'py-2.5' : 'py-3'}">
+			<div class="min-w-0 flex-1">
+				<div
+					class="flex items-center gap-x-2 gap-y-1 {headerOpen === true
+						? 'flex-wrap'
+						: headerOpen === false || compact
+							? 'flex-nowrap overflow-hidden'
+							: 'max-md:flex-nowrap max-md:overflow-hidden md:flex-wrap'}"
+				>
+					<h1
+						class="min-w-0 font-semibold leading-snug text-text [text-wrap:balance] {compact ? 'text-base' : 'text-lg'} {headerOpen === true
+							? ''
+							: headerOpen === false || compact
+								? 'truncate'
+								: 'max-md:truncate'}"
+					>
+						{email.subject || '(no subject)'}
+					</h1>
 
-		<!-- Labels -->
-		<div class="flex items-center gap-1.5 flex-wrap mb-2 relative">
-			{#each appliedLabels as label}
-				<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium"
-					style="background-color: {label.color}25; color: {label.color};">
-					<span class="w-1.5 h-1.5 rounded-full" style="background-color: {label.color}"></span>
-					{label.name}
-					<button onclick={() => toggleLabel(label.id)} class="ml-0.5 opacity-60 hover:opacity-100 cursor-pointer">&times;</button>
-				</span>
-			{/each}
-			<button onclick={() => showLabelMenu = !showLabelMenu}
-				class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs text-text-tertiary border border-border hover:border-text-tertiary transition-colors cursor-pointer">
-				+ Label
-			</button>
-			{#if showLabelMenu}
-				<div class="absolute z-20 top-full left-0 mt-1 bg-surface border border-border rounded-lg shadow-lg py-1 min-w-[160px]">
-					{#each allLabels as label}
-						<button onclick={() => toggleLabel(label.id)}
-							class="w-full flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-surface-hover transition-colors cursor-pointer">
-							<span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: {label.color}"></span>
-							<span class="flex-1 text-left text-text">{label.name}</span>
-							{#if appliedLabels.find(l => l.id === label.id)}
-								<Icon name="check" size={14} />
-							{/if}
-						</button>
+					<!-- Labels sit with the subject. Each chip's × takes it off; the + adds one. -->
+					{#each appliedLabels as label (label.id)}
+						<span
+							class="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium leading-4"
+							style="background-color: {label.color}22; color: {label.color};"
+							title={label.name}
+						>
+							<span class="h-1.5 w-1.5 rounded-full" style="background-color: {label.color}"></span>
+							<!-- Folded, a chip is its colour alone, so a long subject keeps its line. -->
+							<span
+								class="inline-flex items-center {headerOpen === true
+									? ''
+									: headerOpen === false || compact
+										? 'hidden'
+										: 'max-md:hidden'}"
+							>
+								{label.name}
+								<button
+									type="button"
+									onclick={() => toggleLabel(label.id)}
+									aria-label="Remove label {label.name}"
+									class="-mr-0.5 ml-1 cursor-pointer rounded-full px-0.5 opacity-60 hover:opacity-100 focus-visible:opacity-100"
+								>&times;</button>
+							</span>
+						</span>
 					{/each}
-					{#if allLabels.length === 0}
-						<p class="px-3 py-2 text-xs text-text-tertiary">No labels yet. Create one in Settings.</p>
-					{/if}
-				</div>
-			{/if}
-		</div>
-
-		<!-- On phones the date and Jev chips drop below the sender instead of
-		     competing with a long address for one line. -->
-		<div class="flex items-start justify-between gap-4 max-md:flex-col max-md:gap-2">
-			<div class="min-w-0">
-				<div class="flex items-baseline gap-x-2 flex-wrap">
-					<span class="font-medium text-text text-sm">{from?.name || from?.email || 'Unknown'}</span>
-					{#if from?.name && from?.email}
-						<span class="text-xs text-text-tertiary break-all">&lt;{from.email}&gt;</span>
-					{/if}
-					{#if from?.email}
-						<!-- self-center: in this baseline-aligned row, an icon-only
-						     button's baseline is the bottom of its SVG, which lifts
-						     the icon above the text. The negative margin keeps the
-						     padded hit area from making the row taller. -->
+					<span class="relative inline-flex shrink-0">
 						<button
 							type="button"
-							onclick={handleAddSenderToContacts}
-							aria-label="Add sender to contacts"
-							title="Add to Contacts"
-							class="self-center -my-1 p-1 rounded-md text-text-tertiary hover:text-accent-fg hover:bg-accent/10 cursor-pointer"
+							onclick={() => (showLabelMenu = !showLabelMenu)}
+							aria-label="Add label"
+							aria-expanded={showLabelMenu}
+							title="Add label"
+							class="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-2xs leading-4 text-text-tertiary transition-colors hover:border-text-tertiary hover:text-text-secondary"
 						>
-							<Icon name="add-contact" size={14} class="block" />
+							<Icon name="add" size={12} class="block" />
+							<span class={appliedLabels.length > 0 ? 'hidden' : 'max-md:hidden'}>Label</span>
 						</button>
-					{/if}
-				</div>
-				<div class="text-xs text-text-tertiary mt-1">
-					<span>To: {toList.map(a => a.name || a.email).join(', ')}</span>
-					{#if ccList.length > 0}
-						<span class="ml-3">Cc: {ccList.map(a => a.name || a.email).join(', ')}</span>
-					{/if}
-				</div>
-			</div>
-			<div class="flex flex-col items-end gap-1 shrink-0 max-md:flex-row max-md:flex-wrap max-md:items-center max-md:gap-2">
-				<span class="text-xs text-text-tertiary">{formatDate(email.receivedAt)}</span>
-				{#if page.data.jevReads}
-					<JevWhy emailId={email.id} onSpamCheck={(check) => (jevSpam = check)} />
-				{/if}
-				{#if spamScore !== null}
-					<!-- The score is a button when there is a breakdown to show: a
-					     number on its own cannot tell you whether to train the
-					     classifier or chase a DNS record. -->
-					<svelte:element
-						this={spamRules.length > 0 ? 'button' : 'span'}
-						role={spamRules.length > 0 ? 'button' : undefined}
-						tabindex={spamRules.length > 0 ? 0 : undefined}
-						onclick={spamRules.length > 0 ? () => (showSpamRules = !showSpamRules) : undefined}
-						class="inline-flex items-center gap-1 text-2xs px-2 py-0.5 rounded-full
-							{spamRules.length > 0 ? 'cursor-pointer' : ''}
-							{isFlaggedSpam
-								? 'bg-danger/10 text-danger'
-								: spamScore > 3
-									? 'bg-warning/10 text-warning'
-									: 'bg-text-tertiary/10 text-text-tertiary'}"
-						title={spamRules.length > 0
-							? 'Spam score — click to see which rules fired'
-							: isFlaggedSpam
-								? 'Flagged as spam by the classifier'
-								: 'Spam classifier score'}
-					>
-						Spam score: {spamScore.toFixed(1)}
-						{#if spamRules.length > 0}
-							<Icon name="dropdown" size={12} class="transition-transform {showSpamRules ? 'rotate-180' : ''}" />
+						{#if showLabelMenu}
+							<div class="absolute left-0 top-full z-20 mt-1 min-w-[180px] rounded-lg border border-border bg-surface py-1 shadow-lg">
+								{#each allLabels as label (label.id)}
+									<button
+										type="button"
+										onclick={() => toggleLabel(label.id)}
+										class="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-surface-hover"
+									>
+										<span class="h-2.5 w-2.5 shrink-0 rounded-full" style="background-color: {label.color}"></span>
+										<span class="flex-1 text-left text-text">{label.name}</span>
+										{#if appliedLabels.find((l) => l.id === label.id)}
+											<Icon name="check" size={14} />
+										{/if}
+									</button>
+								{/each}
+								{#if allLabels.length === 0}
+									<p class="px-3 py-2 text-xs text-text-tertiary">No labels yet. Create one in Settings.</p>
+								{/if}
+							</div>
 						{/if}
-					</svelte:element>
-					{#if showSpamRules && spamRules.length > 0}
-						<div class="mt-1 max-w-xs flex flex-wrap justify-end gap-1">
-							{#each spamRules as rule (rule)}
-								<span class="text-3xs font-mono px-1.5 py-0.5 rounded-md bg-surface-hover text-text-secondary">
-									{rule}
-								</span>
-							{/each}
-						</div>
+					</span>
+				</div>
+
+				<!-- Folded: one quiet line says who and when, and opens the rest. -->
+				<button
+					type="button"
+					onclick={toggleHeader}
+					aria-expanded={headerIsOpen}
+					aria-controls="message-head-details"
+					class="mt-0.5 block w-full cursor-pointer truncate text-left text-xs text-text-tertiary {headerOpen === true
+						? 'hidden'
+						: headerOpen === false || compact
+							? ''
+							: 'md:hidden'}"
+				>
+					<span class="text-text-secondary">{from?.name || from?.email || 'Unknown'}</span>
+					<span aria-hidden="true"> · </span>
+					<time datetime={email.receivedAt}>{shortDate(email.receivedAt)}</time>
+					{#if toList.length + ccList.length > 1}
+						<span aria-hidden="true"> · </span>to {toList.length + ccList.length} people
 					{/if}
-				{/if}
+				</button>
+			</div>
+
+			<button
+				type="button"
+				onclick={(e) => {
+					e.stopPropagation();
+					toggleHeader();
+				}}
+				aria-expanded={headerIsOpen}
+				aria-controls="message-head-details"
+				aria-label={headerIsOpen ? 'Hide details' : 'Show details'}
+				title={headerIsOpen ? 'Hide details' : 'Show details'}
+				class="-mr-1.5 mt-0.5 shrink-0 cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text"
+			>
+				<span
+					class="block transition-transform duration-150 {headerOpen === true
+						? 'rotate-90'
+						: headerOpen === false || compact
+							? ''
+							: 'md:rotate-90'}"
+				>
+					<Icon name="expand" size={16} class="block" />
+				</span>
+			</button>
+		</div>
+
+		<div
+			id="message-head-details"
+			class="fold {headerOpen === true ? 'open' : headerOpen === false || compact ? '' : 'auto'} {headerAnimating ? 'animating' : ''}"
+		>
+			<div>
+				<div class="flex flex-wrap items-start gap-x-3 gap-y-2 {compact ? 'pb-3' : 'pb-4'}">
+					<SenderAvatar email={from?.email} name={from?.name} size={compact ? 32 : 36} />
+					<div class="min-w-0 flex-1">
+						<div class="flex flex-wrap items-baseline gap-x-2">
+							<span class="text-sm font-medium text-text">{from?.name || from?.email || 'Unknown'}</span>
+							{#if from?.name && from?.email}
+								<span class="break-all text-xs text-text-tertiary">{from.email}</span>
+							{/if}
+							{#if from?.email}
+								<!-- self-center: in this baseline-aligned row, an icon-only
+								     button's baseline is the bottom of its SVG, which lifts
+								     the icon above the text. The negative margin keeps the
+								     padded hit area from making the row taller. -->
+								<button
+									type="button"
+									onclick={handleAddSenderToContacts}
+									aria-label="Add sender to contacts"
+									title="Add to Contacts"
+									class="-my-1 cursor-pointer self-center rounded-md p-1 text-text-tertiary hover:bg-accent/10 hover:text-accent-fg"
+								>
+									<Icon name="add-contact" size={14} class="block" />
+								</button>
+							{/if}
+						</div>
+						<p class="mt-0.5 break-words text-xs text-text-tertiary">
+							to {toList.map((a) => a.name || a.email).join(', ')}
+							{#if ccList.length > 0}
+								<span class="ml-2">cc {ccList.map((a) => a.name || a.email).join(', ')}</span>
+							{/if}
+						</p>
+					</div>
+					<!-- The date and the spam score: a right-hand column on a wide screen, a
+					     row under the sender on a phone, where a long address would
+					     otherwise fight them for one line. -->
+					<div class="flex shrink-0 flex-col items-end gap-1 max-md:w-full max-md:flex-row max-md:flex-wrap max-md:items-center max-md:gap-2">
+						<time datetime={email.receivedAt} class="text-xs tabular-nums text-text-tertiary">{formatDate(email.receivedAt)}</time>
+						{#if spamScore !== null}
+							<!-- The score is a button when there is a breakdown to show: a
+							     number on its own cannot tell you whether to train the
+							     classifier or chase a DNS record. -->
+							<svelte:element
+								this={spamRules.length > 0 ? 'button' : 'span'}
+								role={spamRules.length > 0 ? 'button' : undefined}
+								tabindex={spamRules.length > 0 ? 0 : undefined}
+								onclick={spamRules.length > 0 ? () => (showSpamRules = !showSpamRules) : undefined}
+								class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs
+									{spamRules.length > 0 ? 'cursor-pointer' : ''}
+									{isFlaggedSpam
+										? 'bg-danger/10 text-danger'
+										: spamScore > 3
+											? 'bg-warning/10 text-warning'
+											: 'bg-text-tertiary/10 text-text-tertiary'}"
+								title={spamRules.length > 0
+									? 'Spam score — click to see which rules fired'
+									: isFlaggedSpam
+										? 'Flagged as spam by the classifier'
+										: 'Spam classifier score'}
+							>
+								Spam score: {spamScore.toFixed(1)}
+								{#if spamRules.length > 0}
+									<Icon name="dropdown" size={12} class="transition-transform {showSpamRules ? 'rotate-180' : ''}" />
+								{/if}
+							</svelte:element>
+							{#if showSpamRules && spamRules.length > 0}
+								<div class="mt-1 flex max-w-xs flex-wrap justify-end gap-1">
+									{#each spamRules as rule (rule)}
+										<span class="rounded-md bg-surface-hover px-1.5 py-0.5 font-mono text-3xs text-text-secondary">
+											{rule}
+										</span>
+									{/each}
+								</div>
+							{/if}
+						{/if}
+					</div>
+				</div>
 			</div>
 		</div>
 	</header>
-
-
-	{#if jevSpam && (jevSpam.action === 'flagged' || jevSpam.action === 'junked' || jevSpam.action === 'rescued')}
-		<!-- Jev's spam verdict, when (in active mode) it acted on it. -->
-		<div class="{compact ? 'mx-4' : 'mx-6'} mt-3 shrink-0">
-			<div class="flex items-start gap-3 rounded-xl border border-border bg-surface px-3.5 py-2.5 relative overflow-hidden" role="status">
-				<div class="absolute inset-y-0 left-0 w-1 {jevSpam.action === 'rescued' ? 'bg-success' : 'bg-warning'}"></div>
-				<div class="min-w-0 text-sm">
-					{#if jevSpam.action === 'flagged'}
-						<p class="text-text font-medium">This looks suspicious</p>
-						<p class="text-xs text-text-tertiary mt-0.5">
-							Jev puts it at {Math.round(jevSpam.phishing * 100)}% likely phishing and {Math.round(jevSpam.spam * 100)}% likely spam.
-							Check who really sent it before you click a link, sign in or pay.
-						</p>
-					{:else if jevSpam.action === 'junked'}
-						<p class="text-text font-medium">Jev moved this to Junk</p>
-						<p class="text-xs text-text-tertiary mt-0.5">
-							{Math.round(Math.max(jevSpam.spam, jevSpam.phishing) * 100)}% likely {jevSpam.phishing >= jevSpam.spam ? 'phishing' : 'spam'}. If it’s fine, mark it Not spam.
-						</p>
-					{:else}
-						<p class="text-text font-medium">Jev brought this back from Junk</p>
-						<p class="text-xs text-text-tertiary mt-0.5">
-							Stalwart had flagged it, but Jev is sure it isn’t spam or phishing and the sender passed authentication.
-						</p>
-					{/if}
-				</div>
-			</div>
-		</div>
-	{/if}
 
 	{#if otp}
 		<div class="{compact ? 'mx-4' : 'mx-6'} mt-3 shrink-0">
@@ -1260,3 +1369,49 @@
 		</div>
 	{/if}
 </div>
+
+<style>
+	/* The fold under the subject: a grid row that grows from 0fr to 1fr, so
+	   it animates open and shut without measuring anything. `.auto` is the
+	   screen's default, open from md up and folded below. Content is clipped
+	   while folded or animating and free once open, so a popover can hang
+	   over the message; hidden content is also unfocusable. */
+	.fold {
+		display: grid;
+		grid-template-rows: 0fr;
+		transition: grid-template-rows 160ms ease;
+	}
+	.fold > div {
+		min-height: 0;
+		overflow: hidden;
+		visibility: hidden;
+		transition: visibility 0s linear 160ms;
+	}
+	.fold.open {
+		grid-template-rows: 1fr;
+	}
+	.fold.open > div {
+		overflow: visible;
+		visibility: visible;
+		transition-delay: 0s;
+	}
+	.fold.animating > div {
+		overflow: hidden;
+	}
+	@media (min-width: 768px) {
+		.fold.auto {
+			grid-template-rows: 1fr;
+		}
+		.fold.auto > div {
+			overflow: visible;
+			visibility: visible;
+			transition-delay: 0s;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.fold,
+		.fold > div {
+			transition: none;
+		}
+	}
+</style>

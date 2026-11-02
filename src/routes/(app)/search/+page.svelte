@@ -68,6 +68,11 @@
 			>
 				Clear all
 			</button>
+			{#if data.ranked}
+				<span class="text-xs text-text-tertiary ml-auto" title="Found by keyword and by meaning, best match first">
+					Best matches first
+				</span>
+			{/if}
 		</div>
 	{/if}
 

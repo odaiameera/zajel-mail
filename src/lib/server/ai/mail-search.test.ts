@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	buildMailFilter,
 	describeMailSearch,
+	mailFilterConditions,
 	MAX_SEARCH_RESULTS,
 	parseMailSearchSpec,
 	parseMailToolCall
@@ -96,6 +97,14 @@ describe('buildMailFilter', () => {
 
 	it('is null when nothing was constrained', () => {
 		expect(buildMailFilter(base)).toBeNull();
+	});
+
+	it('hands out the conditions one by one, for a caller that adds its own', () => {
+		expect(mailFilterConditions(parseMailSearchSpec({ text: 'invoice', after: '2025-01-01', unread_only: true }))).toEqual([
+			{ text: 'invoice' },
+			{ after: '2025-01-01T00:00:00.000Z' }
+		]);
+		expect(mailFilterConditions(base)).toEqual([]);
 	});
 });
 

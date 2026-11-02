@@ -19,20 +19,30 @@ import {
 	storeVectors,
 	upsertEmails
 } from './store';
-import { accountVectors, AccountVectors, forgetVectors, outlierFloor, quantize } from './vectors';
+import {
+	accountVectors,
+	AccountVectors,
+	forgetVectors,
+	LOAD_STEP,
+	loadedVectors,
+	loadVectors,
+	outlierFloor,
+	quantize
+} from './vectors';
 
 const ACCT = 'acct-1';
+const BIG = 'acct-2';
 const unit = (...values: number[]) => normalize(values);
 
 beforeAll(() => {
 	runMigrations();
 	getDb().prepare(`INSERT INTO app_user (id, email, password_hash) VALUES ('user-1', 'me@example.test', 'x')`).run();
-	getDb()
-		.prepare(
-			`INSERT INTO mail_accounts (id, user_id, email, server_url, jmap_account_id, secret_enc)
-			 VALUES (?, 'user-1', 'me@example.test', 'https://mail.example', 'jmap', 'x')`
-		)
-		.run(ACCT);
+	const account = getDb().prepare(
+		`INSERT INTO mail_accounts (id, user_id, email, server_url, jmap_account_id, secret_enc)
+		 VALUES (?, 'user-1', ?, 'https://mail.example', ?, 'x')`
+	);
+	account.run(ACCT, 'me@example.test', 'jmap');
+	account.run(BIG, 'big@example.test', 'jmap-2');
 });
 
 describe('quantize', () => {
@@ -136,9 +146,37 @@ describe('the store', () => {
 		expect(indexProgress(ACCT)).toEqual({ total: 2, done: 1, failed: 0, pending: 1 });
 
 		forgetVectors(ACCT);
-		const index = accountVectors(ACCT, 2);
+		const index = accountVectors(ACCT, 2)!;
 		expect(index.size).toBe(1);
 		expect(index.search(unit(0, 1), 5, (m) => m.mailboxIds.includes('L1'))[0].id).toBe('new');
+	});
+
+	it('reads a large index in steps, off the request path, and keeps a message split across steps whole', async () => {
+		setIndexEnabled(BIG, true);
+		const many = Array.from({ length: LOAD_STEP + 5 }, (_, i) => ({ id: `m${i}`, receivedAt: '2026-01-01T00:00:00Z', mailboxIds: ['IN'] }));
+		upsertEmails(BIG, many, 0);
+		// The last message of the first step has a second chunk, which lands in the second.
+		const straddles = `m${LOAD_STEP - 1}`;
+		getDb().transaction(() => {
+			for (const e of many) {
+				storeVectors(BIG, e.id, e.id === straddles ? [quantize(unit(0, 1)), quantize(unit(1, 0))] : [quantize(unit(1, 0))]);
+			}
+		})();
+
+		// More than one step: not in memory yet, so a search goes on without it...
+		expect(accountVectors(BIG, 2)).toBeNull();
+		// ...while the indexer already has the copy being filled to keep current.
+		expect(loadedVectors(BIG)).toBeDefined();
+		const index = await loadVectors(BIG, 2);
+		expect(index.size).toBe(LOAD_STEP + 5);
+		expect(accountVectors(BIG, 2)).toBe(index);
+		const [hit] = index.search(unit(0, 1), 1);
+		expect(hit.id).toBe(straddles);
+		expect(hit.score).toBeGreaterThan(0.99);
+
+		forgetVectors(BIG);
+		expect(loadedVectors(BIG)).toBeUndefined();
+		setIndexEnabled(BIG, false);
 	});
 
 	it('gives up on a message after three failed attempts', () => {

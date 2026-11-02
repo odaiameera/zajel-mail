@@ -21,7 +21,7 @@ import {
 	type IndexedEmail,
 	type IndexState
 } from './store';
-import { forgetVectors, loadedVectors, quantize } from './vectors';
+import { forgetVectors, loadedVectors, loadVectors, quantize } from './vectors';
 
 /**
  * Keeps each enabled account's index current. Every minute, per account:
@@ -413,6 +413,17 @@ async function pump(): Promise<void> {
 	}
 }
 
+/**
+ * Bring a ready index into memory before anyone searches it, a step at a
+ * time. Read on the request instead, a large one would hold up every request
+ * for as long as the read takes.
+ */
+async function warmVectors(accountRowId: string): Promise<void> {
+	const state = getIndexState(accountRowId);
+	if (!state?.ready || !state.dimensions || state.model !== embedSettings()?.model) return;
+	await loadVectors(accountRowId, state.dimensions);
+}
+
 /** One pass over every enabled account, then embedding in the background. */
 export async function runIndexer(): Promise<void> {
 	if (ticking || !embedSettings()) return;
@@ -425,6 +436,7 @@ export async function runIndexer(): Promise<void> {
 			try {
 				await syncAccount(account.id, auth);
 				recovered(account.id, 'sync');
+				await warmVectors(account.id);
 			} catch (err) {
 				if (err instanceof JMAPAuthError) markNeedsReauth(account.id);
 				else failed(account.id, 'sync', err);

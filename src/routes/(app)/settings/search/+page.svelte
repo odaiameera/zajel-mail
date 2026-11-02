@@ -115,7 +115,12 @@
 {#if loaded}
 	<section class="mb-8">
 		<h2 class="text-sm font-medium text-text mb-1">Semantic search</h2>
-		<SettingRow title="Ollama endpoint" state={states.url ?? 'idle'} errorMessage={errors.url}>
+		<SettingRow
+			title="Ollama endpoint"
+			description="Reached from the server, not your browser. It receives the text of every message it indexes."
+			state={states.url ?? 'idle'}
+			errorMessage={errors.url}
+		>
 			{#snippet control()}
 				<TextInput bind:value={url} ariaLabel="Ollama endpoint" width="260px" onSave={(next) => saveSetting('url', next)} />
 			{/snippet}
