@@ -1,13 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const env = vi.hoisted(() => ({}) as Record<string, string | undefined>);
 vi.mock('$env/dynamic/private', () => ({ env }));
 
-import { DEFAULT_EMBED_MODEL, embed, EmbedError, embedSettings, normalize, promptStyle } from './embed';
+import { getDb } from '$lib/server/db/index';
+import { runMigrations } from '$lib/server/db/migrate';
+import { aiSettings, forgetAiSettingsForTests, saveAiSettings } from '$lib/server/ai/settings';
+import { cleanEmbedUrl, DEFAULT_EMBED_MODEL, embed, EmbedError, embedSettings, normalize, promptStyle } from './embed';
 import { fakeOllama } from './__fixtures__/fakes';
+
+beforeAll(() => runMigrations());
 
 beforeEach(() => {
 	for (const key of Object.keys(env)) delete env[key];
+	getDb().exec('DELETE FROM ai_settings');
+	forgetAiSettingsForTests();
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -19,6 +26,33 @@ describe('embedSettings', () => {
 		expect(embedSettings()).toEqual({ url: 'http://ollama:11434', model: DEFAULT_EMBED_MODEL });
 		env.EMBED_MODEL = 'bge-m3';
 		expect(embedSettings()?.model).toBe('bge-m3');
+	});
+
+	it('takes Settings over the environment', () => {
+		env.EMBED_URL = 'http://ollama:11434';
+		env.EMBED_MODEL = 'bge-m3';
+		saveAiSettings({ ...aiSettings(), embedUrl: 'http://10.0.0.5:11434', embedModel: 'qwen3-embedding:0.6b' });
+		expect(embedSettings()).toEqual({ url: 'http://10.0.0.5:11434', model: 'qwen3-embedding:0.6b' });
+		saveAiSettings({ ...aiSettings(), embedUrl: null, embedModel: null });
+		expect(embedSettings()).toEqual({ url: 'http://ollama:11434', model: 'bge-m3' });
+	});
+
+	it('can be set in Settings alone, without EMBED_URL', () => {
+		saveAiSettings({ ...aiSettings(), embedUrl: 'http://ollama:11434' });
+		expect(embedSettings()).toEqual({ url: 'http://ollama:11434', model: DEFAULT_EMBED_MODEL });
+	});
+});
+
+describe('cleanEmbedUrl', () => {
+	it('keeps an http or https address, trailing slashes trimmed', () => {
+		expect(cleanEmbedUrl(' http://host.docker.internal:11434/ ')).toBe('http://host.docker.internal:11434');
+		expect(cleanEmbedUrl('https://ollama.example/proxy/')).toBe('https://ollama.example/proxy');
+	});
+
+	it('refuses other schemes, credentials, queries and junk', () => {
+		for (const bad of ['file:///etc/passwd', 'ftp://x', 'http://user:pw@host', 'http://host/?a=1', 'http://host/#x', 'not a url', `http://h/${'a'.repeat(200)}`]) {
+			expect(cleanEmbedUrl(bad)).toBeNull();
+		}
 	});
 });
 

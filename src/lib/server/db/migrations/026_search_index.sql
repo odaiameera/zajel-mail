@@ -1,6 +1,12 @@
 -- Semantic search: each linked account's mail embedded by a local model
 -- (search/worker.ts), searched beside Stalwart's keyword search. Keyed by the
 -- linked account, like Jev, since one login can link several mailboxes.
+
+-- Its Ollama and model, chosen in Settings → Search; NULL uses EMBED_URL and
+-- EMBED_MODEL, or the built-in model.
+ALTER TABLE ai_settings ADD COLUMN embed_url TEXT;
+ALTER TABLE ai_settings ADD COLUMN embed_model TEXT;
+
 CREATE TABLE IF NOT EXISTS search_index (
   account_id    TEXT PRIMARY KEY REFERENCES mail_accounts(id) ON DELETE CASCADE,
   enabled       INTEGER NOT NULL DEFAULT 0,

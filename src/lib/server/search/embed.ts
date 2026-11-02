@@ -1,14 +1,16 @@
 import { env } from '$env/dynamic/private';
+import { aiSettings } from '$lib/server/ai/settings';
 
 /**
  * Text embeddings from an Ollama endpoint on the operator's own server.
  *
  * Deliberately separate from the chat assistant's OLLAMA_URL, which defaults
  * to Ollama Cloud: indexing sends every message's text to this endpoint, so it
- * is only ever the one EMBED_URL names, and nothing is indexed until it is set.
+ * is only ever the one Settings → Search or EMBED_URL names, and nothing is
+ * indexed until one does.
  */
 
-/** Small, multilingual (Arabic included), 768 dimensions. EMBED_MODEL picks another. */
+/** Small, multilingual (Arabic included), 768 dimensions. Settings or EMBED_MODEL pick another. */
 export const DEFAULT_EMBED_MODEL = 'embeddinggemma-2:270m';
 
 export interface EmbedSettings {
@@ -16,10 +18,29 @@ export interface EmbedSettings {
 	model: string;
 }
 
+/** Settings → Search first, then the environment, then the built-in model. */
 export function embedSettings(): EmbedSettings | null {
-	const url = env.EMBED_URL?.trim().replace(/\/+$/, '');
+	const chosen = aiSettings();
+	const url = (chosen.embedUrl || env.EMBED_URL)?.trim().replace(/\/+$/, '');
 	if (!url) return null;
-	return { url, model: env.EMBED_MODEL?.trim() || DEFAULT_EMBED_MODEL };
+	return { url, model: chosen.embedModel || env.EMBED_MODEL?.trim() || DEFAULT_EMBED_MODEL };
+}
+
+/**
+ * An endpoint as Settings stores it: http or https, no credentials, query or
+ * fragment, trailing slashes trimmed. Null when it isn't one.
+ */
+export function cleanEmbedUrl(value: string): string | null {
+	if (value.length > 200) return null;
+	let url: URL;
+	try {
+		url = new URL(value.trim());
+	} catch {
+		return null;
+	}
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+	if (url.username || url.password || url.search || url.hash) return null;
+	return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
 }
 
 /**

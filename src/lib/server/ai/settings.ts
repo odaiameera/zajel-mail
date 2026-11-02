@@ -21,6 +21,10 @@ export interface AiSettings {
 	agentEffort: Effort | null;
 	openaiModel: string | null;
 	ollamaModel: string | null;
+	/** Semantic search's Ollama, over EMBED_URL. */
+	embedUrl: string | null;
+	/** Semantic search's model, over EMBED_MODEL. */
+	embedModel: string | null;
 }
 
 const NONE: AiSettings = {
@@ -29,7 +33,9 @@ const NONE: AiSettings = {
 	writerModel: null,
 	agentEffort: null,
 	openaiModel: null,
-	ollamaModel: null
+	ollamaModel: null,
+	embedUrl: null,
+	embedModel: null
 };
 
 /**
@@ -48,7 +54,7 @@ export function aiSettings(): AiSettings {
 	try {
 		const row = getDb()
 			.prepare(
-				'SELECT provider, agent_model, writer_model, agent_effort, openai_model, ollama_model FROM ai_settings WHERE id = 1'
+				'SELECT provider, agent_model, writer_model, agent_effort, openai_model, ollama_model, embed_url, embed_model FROM ai_settings WHERE id = 1'
 			)
 			.get() as Record<string, string | null> | undefined;
 		cached = {
@@ -57,7 +63,9 @@ export function aiSettings(): AiSettings {
 			writerModel: row?.writer_model ?? null,
 			agentEffort: EFFORTS.includes(row?.agent_effort as Effort) ? (row!.agent_effort as Effort) : null,
 			openaiModel: row?.openai_model ?? null,
-			ollamaModel: row?.ollama_model ?? null
+			ollamaModel: row?.ollama_model ?? null,
+			embedUrl: row?.embed_url ?? null,
+			embedModel: row?.embed_model ?? null
 		};
 		return cached;
 	} catch {
@@ -70,11 +78,12 @@ export function aiSettings(): AiSettings {
 export function saveAiSettings(next: AiSettings): void {
 	getDb()
 		.prepare(
-			`INSERT INTO ai_settings (id, provider, agent_model, writer_model, agent_effort, openai_model, ollama_model, updated_at)
-			 VALUES (1, @provider, @agentModel, @writerModel, @agentEffort, @openaiModel, @ollamaModel, datetime('now'))
+			`INSERT INTO ai_settings (id, provider, agent_model, writer_model, agent_effort, openai_model, ollama_model, embed_url, embed_model, updated_at)
+			 VALUES (1, @provider, @agentModel, @writerModel, @agentEffort, @openaiModel, @ollamaModel, @embedUrl, @embedModel, datetime('now'))
 			 ON CONFLICT(id) DO UPDATE SET
 			   provider = excluded.provider, agent_model = excluded.agent_model, writer_model = excluded.writer_model,
 			   agent_effort = excluded.agent_effort, openai_model = excluded.openai_model, ollama_model = excluded.ollama_model,
+			   embed_url = excluded.embed_url, embed_model = excluded.embed_model,
 			   updated_at = excluded.updated_at`
 		)
 		.run(next);

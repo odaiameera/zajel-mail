@@ -49,9 +49,10 @@ services:
       # - OLLAMA_MODEL=deepseek-v3.1:671b
       # Semantic search: embeddings from an Ollama on your own server, never
       # the cloud endpoint above, since indexing sends it every message's
-      # text. Switch it on per account in Settings → Search. Ollama on the
-      # host itself listens on 127.0.0.1, which this container can't reach:
-      # set OLLAMA_HOST=172.17.0.1 in its service (the Docker bridge, not the
+      # text. Switch it on per account in Settings → Search, which can also
+      # set or override these two. Ollama on the host itself listens on
+      # 127.0.0.1, which this container can't reach: set
+      # OLLAMA_HOST=172.17.0.1 in its service (the Docker bridge, not the
       # internet) and use the extra_hosts entry below. EMBED_MODEL defaults to
       # embeddinggemma-2:270m (run `ollama pull embeddinggemma-2:270m`); a
       # different model rebuilds the index. EMBED_QUERY_PREFIX and
