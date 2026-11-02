@@ -49,6 +49,17 @@ export function supportsFallbacks(model: string): boolean {
 	return /^claude-(opus|fable|sonnet)-/.test(model);
 }
 
+const DEFAULT_FALLBACK_MODEL = 'claude-sonnet-5-5';
+
+/**
+ * Where an agent turn goes when the agent model is overloaded or over its
+ * own rate limit as the turn starts (`ANTHROPIC_FALLBACK_MODEL`). Server-side
+ * `fallbacks` only cover refusals, never capacity.
+ */
+export function fallbackModel(): string {
+	return env.ANTHROPIC_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
+}
+
 let cached: { key: string; client: Anthropic } | null = null;
 
 export function claudeClient(): Anthropic {
@@ -61,12 +72,81 @@ export function claudeClient(): Anthropic {
 	return cached.client;
 }
 
+type ErrorBody = { message?: string; details?: { error_code?: string } };
+
+/** The `error` object of the API's response body, when there was one. */
+function errorBody(err: unknown): ErrorBody | undefined {
+	return err instanceof Anthropic.APIError ? (err.error as { error?: ErrorBody } | undefined)?.error : undefined;
+}
+
+/**
+ * A spend or billing limit rather than a rate limit: the tier's monthly cap
+ * (a 429 with its own error code), a limit set in the Console (a 400), or no
+ * credit left. The whole organisation is paused on every model until it
+ * resets or is raised, so retrying or switching models can't help.
+ */
+export function usageLimitReached(err: unknown): boolean {
+	if (!(err instanceof Anthropic.APIError)) return false;
+	const body = errorBody(err);
+	return (
+		err.type === 'billing_error' ||
+		body?.details?.error_code === 'enforced_spend_limit_reached' ||
+		/reached your (specified )?(workspace )?API usage limits|credit balance is too low/i.test(body?.message ?? '')
+	);
+}
+
+/** Down for this model alone (overloaded, failing, or over its own rate limit), so another model may still answer. */
+export function modelUnavailable(err: unknown): boolean {
+	if (usageLimitReached(err)) return false;
+	return err instanceof Anthropic.InternalServerError || err instanceof Anthropic.RateLimitError;
+}
+
+/**
+ * The event-log fields for a Claude failure. The error code and headers are
+ * named on their own: the message holds the whole response body, and its
+ * cut-off would drop them.
+ */
+export function claudeErrorFields(err: unknown): Record<string, unknown> {
+	const fields = errorFields(err);
+	if (!(err instanceof Anthropic.APIError)) return fields;
+	const header = (name: string) => err.headers?.get(name) ?? undefined;
+	return {
+		...fields,
+		apiErrorType: err.type ?? undefined,
+		errorCode: errorBody(err)?.details?.error_code,
+		retryAfter: header('retry-after'),
+		requestsRemaining: header('anthropic-ratelimit-requests-remaining'),
+		inputTokensRemaining: header('anthropic-ratelimit-input-tokens-remaining'),
+		outputTokensRemaining: header('anthropic-ratelimit-output-tokens-remaining')
+	};
+}
+
+function sentence(text: string): string {
+	const trimmed = text.trim().slice(0, 300);
+	return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 /**
  * What the browser is told when Claude fails. The provider's own message goes
- * to the server log only, as with the other providers.
+ * to the server log only, as with the other providers; a limit's message is
+ * the exception, since it names the limit and when access returns.
  */
 export function claudeError(err: unknown): MailAssistantError {
-	logEvent('error', 'ai', 'claude_error', errorFields(err));
+	logEvent('error', 'ai', 'claude_error', claudeErrorFields(err));
+	const body = errorBody(err);
+	if (usageLimitReached(err)) {
+		// The tier's monthly cap lifts at the start of the next month (UTC);
+		// a Console limit's own message says when it lifts.
+		const now = new Date();
+		const resets =
+			body?.details?.error_code === 'enforced_spend_limit_reached' && !/regain access/i.test(body.message ?? '')
+				? ` Access returns on ${new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 10)} (UTC) unless the limit is raised.`
+				: '';
+		return new MailAssistantError(
+			`Anthropic has paused this API key: ${sentence(body?.message || 'its usage limit is reached')}${resets} Fix it under Billing or Limits at platform.claude.com.`,
+			502
+		);
+	}
 	if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
 		return new MailAssistantError('The AI service rejected its API key', 502);
 	}
@@ -74,13 +154,25 @@ export function claudeError(err: unknown): MailAssistantError {
 		return new MailAssistantError('The AI service does not serve the configured model — choose another in Settings → Agent', 502);
 	}
 	if (err instanceof Anthropic.RateLimitError) {
-		return new MailAssistantError('The AI service is rate limiting this account — wait a moment and try again', 502);
+		// The first sentence names the limit (requests, input or output tokens per minute).
+		const limit = body?.message?.split(/(?<=\.)\s/)[0]?.replace(/\.$/, '').slice(0, 200);
+		const wait = Number(err.headers?.get('retry-after'));
+		return new MailAssistantError(
+			`The AI service is rate limiting this account${limit ? `: ${limit}` : ''} — ${
+				wait > 0 ? `try again in ${Math.ceil(wait)} s` : 'wait a moment and try again'
+			}`,
+			502
+		);
 	}
-	if (err instanceof Anthropic.APIConnectionTimeoutError) {
+	// An abort is the turn's own deadline running out, retries included.
+	if (err instanceof Anthropic.APIConnectionTimeoutError || err instanceof Anthropic.APIUserAbortError) {
 		return new MailAssistantError('The assistant took too long to respond', 502);
 	}
 	if (err instanceof Anthropic.APIConnectionError) {
 		return new MailAssistantError('Could not reach the assistant', 502);
+	}
+	if (err instanceof Anthropic.APIError && (err.status === 529 || err.type === 'overloaded_error')) {
+		return new MailAssistantError('Claude is overloaded right now — try again in a few minutes', 502);
 	}
 	if (err instanceof Anthropic.APIError) {
 		console.warn(`[ai] Claude ${err.status}: ${err.message.slice(0, 300)}`);
@@ -102,6 +194,12 @@ export function replyText(message: Anthropic.Beta.BetaMessage): string {
 	if (!text) throw new MailAssistantError('The assistant returned an empty answer', 502);
 	return text;
 }
+
+// The agent's compose tools write through here inside a turn, and a tool
+// gets 60 s (TOOL_TIMEOUT_MS in agent/runtime.ts). Two tries of 25 s and the
+// backoff between them finish inside that, so a slow first try can't leave a
+// draft or a send card appearing after the tool already reported a timeout.
+const WRITER_REQUEST = { timeout: 25_000, maxRetries: 1 };
 
 /**
  * Writing on the writer model, in the same shape as `runAIChat`: summaries,
@@ -125,7 +223,7 @@ export async function runClaudeWriting(input: {
 			output_config: { effort: 'low' },
 			system,
 			messages: input.messages
-		});
+		}, WRITER_REQUEST);
 	} catch (err) {
 		throw claudeError(err);
 	}

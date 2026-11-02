@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => ({
 	sendEmail: vi.fn(),
 	getEmailDetail: vi.fn(),
 	runChat: vi.fn(async () => 'Thanks, Thursday works for me.'),
-	claudeConfigured: true
+	claudeConfigured: true,
+	logEvent: vi.fn()
 }));
 
 vi.mock('$lib/server/ai/claude', () => ({
@@ -20,8 +21,16 @@ vi.mock('$lib/server/ai/claude', () => ({
 	claudeConfigured: () => mocks.claudeConfigured,
 	claudeClient: () => ({ beta: { messages: { create: mocks.create } } }),
 	claudeError: (err: unknown) => err,
+	claudeErrorFields: (err: { status?: number }) => ({ status: err.status }),
 	FALLBACK_BETA: 'server-side-fallback-2026-07-01',
+	fallbackModel: () => 'claude-sonnet-5-5',
+	// Stand-ins for the SDK's classes: 529 is an overload, 429 a model's rate limit.
+	modelUnavailable: (err: { status?: number }) => err.status === 529 || err.status === 429,
 	supportsFallbacks: () => true
+}));
+vi.mock('$lib/server/log', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/log')>()),
+	logEvent: mocks.logEvent
 }));
 vi.mock('$lib/jmap/auth', () => ({ createClient: () => ({}) }));
 vi.mock('$lib/jmap/email', () => ({
@@ -89,6 +98,18 @@ const reply = (content: unknown[], stop_reason = 'tool_use') => ({ content, stop
 /** The names of the tools sent as strict in the nth request to Claude. */
 const strictIn = (call: number) =>
 	(mocks.create.mock.calls[call][0].tools as { name: string; strict?: boolean }[]).filter((t) => t.strict).map((t) => t.name);
+const apiError = (status: number, message: string) => Object.assign(new Error(message), { status });
+/** An overload or rate limit asking for a 10 ms wait, so the retry doesn't slow the tests. */
+const busy = (status: number, message: string) => Object.assign(apiError(status, message), { headers: new Headers({ 'retry-after': '0.01' }) });
+const sendToDana = toolUse('t2', 'send_email', {
+	to: [],
+	cc: [],
+	subject: null,
+	reply_to_email_id: 'e2',
+	points: 'Thursday works',
+	exact_body: null
+});
+const turnLog = () => mocks.logEvent.mock.calls.find((call) => call[2] === 'turn')?.[3];
 
 beforeAll(() => {
 	runMigrations();
@@ -174,6 +195,8 @@ describe('runAgentTurn', () => {
 		expect(params.model).toBe('claude-opus-5-5');
 		expect(params).toMatchObject({ betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default', output_config: { effort: 'medium' } });
 		expect(params.system[0].cache_control).toEqual({ type: 'ephemeral' });
+		// The automatic breakpoint follows the conversation as it grows.
+		expect(params.cache_control).toEqual({ type: 'ephemeral' });
 		expect(params.system[1].text).toContain('Today is 2026-11-01 (Sunday)');
 		const strict = (params.tools as { name: string; strict?: boolean }[]).filter((t) => t.strict).map((t) => t.name);
 		expect(strict).toContain('send_email');
@@ -413,17 +436,168 @@ describe('runAgentTurn', () => {
 		expect(content.trimEnd().endsWith('</untrusted_email>')).toBe(true);
 	});
 
-	it('handles a refusal without running anything', async () => {
-		mocks.create.mockResolvedValueOnce(reply([toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true })], 'refusal'));
+	it('handles a refusal without running anything, and logs its category', async () => {
+		mocks.create.mockResolvedValueOnce({
+			...reply([toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true })], 'refusal'),
+			stop_details: { type: 'refusal', category: 'cyber', recommended_model: null }
+		});
 		const result = await runAgentTurn(turn());
-		expect(result.message).toBe('I can’t help with that request.');
+		expect(result).toMatchObject({ outcome: 'refused', message: 'I can’t help with that request.' });
 		expect(mocks.updateEmailMailboxes).not.toHaveBeenCalled();
+		expect(turnLog()).toMatchObject({ outcome: 'refused', category: 'cyber', recommendedModel: null });
+	});
+
+	it('says to try again when the refusal fallback was only busy', async () => {
+		mocks.create.mockResolvedValueOnce({
+			...reply([], 'refusal'),
+			stop_details: { type: 'refusal', category: 'cyber', recommended_model: 'claude-opus-4-8' }
+		});
+		const result = await runAgentTurn(turn());
+		expect(result).toMatchObject({ outcome: 'refused', message: 'I couldn’t answer that just now. Try again in a few minutes.' });
+		expect(turnLog()).toMatchObject({ recommendedModel: 'claude-opus-4-8' });
+	});
+
+	it('keeps what a turn did when it is refused part way', async () => {
+		mocks.create
+			.mockResolvedValueOnce(reply([toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true })]))
+			.mockResolvedValueOnce({ ...reply([], 'refusal'), stop_details: { type: 'refusal', category: 'general_harms', recommended_model: null } });
+		const result = await runAgentTurn(turn());
+		expect(result).toMatchObject({ outcome: 'stopped', message: 'I stopped before finishing. So far: Marked read 1 message.' });
+		expect(turnLog()).toMatchObject({ outcome: 'stopped', category: 'general_harms' });
 	});
 
 	it('stops after its round budget and says what it changed', async () => {
 		mocks.create.mockResolvedValue(reply([toolUse('t', 'mark_read', { email_ids: ['e1'], read: true })]));
 		const result = await runAgentTurn(turn());
 		expect(mocks.create).toHaveBeenCalledTimes(10);
+		expect(result.outcome).toBe('stopped');
 		expect(result.message).toMatch(/^I stopped before finishing\. So far: Marked read 1 message/);
+	});
+
+	it('logs the tokens the turn used, cache included', async () => {
+		const usage = { input_tokens: 100, cache_creation_input_tokens: 2000, cache_read_input_tokens: 5000, output_tokens: 40 };
+		mocks.create
+			.mockResolvedValueOnce({ ...reply([toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true })]), usage })
+			.mockResolvedValueOnce({ ...reply([{ type: 'text', text: 'Done.' }], 'end_turn'), usage: { ...usage, cache_creation_input_tokens: null } });
+		await runAgentTurn(turn());
+		expect(turnLog()).toMatchObject({ inputTokens: 200, cacheWriteTokens: 2000, cacheReadTokens: 10000, outputTokens: 80 });
+	});
+});
+
+describe('a turn that fails', () => {
+	it('keeps the changes and cards it made before the failure', async () => {
+		mocks.create
+			.mockResolvedValueOnce(reply([toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true }), sendToDana]))
+			.mockRejectedValueOnce(busy(429, 'The AI service is rate limiting this account — wait a moment and try again'))
+			.mockRejectedValueOnce(busy(429, 'The AI service is rate limiting this account — wait a moment and try again'));
+		const result = await runAgentTurn(turn());
+		expect(result).toMatchObject({
+			outcome: 'stopped',
+			message:
+				'The AI service is rate limiting this account — wait a moment and try again. So far: Marked read 1 message. One change waits for your confirmation.',
+			done: ['Marked read 1 message']
+		});
+		expect(result.pending).toHaveLength(1);
+		expect(result.pending[0].kind).toBe('send_email');
+		expect(mocks.logEvent).toHaveBeenCalledWith('error', 'agent', 'turn_failed', expect.objectContaining({ rounds: 2 }));
+		// A 429 after the first round is not a reason to change models mid-turn:
+		// one more try on the same model, then the turn ends.
+		expect(mocks.create.mock.calls.map((call) => call[0].model)).toEqual(['claude-opus-5-5', 'claude-opus-5-5', 'claude-opus-5-5']);
+	});
+
+	it('still fails outright when nothing has happened yet', async () => {
+		mocks.create.mockRejectedValueOnce(apiError(400, 'The AI service returned an error (400)'));
+		await expect(runAgentTurn(turn())).rejects.toThrow('The AI service returned an error (400)');
+		expect(mocks.create).toHaveBeenCalledTimes(1);
+	});
+
+	it('moves to the fallback model when the agent model is overloaded as the turn starts', async () => {
+		mocks.create
+			.mockRejectedValueOnce(apiError(529, 'Overloaded'))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
+		const result = await runAgentTurn(turn());
+		expect(result).toMatchObject({ outcome: 'answered', message: 'Hi' });
+		expect(mocks.create.mock.calls.map((call) => call[0].model)).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5']);
+		expect(mocks.logEvent).toHaveBeenCalledWith('warn', 'agent', 'model_fallback', expect.objectContaining({ from: 'claude-opus-5-5', to: 'claude-sonnet-5-5', status: 529 }));
+		expect(turnLog()).toMatchObject({ model: 'claude-sonnet-5-5', rounds: 1 });
+	});
+
+	it('stays on the fallback for the rest of the turn, and tries it only once', async () => {
+		mocks.create
+			.mockRejectedValueOnce(apiError(429, 'Opus rate limit'))
+			.mockRejectedValueOnce(apiError(529, 'Overloaded too'));
+		await expect(runAgentTurn(turn())).rejects.toThrow('Overloaded too');
+		expect(mocks.create.mock.calls.map((call) => call[0].model)).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5']);
+	});
+
+	it('retries once on the same model after the first reply, and then succeeds', async () => {
+		mocks.create
+			.mockResolvedValueOnce(reply([toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true })]))
+			.mockRejectedValueOnce(busy(529, 'Overloaded'))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Done' }], 'end_turn'));
+		expect((await runAgentTurn(turn())).message).toBe('Done');
+		expect(mocks.create.mock.calls.map((call) => call[1].maxRetries)).toEqual([0, 0, 0]);
+	});
+
+	it('never changes models once the turn has thinking blocks', async () => {
+		mocks.create
+			.mockResolvedValueOnce(reply([{ type: 'thinking', thinking: '', signature: 'sig' }, toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true })]))
+			.mockRejectedValueOnce(busy(529, 'Overloaded'))
+			.mockRejectedValueOnce(busy(529, 'Overloaded'));
+		const result = await runAgentTurn(turn());
+		expect(result.outcome).toBe('stopped');
+		expect(mocks.create.mock.calls.map((call) => call[0].model)).toEqual(['claude-opus-5-5', 'claude-opus-5-5', 'claude-opus-5-5']);
+		expect(mocks.logEvent).not.toHaveBeenCalledWith('warn', 'agent', 'model_fallback', expect.anything());
+	});
+});
+
+describe('the turn budget', () => {
+	it('holds each request, retries included, to the time left', async () => {
+		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
+		await runAgentTurn(turn());
+		const options = mocks.create.mock.calls[0][1];
+		expect(options.timeout).toBeLessThanOrEqual(150_000);
+		expect(options.timeout).toBeGreaterThan(140_000);
+		expect(options.signal).toBeInstanceOf(AbortSignal);
+		expect(options.signal.aborted).toBe(false);
+	});
+
+	it('does not start a round it has too little time for', async () => {
+		let now = 1_000_000;
+		const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+		try {
+			mocks.create.mockImplementationOnce(async () => {
+				now += 125_000;
+				return reply([toolUse('t1', 'mark_read', { email_ids: ['e1'], read: true })]);
+			});
+			const result = await runAgentTurn(turn());
+			expect(mocks.create).toHaveBeenCalledTimes(1);
+			expect(result).toMatchObject({ outcome: 'stopped', message: 'I stopped before finishing. So far: Marked read 1 message.' });
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it('gives up on a tool call that hangs, and carries on without it', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			mocks.getEmailDetail.mockReturnValue(new Promise(() => {}));
+			mocks.create
+				.mockResolvedValueOnce(reply([toolUse('t1', 'read_email', { email_id: 'e9' })]))
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'The mail server is not answering.' }], 'end_turn'));
+			const running = runAgentTurn(turn());
+			await vi.waitFor(() => expect(mocks.getEmailDetail).toHaveBeenCalled());
+			await vi.advanceTimersByTimeAsync(60_000);
+			const result = await running;
+			expect(result.message).toBe('The mail server is not answering.');
+			expect(mocks.create.mock.calls[1][0].messages[2].content[0]).toMatchObject({
+				tool_use_id: 't1',
+				is_error: true,
+				content: expect.stringMatching(/^Timed out/)
+			});
+			expect(mocks.logEvent).toHaveBeenCalledWith('warn', 'agent', 'tool_timeout', expect.objectContaining({ tool: 'read_email', ms: 60_000 }));
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

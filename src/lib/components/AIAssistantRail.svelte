@@ -75,6 +75,20 @@
 		link?: string;
 	};
 
+	/** A session as the server keeps it, with the cards still waiting for a click. */
+	type StoredSession = {
+		messages?: { id: string; role: 'user' | 'assistant'; content: string; html: string }[];
+		pending?: PendingCard[];
+		/** A turn is still running in it. */
+		running?: boolean;
+		error?: string;
+	};
+
+	const LOST_REPLY = 'The connection dropped before the reply arrived';
+	// How long to wait for a turn whose reply never arrived: longer than a turn
+	// can run.
+	const FOLLOW_MS = 200_000;
+
 	let {
 		open,
 		aiEnabled,
@@ -92,10 +106,12 @@
 	let error = $state('');
 	let scrollEl = $state<HTMLDivElement | undefined>(undefined);
 	let sequence = 0;
+	// Bumped to call off a wait for a running turn (see followTurn).
+	let following = 0;
 
 	/**
-	 * The server owns the transcript. This is null until the first reply comes
-	 * back, which is when the session is created and named.
+	 * The server owns the transcript. This is null until the first message is
+	 * sent, which is when the server creates the session and names it.
 	 */
 	let conversationId = $state<string | null>(null);
 	let sessions = $state<SessionSummary[]>([]);
@@ -164,10 +180,65 @@
 	}
 
 	function startNewChat() {
+		following += 1;
 		conversationId = null;
 		historyOpen = false;
 		error = '';
 		messages = [];
+	}
+
+	async function fetchSession(sessionId: string): Promise<StoredSession> {
+		const response = await fetch(`/api/ai/conversations/${encodeURIComponent(sessionId)}`);
+		const data = (await response.json().catch(() => null)) as StoredSession | null;
+		if (!response.ok) throw new Error(data?.error ?? 'That conversation could not be opened');
+		return data ?? {};
+	}
+
+	function showSession(sessionId: string, data: StoredSession) {
+		conversationId = sessionId;
+		messages = (data.messages ?? []).map((message) => ({
+			id: message.id,
+			role: message.role,
+			content: message.content,
+			html: message.html || undefined
+		}));
+		// Cards go under the latest reply, whichever turn proposed them.
+		const pending = data.pending ?? [];
+		if (!pending.length) return;
+		const last = messages.findLastIndex((message) => message.role === 'assistant');
+		if (last >= 0) messages[last] = { ...messages[last], pending };
+		else messages = [...messages, { id: id(), role: 'assistant', content: '', pending }];
+	}
+
+	/**
+	 * Wait while the server is still running a turn in this session, then show
+	 * the session as stored, cards included. The turn carries on when the
+	 * browser loses its reply, and is saved when it ends. Null when the user
+	 * moved on first, or it never ended.
+	 */
+	async function followTurn(sessionId: string): Promise<StoredSession | null> {
+		const ticket = ++following;
+		const until = Date.now() + FOLLOW_MS;
+		// Offline, or the server unreachable: say so soon rather than after
+		// the whole wait.
+		let misses = 0;
+		while (Date.now() < until && misses < 3) {
+			if (typeof navigator !== 'undefined' && navigator.onLine === false) return null;
+			await new Promise((resolve) => setTimeout(resolve, 4_000));
+			if (ticket !== following || conversationId !== sessionId) return null;
+			const data = await fetchSession(sessionId).catch(() => null);
+			if (ticket !== following) return null;
+			if (!data) {
+				misses += 1;
+				continue;
+			}
+			misses = 0;
+			if (!data.running) {
+				showSession(sessionId, data);
+				return data;
+			}
+		}
+		return null;
 	}
 
 	async function openSession(sessionId: string) {
@@ -175,20 +246,14 @@
 		error = '';
 		busy = true;
 		try {
-			const response = await fetch(`/api/ai/conversations/${encodeURIComponent(sessionId)}`);
-			const data = (await response.json().catch(() => null)) as {
-				messages?: { id: string; role: 'user' | 'assistant'; content: string; html: string }[];
-				error?: string;
-			} | null;
-			if (!response.ok) throw new Error(data?.error ?? 'That conversation could not be opened');
-
-			conversationId = sessionId;
-			messages = (data?.messages ?? []).map((message) => ({
-				id: message.id,
-				role: message.role,
-				content: message.content,
-				html: message.html || undefined
-			}));
+			const data = await fetchSession(sessionId);
+			showSession(sessionId, data);
+			// A turn still running here (from another tab, or one whose reply
+			// this panel lost) shows once it ends.
+			if (data.running) {
+				await scrollToLatest();
+				await followTurn(sessionId);
+			}
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'That conversation could not be opened';
 		} finally {
@@ -226,11 +291,16 @@
 		input = '';
 		busy = true;
 		error = '';
+		following += 1;
 		await scrollToLatest();
 
 		const today = dayRange(0);
 		const tomorrow = dayRange(1);
 
+		// The reply never arrived, though the turn may well be running.
+		let lost = false;
+		// How many messages the session held before this turn, from the server.
+		let turnBase: number | null = null;
 		try {
 			const response = await fetch('/api/ai/agent', {
 				method: 'POST',
@@ -248,7 +318,15 @@
 					tomorrowStart: tomorrow.start,
 					tomorrowEnd: tomorrow.end
 				})
+			}).catch(() => {
+				lost = true;
+				throw new Error(LOST_REPLY);
 			});
+			// Sent ahead of the reply, so a reply cut off half way still says
+			// which session the turn is in, new ones included.
+			conversationId = response.headers.get('X-Conversation-Id') ?? conversationId;
+			const base = Number(response.headers.get('X-Turn-Base') ?? NaN);
+			if (Number.isInteger(base)) turnBase = base;
 			const data = (await response.json().catch(() => null)) as {
 				message?: string;
 				html?: string;
@@ -261,13 +339,18 @@
 				pending?: PendingCard[];
 			} | null;
 			if (!response.ok || !data?.message) {
-				// No JSON at all means something in front of the app answered
-				// (a proxy timeout, a refused request), so name the status.
+				// No JSON at all means the reply was cut off, or something in
+				// front of the app answered (a proxy timeout, a refused request),
+				// so name the status. Only a refused request stops the turn.
+				const timedOut = response.status === 504 || response.status === 524;
+				lost = !data && (response.ok || timedOut);
 				throw new Error(
 					data?.error ??
-						(response.status === 504 || response.status === 524
-							? 'The assistant took too long to respond'
-							: `The mail agent could not answer (HTTP ${response.status})`)
+						(lost && response.ok
+							? LOST_REPLY
+							: timedOut
+								? 'The assistant took too long to respond'
+								: `The mail agent could not answer (HTTP ${response.status})`)
 				);
 			}
 			const providers = data.taskProviders ?? [];
@@ -296,7 +379,19 @@
 			];
 			void loadSessions();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'The mail agent could not answer';
+			const reason = err instanceof Error ? err.message : 'The mail agent could not answer';
+			const sessionId = conversationId;
+			const landed = lost && sessionId ? await followTurn(sessionId) : null;
+			// The turn saves its question and reply together, so they end the
+			// stored session when it got through.
+			const stored = landed?.messages ?? [];
+			// The same words as an earlier question ("Yes") aren't proof: the
+			// session must also have grown by this turn's two messages.
+			const grew = turnBase === null || stored.length >= turnBase + 2;
+			const answered = grew && stored.at(-1)?.role === 'assistant' && stored.at(-2)?.content === prompt;
+			if (landed) void loadSessions();
+			// Not over a chat the user has moved on to meanwhile.
+			if (!answered && conversationId === sessionId) error = reason;
 		} finally {
 			busy = false;
 			await scrollToLatest();

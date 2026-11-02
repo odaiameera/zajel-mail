@@ -50,6 +50,11 @@ function prepareStmts() {
 			 VALUES (@id, @userId, @accountId, @conversationId, @kind, @payload, @expiresAt)`
 		),
 		get: db.prepare(`SELECT * FROM agent_actions WHERE id = ? AND user_id = ?`),
+		pendingIn: db.prepare(
+			`SELECT * FROM agent_actions
+			 WHERE user_id = ? AND conversation_id = ? AND status = 'pending' AND expires_at > datetime('now')
+			 ORDER BY created_at, rowid`
+		),
 		// Only a pending, unexpired action can be claimed, and only once.
 		claim: db.prepare(
 			`UPDATE agent_actions SET status = @status, decided_at = datetime('now')
@@ -106,6 +111,15 @@ export function getPendingAction(userId: string, id: string): PendingAction | nu
 	stmts().expire.run();
 	const row = stmts().get.get(id, userId) as ActionRow | undefined;
 	return row ? toAction(row) : null;
+}
+
+/**
+ * What still waits for a click in one chat session, oldest first. The panel
+ * asks for these with the session, so a card survives a reply that never
+ * reached the browser, and a reload.
+ */
+export function listPendingActions(userId: string, conversationId: string): PendingAction[] {
+	return (stmts().pendingIn.all(userId, conversationId) as ActionRow[]).map(toAction);
 }
 
 /**

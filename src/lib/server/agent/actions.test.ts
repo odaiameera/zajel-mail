@@ -14,7 +14,7 @@ vi.mock('$lib/server/auth/accounts', () => ({
 
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
-import { createPendingAction, getPendingAction, listAudit } from './store';
+import { createPendingAction, getPendingAction, listAudit, listPendingActions } from './store';
 import { decidePendingAction } from './actions';
 
 const USER = 'user-1';
@@ -79,5 +79,23 @@ describe('deciding a pending action', () => {
 		getDb().prepare(`UPDATE agent_actions SET expires_at = datetime('now', '-1 minute') WHERE id = ?`).run(action.id);
 		expect(await decidePendingAction(USER, action.id, 'confirm')).toEqual({ status: 409, message: 'This has expired' });
 		expect(mocks.sendComposed).not.toHaveBeenCalled();
+	});
+});
+
+describe('the cards a chat session still has', () => {
+	const proposeIn = (conversationId: string) =>
+		createPendingAction({ userId: USER, accountId: 'acct-1', conversationId, kind: 'send_email', payload: message });
+
+	it('lists what still waits for a click in that session, oldest first', async () => {
+		const first = proposeIn('conv-1');
+		const second = proposeIn('conv-1');
+		proposeIn('conv-2');
+		const decided = proposeIn('conv-1');
+		await decidePendingAction(USER, decided.id, 'cancel');
+		const stale = proposeIn('conv-1');
+		getDb().prepare(`UPDATE agent_actions SET expires_at = datetime('now', '-1 minute') WHERE id = ?`).run(stale.id);
+
+		expect(listPendingActions(USER, 'conv-1').map((a) => a.id)).toEqual([first.id, second.id]);
+		expect(listPendingActions('intruder', 'conv-1')).toEqual([]);
 	});
 });
