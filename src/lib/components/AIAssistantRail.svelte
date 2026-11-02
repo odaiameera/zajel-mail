@@ -103,18 +103,6 @@
 	let retentionDays = $state(7);
 	let messages = $state<ChatMessage[]>([]);
 
-	const hasConversation = $derived(messages.some((message) => message.role === 'user'));
-
-	// Starting points for an empty conversation, as plain prompts.
-	const prompts = $derived<{ action: AgentAction; label: string; prompt: string }[]>([
-		{ action: 'summarize_today', label: 'Summarize today’s mail', prompt: "Summarize today's email and highlight anything that needs my attention." },
-		{ action: 'calendar_tomorrow', label: 'What’s on tomorrow?', prompt: 'Check my calendar for tomorrow and help me prepare.' },
-		...(currentEmailId
-			? [{ action: 'summarize_current' as AgentAction, label: 'Summarize this email', prompt: 'Summarize this email and tell me what I need to do.' }]
-			: []),
-		{ action: 'propose_task', label: 'Create a task', prompt: 'Create a task from this conversation and the relevant email context.' }
-	]);
-
 	function id(): string {
 		sequence += 1;
 		return `agent-${Date.now()}-${sequence}`;
@@ -218,8 +206,8 @@
 		if (open) void loadSessions();
 	});
 
-	async function ask(action: AgentAction, suggestedPrompt?: string) {
-		const prompt = (suggestedPrompt ?? input).trim();
+	async function ask(action: AgentAction) {
+		const prompt = input.trim();
 		if (busy || !prompt) return;
 
 		messages = [...messages, { id: id(), role: 'user', content: prompt }];
@@ -675,21 +663,6 @@
 				</div>
 			{/each}
 
-			{#if !hasConversation}
-				<div class="mt-auto flex flex-col items-start gap-0.5">
-					{#each prompts as p (p.action)}
-						<button
-							type="button"
-							onclick={() => ask(p.action, p.prompt)}
-							disabled={busy || !aiEnabled}
-							class="-mx-2 cursor-pointer rounded-lg px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-surface-hover hover:text-text disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-text-secondary"
-						>
-							{p.label}
-						</button>
-					{/each}
-				</div>
-			{/if}
-
 			{#if busy}
 				<div class="flex justify-start">
 					<div class="flex items-center gap-1.5 rounded-2xl rounded-bl-md border border-border bg-surface px-4 py-3" aria-label="Zajel is thinking">
@@ -702,13 +675,18 @@
 		</div>
 		{/if}
 
-		<div class="shrink-0 border-t border-border p-3">
+		<div class="shrink-0 px-3 pb-3">
 			{#if error}
 				<p class="mb-2 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>
 			{/if}
-			<form class="flex items-end gap-2 rounded-2xl border border-border bg-surface p-2 transition-colors focus-within:border-accent/60" onsubmit={(event) => { event.preventDefault(); ask('chat'); }}>
-				<textarea bind:value={input} rows="1" maxlength="1500" aria-label="Message Zajel" disabled={busy || !aiEnabled} onkeydown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); ask('chat'); } }} class="max-h-28 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-sm text-text outline-none placeholder:text-text-tertiary disabled:opacity-50"></textarea>
-				<button type="submit" disabled={busy || !aiEnabled || !input.trim()} aria-label="Send message" class="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-accent text-white transition-all hover:bg-accent-hover disabled:cursor-default disabled:opacity-40">
+			<!--
+				The frame is the field: the textarea inside opts out of the global
+				focus ring (a textarea is :focus-visible even on a mouse click), and
+				the frame's border lifts a step instead.
+			-->
+			<form class="flex items-end gap-2 rounded-3xl border border-border bg-surface-hover py-1 pl-4 pr-1 transition-colors focus-within:border-text-tertiary/50" onsubmit={(event) => { event.preventDefault(); ask('chat'); }}>
+				<textarea bind:value={input} rows="1" maxlength="1500" aria-label="Message Zajel" disabled={busy || !aiEnabled} onkeydown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); ask('chat'); } }} class="field-sizing-content max-h-28 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 text-text outline-none focus-visible:outline-none! placeholder:text-text-tertiary disabled:opacity-50"></textarea>
+				<button type="submit" disabled={busy || !aiEnabled || !input.trim()} aria-label="Send message" class="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover disabled:cursor-default disabled:bg-transparent disabled:text-text-tertiary">
 					<Icon name="send" size={16} />
 				</button>
 			</form>
