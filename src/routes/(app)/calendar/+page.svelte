@@ -203,6 +203,9 @@
 			description: ev.description,
 			location: ev.location,
 			rrule: ev.rrule,
+			// A drag moves the series; it never edits its recurrence, so the
+			// server keeps the stored RRULE rather than this lossy model.
+			keepRecurrence: true,
 			alarms: ev.alarms,
 			attendees: ev.attendees,
 			status: ev.status

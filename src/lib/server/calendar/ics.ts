@@ -98,24 +98,47 @@ function timeToWall(t: ICAL.Time): WallClock {
 	};
 }
 
-function wallKey(wc: WallClock, allDay: boolean): string {
+export function wallKey(wc: WallClock, allDay: boolean): string {
 	const ics = wallClockToIcs(wc);
 	return allDay ? ics.slice(0, 8) : ics;
 }
 
-function propZone(prop: ICAL.Property, time: ICAL.Time): string {
-	const tzid = prop.getParameter('tzid');
-	if (typeof tzid === 'string' && tzid) {
-		// Maps Windows/Exchange TZIDs to IANA; unknown zones degrade to UTC
-		// rather than crashing the parse.
-		return normalizeTzid(tzid) ?? 'UTC';
-	}
-	// Z-suffixed → utc zone; floating → treat as UTC.
-	void time;
-	return 'UTC';
+/** Wall key → wall clock (midnight for a date key); null for a malformed key. */
+export function keyToWall(key: string): WallClock | null {
+	const iso = keyToIso(key);
+	return parseWallClock(iso.length === 10 ? `${iso}T00:00` : iso);
 }
 
-function recurToRule(recur: ICAL.Recur): RecurrenceRule | null {
+/**
+ * The zone a date-time value was written in: its TZID parameter (Windows
+ * names mapped to IANA), 'UTC' for a Z suffix, null when it is floating or
+ * the TZID is unknown — the wall text then stands as written.
+ */
+function valueZone(prop: ICAL.Property, time: ICAL.Time): string | null {
+	const tzid = prop.getParameter('tzid');
+	if (typeof tzid === 'string' && tzid) return normalizeTzid(tzid);
+	return time.zone === ICAL.Timezone.utcTimezone ? 'UTC' : null;
+}
+
+function propZone(prop: ICAL.Property, time: ICAL.Time): string {
+	// Unknown zones and floating times degrade to UTC rather than crashing the parse.
+	return valueZone(prop, time) ?? 'UTC';
+}
+
+/**
+ * Wall clock of a date-time value expressed in `tzid`. EXDATE, RDATE and
+ * RECURRENCE-ID may be written in UTC or another zone (RFC 5545 §3.8.5.1),
+ * while occurrences are keyed in the master's zone; without this conversion
+ * such a value never matches the occurrence it names.
+ */
+function wallIn(prop: ICAL.Property, time: ICAL.Time, tzid: string): WallClock {
+	const wc = timeToWall(time);
+	const zone = valueZone(prop, time);
+	if (time.isDate || !zone || zone === tzid) return wc;
+	return utcToWallClock(wallClockToUtc(wc, zone), tzid);
+}
+
+function recurToRule(recur: ICAL.Recur, tzid: string): RecurrenceRule | null {
 	const freq = recur.freq as RecurrenceRule['freq'];
 	if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(freq)) return null;
 	const rule: RecurrenceRule = { freq, interval: recur.interval || 1 };
@@ -135,7 +158,13 @@ function recurToRule(recur: ICAL.Recur): RecurrenceRule | null {
 	if (recur.count) rule.count = recur.count;
 	if (recur.until) {
 		const u = recur.until;
-		rule.until = `${String(u.year).padStart(4, '0')}-${String(u.month).padStart(2, '0')}-${String(u.day).padStart(2, '0')}`;
+		let { year, month, day } = u;
+		// A UTC UNTIL (Google's and our own form) names an instant; the model's
+		// date is the local day that instant falls on in the series' zone.
+		if (!u.isDate && u.zone === ICAL.Timezone.utcTimezone && tzid !== 'UTC') {
+			({ year, month, day } = utcToWallClock(Date.UTC(u.year, u.month - 1, u.day, u.hour, u.minute, u.second), tzid));
+		}
+		rule.until = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 	}
 	return rule;
 }
@@ -207,7 +236,7 @@ function parseVEventUnsafe(vevent: ICAL.Component): VEventData | null {
 		const rruleVal = vevent.getFirstPropertyValue('rrule') as ICAL.Recur | null;
 		if (rruleVal && typeof rruleVal.toString === 'function') {
 			rruleRaw = rruleVal.toString();
-			rrule = recurToRule(rruleVal);
+			rrule = recurToRule(rruleVal, tzid);
 		}
 	} catch {
 		rruleRaw = null;
@@ -220,7 +249,7 @@ function parseVEventUnsafe(vevent: ICAL.Component): VEventData | null {
 			try {
 				for (const v of prop.getValues() as ICAL.Time[]) {
 					if (v && typeof v === 'object' && 'year' in v) {
-						keys.push(wallKey(timeToWall(v), allDay));
+						keys.push(wallKey(allDay ? timeToWall(v) : wallIn(prop, v, tzid), allDay));
 					}
 				}
 			} catch {
@@ -282,7 +311,8 @@ function parseVEventUnsafe(vevent: ICAL.Component): VEventData | null {
 		if (rid && typeof rid === 'object' && 'year' in rid) {
 			ridIsDate = !!rid.isDate;
 			recurrenceId = wallKey(timeToWall(rid), ridIsDate);
-			ridTzid = ridIsDate ? 'UTC' : propZone(ridProp, rid);
+			// Kept as written here; parseIcs re-keys it in the master's zone.
+			ridTzid = ridIsDate ? 'UTC' : (valueZone(ridProp, rid) ?? undefined);
 		}
 	}
 
@@ -357,9 +387,44 @@ export function parseIcs(ics: string): ParsedObject {
 		if (data.recurrenceId) overrides.push(data);
 		else if (!master) master = data;
 	}
+	if (master) for (const o of overrides) alignOverrideKey(o, master);
 	const methodRaw = comp.getFirstPropertyValue('method');
 	const method = typeof methodRaw === 'string' && methodRaw ? methodRaw.toUpperCase() : null;
 	return { master, overrides, method };
+}
+
+/**
+ * Re-key an override in the master's terms. A RECURRENCE-ID may be written
+ * in another zone, or as a date-time on an all-day series (sloppy
+ * producers); the master indexes its occurrences by its own zone and
+ * date-ness, so the override is converted once here and every later
+ * comparison — expansion, edits, deletes, iMIP merges — is exact.
+ */
+function alignOverrideKey(o: VEventData, master: Pick<VEventData, 'tzid' | 'allDay'>): void {
+	if (!o.recurrenceId) return;
+	if (master.allDay) {
+		o.recurrenceId = o.recurrenceId.slice(0, 8);
+		o.ridIsDate = true;
+		o.ridTzid = 'UTC';
+		return;
+	}
+	if (!o.ridIsDate && o.ridTzid && o.ridTzid !== master.tzid) {
+		const wc = keyToWall(o.recurrenceId);
+		if (wc) o.recurrenceId = wallKey(utcToWallClock(wallClockToUtc(wc, o.ridTzid), master.tzid), false);
+	}
+	o.ridTzid = master.tzid;
+}
+
+/**
+ * One VEVENT component read as an override of `master` (keyed like the
+ * master's occurrences), or null when it has no RECURRENCE-ID. For callers
+ * that edit a stored object component by component (iMIP merges).
+ */
+export function parseOverride(vevent: ICAL.Component, master: Pick<VEventData, 'tzid' | 'allDay'>): VEventData | null {
+	const data = parseVEvent(vevent);
+	if (!data?.recurrenceId) return null;
+	alignOverrideKey(data, master);
+	return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -587,7 +652,7 @@ export function expandToInstances(
 
 			// Overrides moved into the range from an occurrence outside it.
 			for (const o of overrides) {
-				const key = o.recurrenceId as string;
+				const key = normKey(o.recurrenceId as string);
 				if (emittedOverrideKeys.has(key)) continue;
 				const startMs = dataStartMs(o, o.startWall);
 				const endMs = dataEndMs(o, o.startWall);
@@ -607,6 +672,20 @@ export function expandToInstances(
 	}
 
 	return out;
+}
+
+/**
+ * True when `key` names an occurrence the series actually generates (RRULE
+ * or RDATE; EXDATEs are ignored). Overrides are kept only while this holds —
+ * one pointing at no occurrence would render as a stray extra event.
+ */
+export function occurrenceExists(master: VEventData, key: string): boolean {
+	const wc = keyToWall(key);
+	if (!wc) return false;
+	const at = master.allDay ? Date.UTC(wc.year, wc.month - 1, wc.day) : wallClockToUtc(wc, master.tzid);
+	const want = keyToIso(master.allDay ? key.slice(0, 8) : key);
+	const probe: ParsedObject = { master: { ...master, exdates: [] }, overrides: [], method: null };
+	return expandToInstances(probe, '', '', at - 86400000, at + 86400000).some((i) => i.recurrenceId === want);
 }
 
 // ---------------------------------------------------------------------------
@@ -646,19 +725,33 @@ function dtLine(name: string, data: VEventData, wc: WallClock): string {
 	return `${name};TZID=${data.tzid}:${wallClockToIcs(wc)}`;
 }
 
-export function buildRRuleString(rule: RecurrenceRule, allDay = false): string {
+/** `YYYYMMDDTHHMMSSZ` for a UTC instant. */
+function icsUtc(ms: number): string {
+	return new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * RRULE UNTIL for a series that ends on `untilIso` (YYYY-MM-DD, inclusive).
+ * RFC 5545: a DATE when DTSTART is a DATE — a DATE-TIME there makes the whole
+ * series invalid for strict consumers. Otherwise a UTC instant: the last
+ * second of that day *in the series' own zone*. A bare `T235959Z` ends the
+ * day hours early east of UTC and hours late west of it, which drops or
+ * keeps a whole occurrence at the boundary.
+ */
+export function untilValue(untilIso: string, allDay: boolean, tzid: string): string {
+	if (allDay) return untilIso.replace(/-/g, '');
+	const [year, month, day] = untilIso.split('-').map(Number);
+	return icsUtc(wallClockToUtc({ year, month, day, hour: 23, minute: 59, second: 59 }, tzid));
+}
+
+export function buildRRuleString(rule: RecurrenceRule, allDay = false, tzid = 'UTC'): string {
 	const parts = [`FREQ=${rule.freq}`];
 	if (rule.interval > 1) parts.push(`INTERVAL=${rule.interval}`);
 	if (rule.byDay?.length) parts.push(`BYDAY=${rule.byDay.join(',')}`);
 	if (rule.byDayOrdinal) parts.push(`BYDAY=${rule.byDayOrdinal}`);
 	if (rule.byMonthDay) parts.push(`BYMONTHDAY=${rule.byMonthDay}`);
 	if (rule.count) parts.push(`COUNT=${rule.count}`);
-	else if (rule.until) {
-		// RFC 5545: UNTIL must be DATE when DTSTART is DATE — a DATE-TIME
-		// here makes the whole series invalid for strict consumers.
-		const d = rule.until.replace(/-/g, '');
-		parts.push(`UNTIL=${allDay ? d : `${d}T235959Z`}`);
-	}
+	else if (rule.until) parts.push(`UNTIL=${untilValue(rule.until, allDay, tzid)}`);
 	return parts.join(';');
 }
 
@@ -795,7 +888,7 @@ export function payloadToData(
 		durationMs,
 		durationDays,
 		rrule,
-		rruleRaw: rrule ? buildRRuleString(rrule, allDay) : null,
+		rruleRaw: rrule ? buildRRuleString(rrule, allDay, tzid) : null,
 		exdates: base?.exdates ?? [],
 		rdates: [],
 		alarms: payload.alarms ?? [],

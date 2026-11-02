@@ -149,6 +149,24 @@ describe('buildDeleteProposal', () => {
 		});
 		expect(proposal.summary).toContain('(untitled event)');
 	});
+
+	it('names the occurrence of a repeating event, in its own zone, and carries it to the confirm step', () => {
+		const proposal = buildDeleteProposal({
+			id: 'series',
+			title: 'Standup',
+			start: '2026-11-03T22:30:00.000Z',
+			allDay: false,
+			recurrenceId: '2026-11-04T01:30:00',
+			timeZone: 'Asia/Amman'
+		});
+		expect(proposal.target).toMatchObject({ id: 'series', recurrenceId: '2026-11-04T01:30:00' });
+		expect(proposal.target?.start).toBe('04 Nov 2026, 01:30 (Asia/Amman) · this occurrence only');
+		expect(proposal.summary).toContain('one occurrence of “Standup”');
+
+		const confirmed = parseConfirmedProposal({ action: 'delete', target: proposal.target }, TZ);
+		expect(confirmed?.target?.recurrenceId).toBe('2026-11-04T01:30:00');
+		expect(parseConfirmedProposal({ action: 'delete', target: { id: 'series', recurrenceId: 'all of them' } }, TZ)?.target?.recurrenceId).toBeNull();
+	});
 });
 
 describe('parseConfirmedProposal', () => {

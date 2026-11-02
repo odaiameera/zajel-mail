@@ -38,7 +38,14 @@ export interface ProposedEvent {
 export interface ProposedDeletion {
 	id: string;
 	title: string;
+	/** Human-readable start in the event's own zone; the card prints it verbatim. */
 	start: string;
+	/**
+	 * The one occurrence this is about when the event repeats (the id is
+	 * shared by every occurrence of a series). Null means the whole object —
+	 * which the confirm route refuses for a repeating event.
+	 */
+	recurrenceId: string | null;
 }
 
 export interface CalendarProposal {
@@ -189,15 +196,49 @@ export function buildDeleteProposal(event: {
 	title: string;
 	start: string;
 	allDay: boolean;
+	recurrenceId?: string | null;
+	timeZone?: string | null;
 }): CalendarProposal {
-	const when = event.allDay ? event.start.slice(0, 10) : event.start.replace('T', ' ').slice(0, 16);
+	const title = event.title || '(untitled event)';
+	const recurrenceId = event.recurrenceId ?? null;
+	const when = describeStart(event.start, event.allDay, event.timeZone ?? null);
 	return {
 		action: 'delete',
-		summary: `Delete “${event.title || '(untitled event)'}” on ${when}`,
+		summary: `Delete ${recurrenceId ? 'one occurrence of ' : ''}“${title}” on ${when}`,
 		event: null,
-		target: { id: event.id, title: event.title || '(untitled event)', start: event.start }
+		target: {
+			id: event.id,
+			title,
+			start: recurrenceId ? `${when} · this occurrence only` : when,
+			recurrenceId
+		}
 	};
 }
+
+/**
+ * An instance start as the user would say it: the date for an all-day event,
+ * otherwise the local date and time in the event's zone. The raw value is a
+ * UTC instant, which reads as the wrong day for an evening or early-morning
+ * event anywhere but UTC.
+ */
+function describeStart(start: string, allDay: boolean, timeZone: string | null): string {
+	if (allDay) return start.slice(0, 10);
+	const at = new Date(start);
+	if (isNaN(at.getTime())) return start;
+	const zone = timeZone && validTimeZone(timeZone) ? timeZone : 'UTC';
+	const text = new Intl.DateTimeFormat('en-GB', {
+		timeZone: zone,
+		year: 'numeric',
+		month: 'short',
+		day: '2-digit',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false
+	}).format(at);
+	return `${text} (${zone})`;
+}
+
+const OCCURRENCE_ID = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?$/;
 
 /**
  * Re-validate a proposal arriving from the browser at confirm time.
@@ -213,6 +254,7 @@ export function parseConfirmedProposal(raw: unknown, fallbackTimeZone: string): 
 		const target = (source.target ?? {}) as Record<string, unknown>;
 		const id = text(target.id, 300);
 		if (!id) return null;
+		const recurrenceId = text(target.recurrenceId, 40);
 		return {
 			action: 'delete',
 			summary: text(source.summary, 300) || `Delete event ${id}`,
@@ -220,7 +262,8 @@ export function parseConfirmedProposal(raw: unknown, fallbackTimeZone: string): 
 			target: {
 				id,
 				title: text(target.title, 200),
-				start: text(target.start, 40)
+				start: text(target.start, 80),
+				recurrenceId: OCCURRENCE_ID.test(recurrenceId) ? recurrenceId : null
 			}
 		};
 	}

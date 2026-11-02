@@ -102,6 +102,13 @@ export interface EventWritePayload {
 	description?: string;
 	location?: string;
 	rrule?: RecurrenceRule | null;
+	/**
+	 * Updates only: true when the recurrence controls were not touched, so the
+	 * server keeps the stored RRULE verbatim. `rrule` is a lossy model (no
+	 * BYMONTH, BYSETPOS, …); rebuilding a series from it reshapes rules the
+	 * user never meant to change.
+	 */
+	keepRecurrence?: boolean;
 	alarms?: number[];
 	attendees?: EventAttendee[];
 	status?: EventStatus;

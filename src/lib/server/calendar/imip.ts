@@ -1,16 +1,17 @@
 import ICAL from 'ical.js';
 import type { AuthState } from '$lib/jmap/types';
 import type { CalendarInfo, EventAttendee, EventInstance, RecurrenceRule } from '$lib/calendar/types';
-import { expandToInstances, parseIcs } from './ics';
+import { expandToInstances, keyToIso, parseIcs, parseOverride } from './ics';
 import { wallClockToUtc } from './tz';
 import {
 	calendarHref,
+	deleteObject,
 	getObject,
 	hrefToId,
 	putObject,
-	CalDAVError
+	CalDAVError,
+	type DavObject
 } from './caldav';
-import { listCalendarsWithMeta } from './service';
 
 /**
  * iMIP (RFC 6047) support: calendar invitations arrive as `text/calendar`
@@ -21,6 +22,13 @@ import { listCalendarsWithMeta } from './service';
 export interface InvitationSummary {
 	uid: string;
 	method: string | null;
+	/**
+	 * Set when the file is about ONE occurrence of a series — a VEVENT with a
+	 * RECURRENCE-ID and no master, which is how organizers send a change to,
+	 * or the cancellation of, a single meeting in a series. The client-facing
+	 * occurrence id (`YYYY-MM-DD[THH:mm:ss]`).
+	 */
+	recurrenceId: string | null;
 	event: {
 		title: string;
 		allDay: boolean;
@@ -68,6 +76,7 @@ export function summarizeInvitation(ics: string, userEmail: string): InvitationS
 	return {
 		uid: data.uid,
 		method: parsed.method,
+		recurrenceId: !parsed.master && data.recurrenceId ? keyToIso(data.recurrenceId) : null,
 		event: {
 			title: data.summary,
 			allDay: inst.allDay,
@@ -118,6 +127,61 @@ export function patchInvitationForImport(
 	return comp.toString();
 }
 
+function clone(comp: ICAL.Component): ICAL.Component {
+	return new ICAL.Component(structuredClone(comp.toJSON()));
+}
+
+/**
+ * Fold an invitation about ONE occurrence (an override-only file, see
+ * {@link InvitationSummary.recurrenceId}) into the stored series. Replacing
+ * the object instead — what a plain PUT does — would turn a whole series
+ * into that one occurrence, or delete it for a cancellation.
+ *
+ * Byte-preserving like the import itself: the stored object is edited as
+ * components, never regenerated. A REQUEST replaces the stored override for
+ * that occurrence (or adds one); a CANCEL drops it and copies the organizer's
+ * RECURRENCE-ID — zone and all — onto the master as an EXDATE. Returns null
+ * when the stored copy has no master to fold into.
+ */
+export function mergeOccurrence(storedIcs: string, incomingIcs: string, method: string | null): string | null {
+	let stored: ICAL.Component;
+	let incoming: ICAL.Component;
+	try {
+		stored = new ICAL.Component(ICAL.parse(storedIcs));
+		incoming = new ICAL.Component(ICAL.parse(incomingIcs));
+	} catch {
+		return null;
+	}
+	const master = parseIcs(storedIcs).master;
+	const masterComp = stored.getAllSubcomponents('vevent').find((v) => !v.hasProperty('recurrence-id'));
+	if (!master || !masterComp) return null;
+
+	for (const inc of incoming.getAllSubcomponents('vevent')) {
+		const ridProp = inc.getFirstProperty('recurrence-id');
+		const data = parseOverride(inc, master);
+		if (!ridProp || !data) continue;
+		// Whatever the stored copy said about this occurrence is superseded.
+		for (const v of [...stored.getAllSubcomponents('vevent')]) {
+			if (v !== masterComp && parseOverride(v, master)?.recurrenceId === data.recurrenceId) {
+				stored.removeSubcomponent(v);
+			}
+		}
+		if (method === 'CANCEL' || data.status === 'cancelled') {
+			const exdate = ridProp.toJSON() as unknown[];
+			exdate[0] = 'exdate';
+			masterComp.addProperty(new ICAL.Property(exdate));
+		} else {
+			stored.addSubcomponent(clone(inc));
+		}
+	}
+	// Zones the incoming occurrence refers to that the stored object lacks.
+	const have = new Set(stored.getAllSubcomponents('vtimezone').map((t) => String(t.getFirstPropertyValue('tzid') ?? '')));
+	for (const tz of incoming.getAllSubcomponents('vtimezone')) {
+		if (!have.has(String(tz.getFirstPropertyValue('tzid') ?? ''))) stored.addSubcomponent(clone(tz));
+	}
+	return stored.toString();
+}
+
 export interface ExistingCopy {
 	calendarId: string;
 	eventId: string;
@@ -153,7 +217,21 @@ export async function findExistingCopy(
 	return results.find((r) => r !== null) ?? null;
 }
 
-/** Import (or re-import with a new RSVP) an invitation into a calendar. */
+/** The stored object at `href`, or null when there is none (other failures propagate). */
+async function storedObject(auth: AuthState, href: string): Promise<DavObject | null> {
+	try {
+		return await getObject(auth, href);
+	} catch (err) {
+		if (err instanceof CalDAVError && err.status === 404) return null;
+		throw err;
+	}
+}
+
+/**
+ * Import (or re-import with a new RSVP) an invitation into a calendar. A
+ * file about one occurrence of a series the user already holds is folded
+ * into that series; a cancellation of an occurrence removes just it.
+ */
 export async function importInvitation(
 	auth: AuthState,
 	userEmail: string,
@@ -167,10 +245,28 @@ export async function importInvitation(
 	if (!patched) throw new CalDAVError('Could not parse the calendar file', 422);
 
 	const href = `${calendarHref(userEmail, calendarId)}${encodeURIComponent(summary.uid)}.ics`;
+	const result = { eventId: hrefToId(href), uid: summary.uid };
+
+	if (summary.recurrenceId) {
+		const stored = await storedObject(auth, href);
+		const merged = stored ? mergeOccurrence(stored.ics, patched, summary.method) : null;
+		if (stored && merged) {
+			// Conditional: a series changed from another device must not be
+			// overwritten with a merge made against its previous version.
+			await putObject(auth, href, merged, stored.etag);
+			return result;
+		}
+		if (summary.method === 'CANCEL') {
+			// Nothing to fold into — either the series isn't here, or what is
+			// here is only this occurrence, which the organizer just cancelled.
+			if (!stored) throw new CalDAVError('This event is not on your calendar', 404);
+			await deleteObject(auth, href);
+			return result;
+		}
+	}
+
 	// Unconditional PUT: updated invitations (SEQUENCE bumps) and RSVP
 	// changes overwrite the previous copy by design.
 	await putObject(auth, href, patched, undefined);
-	return { eventId: hrefToId(href), uid: summary.uid };
+	return result;
 }
-
-export { listCalendarsWithMeta };

@@ -27,10 +27,13 @@ import {
 	buildIcs,
 	expandToInstances,
 	isoToKey,
+	keyToWall,
 	parseIcs,
 	payloadToData,
+	untilValue,
 	type VEventData
 } from './ics';
+import { applySeriesEdit, mergeAttendees, tailRRule } from './series';
 import { getCalendarMetaForUser } from '../db/queries/calendar-meta';
 
 /**
@@ -171,21 +174,9 @@ export async function createEvent(
  * from the lossy UI model — parts like BYSETPOS/BYMONTH/WKST survive, and
  * rules the UI can't represent at all still get truncated.
  */
-function truncateRRuleRaw(raw: string, untilIso: string, allDay: boolean): string {
-	const d = untilIso.replace(/-/g, '');
-	const until = allDay ? d : `${d}T235959Z`;
+function truncateRRuleRaw(raw: string, untilIso: string, allDay: boolean, tzid: string): string {
 	const kept = raw.split(';').filter((p) => !/^(UNTIL|COUNT)=/i.test(p.trim()));
-	return [...kept, `UNTIL=${until}`].join(';');
-}
-
-/** True when two wall clocks + recurrence shapes match (edit keeps exceptions). */
-function recurrenceShapeUnchanged(a: VEventData, b: VEventData): boolean {
-	return (
-		a.rruleRaw === b.rruleRaw &&
-		a.allDay === b.allDay &&
-		JSON.stringify(a.startWall) === JSON.stringify(b.startWall) &&
-		a.tzid === b.tzid
-	);
+	return [...kept, `UNTIL=${untilValue(untilIso, allDay, tzid)}`].join(';');
 }
 
 export async function updateEvent(
@@ -208,6 +199,7 @@ export async function updateEvent(
 
 	if (scope === 'instance' && recurrenceId) {
 		const key = isoToKey(recurrenceId);
+		const existing = parsed.overrides.find((o) => o.recurrenceId === key) ?? master;
 		const override = payloadToData(payload, master.uid, {
 			recurrenceId: key,
 			// RECURRENCE-ID must name the occurrence in the master's zone —
@@ -221,6 +213,11 @@ export async function updateEvent(
 		// Single-occurrence edits never carry their own recurrence.
 		override.rrule = null;
 		override.rruleRaw = null;
+		// What the client doesn't send (RSVPs, names, TRANSP/CLASS) stays as
+		// this occurrence had it.
+		override.attendees = mergeAttendees(override.attendees, existing.attendees);
+		override.transp = existing.transp;
+		override.icalClass = existing.icalClass;
 		const others = parsed.overrides.filter((o) => o.recurrenceId !== key);
 		await putObject(auth, href, buildIcs(master, [...others, override]), obj.etag);
 		return { id };
@@ -229,6 +226,7 @@ export async function updateEvent(
 	if (scope === 'following' && recurrenceId) {
 		const key = isoToKey(recurrenceId);
 		const splitDate = keyToDateMs(key);
+		const slot = keyToWall(key) ?? master.startWall;
 		// Truncate the original series to the day before the split point.
 		const truncated: VEventData = {
 			...master,
@@ -244,21 +242,42 @@ export async function updateEvent(
 			master.startWall.day
 		);
 		if (master.rruleRaw) {
-			truncated.rruleRaw = truncateRRuleRaw(master.rruleRaw, untilIso, master.allDay);
+			truncated.rruleRaw = truncateRRuleRaw(master.rruleRaw, untilIso, master.allDay, master.tzid);
 			if (master.rrule) truncated.rrule = { ...master.rrule, until: untilIso, count: undefined };
 		}
 		const keptOverrides = parsed.overrides.filter(
 			(o) => keyToDateMs(o.recurrenceId as string) < splitDate
 		);
 
-		// New series from the split point with the edited shape.
+		// The new series is the tail of the old one — same rule (a COUNT less
+		// what the head used), same zone and organizer, the exceptions from the
+		// split onwards — with the edit applied to it exactly as "All events"
+		// applies one: relative to the occurrence the user opened, so nothing
+		// re-anchors and no exception is lost (see series.ts).
 		const newUid = randomUUID();
-		const newData = payloadToData(payload, newUid, {
-			organizer: payload.attendees?.length ? { email: userEmail, name: organizerName } : master.organizer
+		const tail: VEventData = {
+			...master,
+			uid: newUid,
+			startWall: slot,
+			sequence: 0,
+			created: null,
+			rruleRaw: tailRRule(master, slot),
+			exdates: master.exdates.filter((e) => keyToDateMs(e) >= splitDate),
+			rdates: master.rdates.filter((e) => keyToDateMs(e) >= splitDate)
+		};
+		const laterOverrides = parsed.overrides
+			.filter((o) => keyToDateMs(o.recurrenceId as string) >= splitDate)
+			.map((o) => ({ ...o, uid: newUid }));
+		const edited = payloadToData(payload, newUid, {
+			organizer:
+				master.organizer ??
+				(payload.attendees?.length ? { email: userEmail, name: organizerName } : null)
 		});
-		if (!newData) throw new CalDAVError('Invalid event payload', 400);
+		if (!edited) throw new CalDAVError('Invalid event payload', 400);
+		edited.attendees = mergeAttendees(edited.attendees, master.attendees);
+		const split = applySeriesEdit(tail, laterOverrides, edited, payload, recurrenceId);
 		const newHref = newObjectHref(userEmail, payload.calendarId || currentCalendarId || '', newUid);
-		await putObject(auth, newHref, buildIcs(newData), null);
+		await putObject(auth, newHref, buildIcs(split.master, split.overrides), null);
 
 		if (splitDate <= masterStartMs) {
 			// Nothing left of the original series.
@@ -270,33 +289,25 @@ export async function updateEvent(
 	}
 
 	// scope === 'all' (also the path for non-recurring events)
-	const next = payloadToData(payload, master.uid, {
+	const edited = payloadToData(payload, master.uid, {
 		sequence: master.sequence + 1,
 		created: master.created,
 		organizer:
 			master.organizer ??
 			(payload.attendees?.length ? { email: userEmail, name: organizerName } : null)
 	});
-	if (!next) throw new CalDAVError('Invalid event payload', 400);
+	if (!edited) throw new CalDAVError('Invalid event payload', 400);
+	edited.attendees = mergeAttendees(edited.attendees, master.attendees);
+	// Properties the UI doesn't model travel through an edit untouched.
+	edited.transp = master.transp;
+	edited.icalClass = master.icalClass;
 
-	// The UI's recurrence model is lossy (no BYSETPOS, BYMONTH, WKST, …).
-	// When the user didn't touch the recurrence — title edits, drag moves —
-	// keep the original RRULE verbatim instead of a degraded rebuild that
-	// would reshape or explode the series.
-	if (
-		next.rrule &&
-		master.rruleRaw &&
-		JSON.stringify(next.rrule) === JSON.stringify(master.rrule)
-	) {
-		next.rruleRaw = master.rruleRaw;
-	}
-
+	let next = edited;
 	let overrides: VEventData[] = [];
-	if (next.rruleRaw && recurrenceShapeUnchanged(master, next)) {
-		// Pure metadata edit — keep per-occurrence exceptions intact.
-		next.exdates = master.exdates;
-		next.rdates = master.rdates;
-		overrides = parsed.overrides;
+	if (master.rruleRaw || master.rdates.length > 0) {
+		// A series is edited relative to the occurrence the user opened: the
+		// payload's start is that occurrence's, never the series' new anchor.
+		({ master: next, overrides } = applySeriesEdit(master, parsed.overrides, edited, payload, recurrenceId));
 	}
 
 	const targetCalendarId = payload.calendarId || currentCalendarId || '';
@@ -391,7 +402,7 @@ export async function deleteEvent(
 		rdates: master.rdates.filter((e) => keyToDateMs(e) < splitDate)
 	};
 	if (master.rruleRaw) {
-		next.rruleRaw = truncateRRuleRaw(master.rruleRaw, untilIso, master.allDay);
+		next.rruleRaw = truncateRRuleRaw(master.rruleRaw, untilIso, master.allDay, master.tzid);
 		if (master.rrule) next.rrule = { ...master.rrule, until: untilIso, count: undefined };
 	}
 	const overrides = parsed.overrides.filter((o) => keyToDateMs(o.recurrenceId as string) < splitDate);
