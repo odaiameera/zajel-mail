@@ -5,6 +5,7 @@
 	import { openCompose } from '$lib/stores/compose';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
+import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	import { browser } from '$app/environment';
 	import { getContext, tick } from 'svelte';
 	import { renderEmailBodyHtml } from '$lib/utils/email-body';
@@ -543,12 +544,15 @@
 		});
 	}
 
-	// Mark-as-read after a second of viewing. An $effect keyed on the email
-	// id (not onMount) because in the reading pane this component stays
-	// mounted while the user moves between messages.
+	// Mark-as-read after Settings → Messages → "Mark as read after" (the
+	// layout passes it as markReadDelay, in milliseconds; 1 s until it is
+	// set). An $effect keyed on the email id (not onMount) because in the
+	// reading pane this component stays mounted while the user moves
+	// between messages.
 	$effect(() => {
 		const id = email.id;
 		if (email.keywords['$seen']) return;
+		const delay = typeof page.data.markReadDelay === 'number' ? page.data.markReadDelay : DEFAULT_MARK_READ_DELAY;
 		const timer = setTimeout(async () => {
 			await fetch(`/api/email/${id}`, {
 				method: 'PATCH',
@@ -557,7 +561,7 @@
 			});
 			email.keywords['$seen'] = true;
 			invalidateAll();
-		}, 1000);
+		}, delay);
 		return () => clearTimeout(timer);
 	});
 
