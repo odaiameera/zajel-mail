@@ -61,9 +61,16 @@ function prepareStmts() {
 		),
 		remindersDue: db.prepare(
 			`SELECT id, user_id, account_id, email_id, text, due_at FROM agent_reminders
-			 WHERE sent_at IS NULL AND due_at <= ? ORDER BY due_at LIMIT 50`
+			 WHERE sent_at IS NULL AND due_at <= @now AND (claimed_at IS NULL OR claimed_at < @stale)
+			 ORDER BY due_at LIMIT 50`
 		),
-		reminderSent: db.prepare(`UPDATE agent_reminders SET sent_at = datetime('now') WHERE id = ? AND sent_at IS NULL`),
+		reminderClaim: db.prepare(
+			`UPDATE agent_reminders SET claimed_at = @now
+			 WHERE id = @id AND sent_at IS NULL AND (claimed_at IS NULL OR claimed_at < @stale)`
+		),
+		reminderSent: db.prepare(`UPDATE agent_reminders SET sent_at = datetime('now'), claimed_at = NULL WHERE id = ?`),
+		reminderRelease: db.prepare(`UPDATE agent_reminders SET claimed_at = NULL WHERE id = ?`),
+		buttonRelease: db.prepare(`UPDATE telegram_buttons SET used_at = NULL WHERE id = ?`),
 		stateGet: db.prepare(`SELECT value FROM telegram_state WHERE key = ?`),
 		stateSet: db.prepare(
 			`INSERT INTO telegram_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`
@@ -72,6 +79,37 @@ function prepareStmts() {
 }
 function stmts() {
 	return (_stmts ??= prepareStmts());
+}
+
+// Apart from the rest, so that if migration 025 ever failed to apply, only
+// urgent-alert queueing would break, not links, buttons or reminders.
+let _outbox: ReturnType<typeof prepareOutbox> | null = null;
+function prepareOutbox() {
+	const db = getDb();
+	return {
+		queue: db.prepare(
+			`INSERT INTO telegram_outbox (id, kind, user_id, account_id, email_id, html, summary, next_attempt_at, created_at)
+			 VALUES (@id, @kind, @userId, @accountId, @emailId, @html, @summary, @now, @now)
+			 ON CONFLICT (account_id, email_id) DO NOTHING`
+		),
+		due: db.prepare(
+			`SELECT id, kind, user_id, account_id, email_id, html, summary, attempts, created_at FROM telegram_outbox
+			 WHERE done_at IS NULL AND next_attempt_at <= ? AND (? IS NULL OR user_id = ?)
+			 ORDER BY created_at LIMIT 20`
+		),
+		done: db.prepare(
+			`UPDATE telegram_outbox SET done_at = ?, outcome = ?, html = NULL, summary = NULL WHERE id = ? AND done_at IS NULL`
+		),
+		failedLater: db.prepare(`UPDATE telegram_outbox SET attempts = attempts + 1, next_attempt_at = ? WHERE id = ?`),
+		holdUntil: db.prepare(`UPDATE telegram_outbox SET next_attempt_at = ? WHERE id = ?`),
+		claim: db.prepare(
+			`UPDATE telegram_outbox SET next_attempt_at = ? WHERE id = ? AND done_at IS NULL AND next_attempt_at <= ?`
+		),
+		prune: db.prepare(`DELETE FROM telegram_outbox WHERE created_at < ?`)
+	};
+}
+function outbox() {
+	return (_outbox ??= prepareOutbox());
 }
 
 type LinkRow = { user_id: string; chat_id: string; username: string | null; urgent: number; paused: number };
@@ -145,8 +183,13 @@ export function addReminder(input: Omit<AgentReminder, 'id'>): string {
 	return id;
 }
 
+// Long enough to cover one send (Telegram calls time out at 15 s).
+const CLAIM_MS = 2 * 60_000;
+
+const claimWindow = (nowMs: number) => ({ now: new Date(nowMs).toISOString(), stale: new Date(nowMs - CLAIM_MS).toISOString() });
+
 export function dueReminders(nowMs = Date.now()): AgentReminder[] {
-	return (stmts().remindersDue.all(new Date(nowMs).toISOString()) as {
+	return (stmts().remindersDue.all(claimWindow(nowMs)) as {
 		id: string;
 		user_id: string;
 		account_id: string | null;
@@ -157,8 +200,106 @@ export function dueReminders(nowMs = Date.now()): AgentReminder[] {
 }
 
 /** Claim a due reminder for sending, once. */
-export function markReminderSent(id: string): boolean {
-	return stmts().reminderSent.run(id).changes === 1;
+/**
+ * Take a due reminder for sending. The claim lapses after a couple of
+ * minutes, so a reminder whose send died with the process goes out later.
+ */
+export function claimReminder(id: string, nowMs = Date.now()): boolean {
+	return stmts().reminderClaim.run({ id, ...claimWindow(nowMs) }).changes === 1;
+}
+
+/** Delivered, or given up on: either way it isn't sent again. */
+export function markReminderSent(id: string): void {
+	stmts().reminderSent.run(id);
+}
+
+/** Give a claimed reminder back, so the next minute's run tries it again. */
+export function releaseReminder(id: string): void {
+	stmts().reminderRelease.run(id);
+}
+
+export interface QueuedAlert {
+	id: string;
+	/** urgent: an email, with its buttons; notice: from Zajel itself, plain. */
+	kind: 'urgent' | 'notice';
+	userId: string;
+	accountId: string;
+	emailId: string;
+	html: string;
+	summary: string;
+	attempts: number;
+	createdAt: string;
+}
+
+const ALERT_KEEP_MS = 7 * 86_400_000;
+
+/** Queue an alert. False when the same one (account and email, or notice key) was already queued or sent. */
+export function queueAlert(
+	alert: Omit<QueuedAlert, 'id' | 'attempts' | 'createdAt' | 'kind'> & { kind?: QueuedAlert['kind'] },
+	nowMs = Date.now()
+): boolean {
+	const now = new Date(nowMs).toISOString();
+	outbox().prune.run(new Date(nowMs - ALERT_KEEP_MS).toISOString());
+	return outbox().queue.run({ id: randomBytes(12).toString('base64url'), kind: 'urgent', ...alert, now }).changes === 1;
+}
+
+/** Alerts due to be sent, oldest first; for one login, or everyone. */
+export function dueAlerts(userId: string | null, nowMs = Date.now()): QueuedAlert[] {
+	const rows = outbox().due.all(new Date(nowMs).toISOString(), userId, userId) as {
+		id: string;
+		kind: string;
+		user_id: string;
+		account_id: string;
+		email_id: string;
+		html: string;
+		summary: string | null;
+		attempts: number;
+		created_at: string;
+	}[];
+	return rows.map((r) => ({
+		id: r.id,
+		kind: r.kind === 'notice' ? 'notice' : 'urgent',
+		userId: r.user_id,
+		accountId: r.account_id,
+		emailId: r.email_id,
+		html: r.html,
+		summary: r.summary ?? '',
+		attempts: r.attempts,
+		createdAt: r.created_at
+	}));
+}
+
+/** Done with an alert: sent, or given up. False when another run got there first. */
+export function finishAlert(id: string, outcome: 'sent' | 'refused' | 'expired' | 'dropped', nowMs = Date.now()): boolean {
+	return outbox().done.run(new Date(nowMs).toISOString(), outcome, id).changes === 1;
+}
+
+/** After a failed send: counts as an attempt, which sets the next backoff. */
+export function retryAlertAt(id: string, atMs: number): void {
+	outbox().failedLater.run(new Date(atMs).toISOString(), id);
+}
+
+/** Held back (the hourly cap), which isn't a failed attempt. */
+export function holdAlertUntil(id: string, atMs: number): void {
+	outbox().holdUntil.run(new Date(atMs).toISOString(), id);
+}
+
+// Long enough to cover one send (Telegram calls time out at 15 s).
+const ALERT_LEASE_MS = 2 * 60_000;
+
+/**
+ * Take a due alert for sending, so two runs at once (two accounts' Jev
+ * passes, or a pass and the minute cron) can't both send it. A run that dies
+ * mid-send leaves it to be retried when the lease runs out.
+ */
+export function claimAlert(id: string, nowMs = Date.now()): boolean {
+	const now = new Date(nowMs).toISOString();
+	return outbox().claim.run(new Date(nowMs + ALERT_LEASE_MS).toISOString(), id, now).changes === 1;
+}
+
+/** Make a pressed button usable again, after its action failed. */
+export function releaseButton(id: string): void {
+	stmts().buttonRelease.run(id);
 }
 
 export function getState(key: string): string | null {

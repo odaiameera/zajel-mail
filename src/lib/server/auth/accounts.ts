@@ -4,6 +4,7 @@ import { encryptSecret, decryptSecret } from './crypto';
 import { authenticate } from '$lib/jmap/auth';
 import type { AuthState } from '$lib/jmap/types';
 import type { LinkedAccount } from '$lib/types/accounts';
+import { errorFields, logEvent } from '$lib/server/log';
 
 /**
  * Linked Stalwart mail accounts. Each row stores the account's password
@@ -62,6 +63,7 @@ function prepareStmts() {
 		),
 		getAvatar: db.prepare(`SELECT avatar_data FROM mail_accounts WHERE id = ?`),
 		setReauth: db.prepare(`UPDATE mail_accounts SET needs_reauth = ? WHERE id = ?`),
+		flagReauth: db.prepare(`UPDATE mail_accounts SET needs_reauth = 1 WHERE id = ? AND needs_reauth = 0`),
 		updateSecret: db.prepare(
 			`UPDATE mail_accounts
 			 SET secret_enc = ?, jmap_account_id = ?, needs_reauth = 0, last_verified_at = datetime('now')
@@ -209,9 +211,19 @@ export function getAccountAvatar(id: string): string | null {
 	return row?.avatar_data ?? null;
 }
 
-/** Flag set when the mail server rejects the stored credentials (password changed). */
+/**
+ * Flag set when the mail server rejects the stored credentials (password
+ * changed). Every background pass for the account stops, urgent alerts
+ * included, so the change is logged and sent to Telegram, once: several
+ * passes can hit the same 401, and only the first one flips the flag.
+ */
 export function markNeedsReauth(id: string): void {
-	stmts().setReauth.run(1, id);
+	if (stmts().flagReauth.run(id).changes !== 1) return;
+	logEvent('error', 'auth', 'needs_reauth', { account: id });
+	// Imported here: the notifier itself imports this module.
+	void import('$lib/server/telegram/notifier')
+		.then(({ notifySignInLost }) => notifySignInLost(id))
+		.catch((err) => logEvent('error', 'telegram', 'reauth_notice_failed', { account: id, ...errorFields(err) }));
 }
 
 /** Re-verify and refresh stored credentials for an account flagged needs_reauth. */
