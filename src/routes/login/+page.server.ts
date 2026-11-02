@@ -45,8 +45,11 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
 	return { pending: userId ? secondStep(userId) : null };
 };
 
+// Every action here has a name. SvelteKit answers every POST to a page whose
+// actions mix `default` with named ones with a 500, so the password step can't
+// be the default action now that the second step has `code` and `cancel`.
 export const actions: Actions = {
-	default: async ({ request, cookies, getClientAddress }) => {
+	password: async ({ request, cookies, getClientAddress }) => {
 		const data = await request.formData();
 		const email = data.get('email')?.toString() ?? '';
 		const password = data.get('password')?.toString() ?? '';

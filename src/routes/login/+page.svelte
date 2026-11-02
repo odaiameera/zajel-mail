@@ -117,6 +117,7 @@
 		{:else}
 		<form
 			method="POST"
+			action="?/password"
 			use:enhance={() => {
 				loading = true;
 				return async ({ update }) => {
