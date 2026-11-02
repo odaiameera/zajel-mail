@@ -12,6 +12,7 @@ import {
 	type ReminderRow
 } from './db/queries/reminders';
 import type { AuthState } from '$lib/jmap/types';
+import { errorFields, logEvent } from './log';
 
 /**
  * Fires every minute. Iterates every linked mail account (credentials
@@ -26,29 +27,44 @@ import type { AuthState } from '$lib/jmap/types';
  */
 
 let started = false;
+// The error last logged per reminder: one that keeps failing (a folder that
+// is gone) is logged when it starts, not every minute.
+const lastError = new Map<ReminderRow['id'], string>();
 
 export function startReminderScheduler(): void {
 	if (started) return;
 	started = true;
 
 	cron.schedule('* * * * *', async () => {
-		for (const { account, auth, email } of listSchedulableAuths()) {
-			const due = listDueReminders(email);
-			if (due.length === 0) continue;
-			for (const r of due) {
-				try {
-					await returnReminder(auth, email, r);
-				} catch (err) {
-					if (err instanceof JMAPAuthError) {
-						markNeedsReauth(account.id);
-						break;
+		try {
+			for (const { account, auth, email } of listSchedulableAuths()) {
+				const due = listDueReminders(email);
+				if (due.length === 0) continue;
+				for (const r of due) {
+					try {
+						await returnReminder(auth, email, r);
+						lastError.delete(r.id);
+					} catch (err) {
+						if (err instanceof JMAPAuthError) {
+							markNeedsReauth(account.id);
+							break;
+						}
+						// Leave the row; next tick will retry. One noisy log is
+						// better than a silent stall since this is a background
+						// job users can't see.
+						console.error('[reminder] return failed', r.id, err);
+						const fields = errorFields(err);
+						if (lastError.get(r.id) !== fields.error) {
+							lastError.set(r.id, String(fields.error));
+							logEvent('warn', 'reminders', 'return_failed', { reminder: r.id, ...fields });
+						}
 					}
-					// Leave the row; next tick will retry. One noisy log is
-					// better than a silent stall since this is a background
-					// job users can't see.
-					console.error('[reminder] return failed', r.id, err);
 				}
 			}
+		} catch (err) {
+			// node-cron swallows a throw with no one listening.
+			console.error('[reminder] tick failed', err);
+			logEvent('error', 'reminders', 'tick_failed', errorFields(err));
 		}
 	});
 

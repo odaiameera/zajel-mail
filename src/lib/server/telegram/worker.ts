@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { getUpdates, telegramConfigured, TelegramError } from './bot';
-import { handleUpdate, sendDueReminders } from './notifier';
+import { flushAlerts, handleUpdate, sendDueReminders } from './notifier';
 import { getState, setState } from './store';
 import { errorFields, logEvent } from '$lib/server/log';
 
@@ -56,6 +56,11 @@ export function startTelegramWorker(): void {
 		sendDueReminders().catch((err) => {
 			console.error('[telegram] reminders failed', err instanceof Error ? err.message : err);
 			logEvent('error', 'telegram', 'reminders_failed', errorFields(err));
+		});
+		// Urgent alerts that failed or waited for the hourly cap.
+		flushAlerts().catch((err) => {
+			console.error('[telegram] alerts failed', err instanceof Error ? err.message : err);
+			logEvent('error', 'telegram', 'alerts_failed', errorFields(err));
 		});
 	});
 }
