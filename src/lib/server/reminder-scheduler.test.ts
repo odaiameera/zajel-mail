@@ -113,6 +113,17 @@ describe('returning a reminder', () => {
 		expect(state.deleted).toEqual(['e3']);
 	});
 
+	it('leaves a message the user already moved on where it is, and forgets the reminder', async () => {
+		// Trashed by hand while it waited: returning it would pull it out of Trash, unread.
+		state.boxes.e1 = { TR: true };
+		state.due = [reminder('e1', 'IN')];
+		await processDueRemindersForUser(auth, 'me@example.test');
+		expect(state.boxes.e1).toEqual({ TR: true });
+		expect(state.keywords.e1).toBeUndefined();
+		expect(state.deleted).toEqual(['e1']);
+		expect(state.returned).toEqual([]);
+	});
+
 	it('forgets a reminder whose message no longer exists', async () => {
 		state.due = [reminder('gone', 'PRJ')];
 		await processDueRemindersForUser(auth, 'me@example.test');

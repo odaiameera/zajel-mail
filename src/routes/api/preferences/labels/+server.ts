@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
+import { ensureArchiveMailbox } from '$lib/jmap/mailbox';
 import {
 	createLabelMailbox,
 	deleteLabelMailbox,
@@ -78,7 +79,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		case 'delete': {
 			if (!body.id) return json({ error: 'id required' }, { status: 400 });
 
-			const result = await deleteLabelMailbox(client, accountId, body.id);
+			// Messages that were in nothing but this label end up in Archive.
+			const result = await deleteLabelMailbox(client, accountId, body.id, () =>
+				ensureArchiveMailbox(client, accountId)
+			);
 			if (!result.success) {
 				return json({ success: false, error: result.error }, { status: 400 });
 			}

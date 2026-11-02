@@ -610,13 +610,7 @@ export async function updateEmailMailboxes(
 	const ids = Object.keys(changes);
 	if (ids.length === 0) return;
 
-	const getResponse = await client.request([
-		['Email/get', { accountId, ids, properties: ['id', 'mailboxIds'] }, '0']
-	]);
-	const list =
-		((getResponse.methodResponses[0][1] as { list?: { id: string; mailboxIds?: Record<string, boolean> }[] })
-			.list ?? []);
-	const current = new Map(list.map((e) => [e.id, e.mailboxIds ?? {}]));
+	const current = await emailMailboxMembership(client, accountId, ids);
 
 	const failures: EmailUpdateFailure[] = [];
 	const update: Record<string, Record<string, unknown>> = {};
@@ -665,6 +659,25 @@ export async function updateEmailMailboxes(
 	if (failures.length > 0) {
 		throw new EmailUpdateError(failureMessage(failures), failures);
 	}
+}
+
+/**
+ * Which mailboxes each of these emails is in right now. An email the server
+ * no longer has is absent from the result. One Email/get, however many ids.
+ */
+export async function emailMailboxMembership(
+	client: JMAPClient,
+	accountId: string,
+	ids: string[]
+): Promise<Map<string, Record<string, boolean>>> {
+	if (ids.length === 0) return new Map();
+	const response = await client.request([
+		['Email/get', { accountId, ids, properties: ['id', 'mailboxIds'] }, '0']
+	]);
+	const list =
+		(response.methodResponses[0][1] as { list?: { id: string; mailboxIds?: Record<string, boolean> }[] })
+			.list ?? [];
+	return new Map(list.map((e) => [e.id, e.mailboxIds ?? {}]));
 }
 
 /**
