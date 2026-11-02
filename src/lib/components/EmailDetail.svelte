@@ -6,7 +6,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
-	import { getContext } from 'svelte';
+	import { getContext, tick } from 'svelte';
 	import { renderEmailBodyHtml } from '$lib/utils/email-body';
 	import { emailFrameCsp, prepareEmailForReading } from '$lib/utils/email-images';
 	import { parseListUnsubscribe, type UnsubInfo } from '$lib/utils/list-unsubscribe';
@@ -210,29 +210,150 @@
 
 	// --- The header's fold ---
 	//
-	// The subject and its labels are always shown. Who sent the message, to
-	// whom, when, and the spam score sit in a fold
-	// below: open on a wide page, folded in the reading pane and on phones,
-	// where the old four-row header took the top third of the screen before a
-	// word of the message showed. `null` is the screen's default (decided in
-	// CSS, so the first paint is right before any script runs); a toggle sets
-	// it for this message, and the next message starts from the default again.
+	// The subject and its labels are always shown. Below them sits either one
+	// quiet line (who and when) or the details: sender, recipients, date and
+	// spam score. Open on a wide page, folded in the reading pane and on
+	// phones, where the old four-row header took the top third of the screen
+	// before a word of the message showed. `null` is the screen's default
+	// (decided in CSS, so the first paint is right before any script runs); a
+	// toggle sets it for this message, and the next message starts from the
+	// default again.
 	let headerOpen = $state<boolean | null>(null);
+	/** Between open and folded: the details still showing, out of the flow, while they fade. */
+	let headerClosing = $state(false);
+	const headerIsOpen = $derived(headerOpen ?? !(compact || $isPhone));
+	let headerEl = $state<HTMLElement>();
+	let summaryEl = $state<HTMLElement>();
+	let detailsEl = $state<HTMLElement>();
+	let belowEl = $state<HTMLElement>();
+	let headerMotion: Animation[] = [];
+
+	// How the switch moves. Animating the header's height laid the message's
+	// iframe out again on every frame, which is what made the fold stutter.
+	// Instead the header takes its new height at once and everything below it
+	// slides into place with a transform, which the compositor runs on its
+	// own; the message is laid out once, at the start or the end, out of
+	// sight. The two lines crossfade over the slide. The curve is iOS's sheet
+	// curve: quick out of the gate, a long soft landing.
+	const HEADER_MS = 340;
+	const HEADER_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
+
+	function stopHeaderMotion() {
+		for (const a of headerMotion) a.cancel();
+		headerMotion = [];
+		if (belowEl) belowEl.style.marginBottom = '';
+		headerClosing = false;
+	}
+
 	$effect(() => {
 		email.id;
+		stopHeaderMotion();
 		headerOpen = null;
 	});
-	const headerIsOpen = $derived(headerOpen ?? !(compact || $isPhone));
-	// While the fold animates its content is clipped; once open it may
-	// overflow, so the spam-score breakdown can hang over the message.
-	let headerAnimating = $state(false);
-	let headerAnimTimer: ReturnType<typeof setTimeout> | undefined;
-	function toggleHeader() {
-		headerOpen = !headerIsOpen;
-		headerAnimating = true;
-		clearTimeout(headerAnimTimer);
-		headerAnimTimer = setTimeout(() => (headerAnimating = false), 180);
+
+	async function toggleHeader() {
+		if (headerMotion.length) return;
+		const opening = !headerIsOpen;
+		const header = headerEl;
+		const below = belowEl;
+		const details = detailsEl;
+		const summary = summaryEl;
+		const still =
+			!browser ||
+			typeof window.matchMedia !== 'function' ||
+			window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
+			!header ||
+			!below ||
+			!details ||
+			!summary ||
+			typeof below.animate !== 'function';
+		if (still) {
+			headerOpen = opening;
+			return;
+		}
+		const before = header.offsetHeight;
+		let motion: Animation[];
+		if (opening) {
+			headerOpen = true;
+			await tick();
+			const d = header.offsetHeight - before;
+			// Keep the content's height while it slides, so the message is laid
+			// out once, when the space goes back at the end.
+			below.style.marginBottom = `${-d}px`;
+			motion = [
+				below.animate([{ transform: `translateY(${-d}px)` }, { transform: 'translateY(0)' }], {
+					duration: HEADER_MS,
+					easing: HEADER_EASE
+				}),
+				details.animate(
+					[
+						{ opacity: 0, transform: 'translateY(-6px)' },
+						{ opacity: 1, transform: 'none' }
+					],
+					{ duration: HEADER_MS, easing: HEADER_EASE }
+				),
+				summary.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: 'ease-out' })
+			];
+		} else {
+			headerClosing = true;
+			await tick();
+			const d = before - header.offsetHeight;
+			motion = [
+				below.animate([{ transform: `translateY(${d}px)` }, { transform: 'translateY(0)' }], {
+					duration: HEADER_MS,
+					easing: HEADER_EASE
+				}),
+				details.animate(
+					[
+						{ opacity: 1, transform: 'none' },
+						{ opacity: 0, transform: 'translateY(-6px)' }
+					],
+					{ duration: HEADER_MS * 0.6, easing: 'ease-out', fill: 'forwards' }
+				),
+				summary.animate([{ opacity: 0 }, { opacity: 1 }], {
+					duration: 180,
+					delay: HEADER_MS * 0.4,
+					easing: 'ease-out',
+					fill: 'backwards'
+				})
+			];
+		}
+		headerMotion = motion;
+		await Promise.all(motion.map((a) => a.finished.catch(() => undefined)));
+		// Stopped meanwhile: another message took over.
+		if (headerMotion !== motion) return;
+		if (!opening) headerOpen = false;
+		headerClosing = false;
+		await tick();
+		for (const a of motion) a.cancel();
+		headerMotion = [];
+		below.style.marginBottom = '';
 	}
+
+	// Which of the two lines below the subject is in the flow. In the open
+	// state the summary stays, invisible, over the details' top edge, so the
+	// two can crossfade; while closing it is the other way round.
+	const summaryClass = $derived(
+		headerClosing
+			? ''
+			: headerOpen === true
+				? 'absolute inset-x-0 top-0 opacity-0 pointer-events-none'
+				: headerOpen === false || compact
+					? ''
+					: 'md:absolute md:inset-x-0 md:top-0 md:opacity-0 md:pointer-events-none'
+	);
+	const detailsClass = $derived(
+		headerClosing
+			? 'absolute inset-x-0 top-0 pointer-events-none'
+			: headerOpen === true
+				? ''
+				: headerOpen === false || compact
+					? 'hidden'
+					: 'max-md:hidden'
+	);
+	const chevronClass = $derived(
+		headerOpen === true ? 'rotate-90' : headerOpen === false || compact ? '' : 'md:rotate-90'
+	);
 	/** The folded line's date: the time today, the day this year, the year otherwise. */
 	function shortDate(iso: string): string {
 		const d = new Date(iso);
@@ -845,7 +966,7 @@
 	}
 </script>
 
-<div class="h-full flex flex-col relative">
+<div class="h-full flex flex-col relative overflow-hidden">
 	<!-- Ribbon. First, and 48px tall, so it lines up with the mail list's
 	     header across the divider (and with every other pane's top bar). On
 	     the full-page view it also carries the way back to the folder. -->
@@ -1024,30 +1145,17 @@
 	</div>
 
 	<!--
-		Two parts. The subject with its labels is always there, on a line that
-		truncates when the header is folded. The fold below holds the sender,
-		the recipients, the date and the spam score; see `headerOpen` for when it
-		is open. The chevron toggles it, and on a phone so does the row.
+		Two parts. The subject and its labels are always there, the same in
+		either state. Below them is either one quiet line (who and when) or the
+		details; `headerOpen` decides which and `toggleHeader` moves between
+		them. The chevron or the quiet line toggles it.
 	-->
-	<header class="shrink-0 border-b border-border {compact ? 'px-4' : 'px-6 max-md:px-4'}">
-		<div class="flex items-start gap-3 {compact ? 'py-2.5' : 'py-3'}">
-			<div class="min-w-0 flex-1">
-				<div
-					class="flex items-center gap-x-2 gap-y-1 {headerOpen === true
-						? 'flex-wrap'
-						: headerOpen === false || compact
-							? 'flex-nowrap overflow-hidden'
-							: 'max-md:flex-nowrap max-md:overflow-hidden md:flex-wrap'}"
-				>
-					<h1
-						class="min-w-0 font-semibold leading-snug text-text [text-wrap:balance] {compact ? 'text-base' : 'text-lg'} {headerOpen === true
-							? ''
-							: headerOpen === false || compact
-								? 'truncate'
-								: 'max-md:truncate'}"
-					>
-						{email.subject || '(no subject)'}
-					</h1>
+	<header bind:this={headerEl} class="shrink-0 {compact ? 'px-4 pb-2.5' : 'px-6 pb-3 max-md:px-4'}">
+		<div class="flex items-start gap-3 {compact ? 'pt-2.5' : 'pt-3'}">
+			<div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+				<h1 class="min-w-0 font-semibold leading-snug text-text [text-wrap:balance] {compact ? 'text-base' : 'text-lg'}">
+					{email.subject || '(no subject)'}
+				</h1>
 
 					<!-- Labels sit with the subject. Each chip's × takes it off; the + adds one. -->
 					{#each appliedLabels as label (label.id)}
@@ -1057,14 +1165,7 @@
 							title={label.name}
 						>
 							<span class="h-1.5 w-1.5 rounded-full" style="background-color: {label.color}"></span>
-							<!-- Folded, a chip is its colour alone, so a long subject keeps its line. -->
-							<span
-								class="inline-flex items-center {headerOpen === true
-									? ''
-									: headerOpen === false || compact
-										? 'hidden'
-										: 'max-md:hidden'}"
-							>
+							<span class="inline-flex items-center">
 								{label.name}
 								<button
 									type="button"
@@ -1108,59 +1209,45 @@
 							</div>
 						{/if}
 					</span>
-				</div>
-
-				<!-- Folded: one quiet line says who and when, and opens the rest. -->
-				<button
-					type="button"
-					onclick={toggleHeader}
-					aria-expanded={headerIsOpen}
-					aria-controls="message-head-details"
-					class="mt-0.5 block w-full cursor-pointer truncate text-left text-xs text-text-tertiary {headerOpen === true
-						? 'hidden'
-						: headerOpen === false || compact
-							? ''
-							: 'md:hidden'}"
-				>
-					<span class="text-text-secondary">{from?.name || from?.email || 'Unknown'}</span>
-					<span aria-hidden="true"> · </span>
-					<time datetime={email.receivedAt}>{shortDate(email.receivedAt)}</time>
-					{#if toList.length + ccList.length > 1}
-						<span aria-hidden="true"> · </span>to {toList.length + ccList.length} people
-					{/if}
-				</button>
 			</div>
 
 			<button
 				type="button"
-				onclick={(e) => {
-					e.stopPropagation();
-					toggleHeader();
-				}}
+				onclick={toggleHeader}
 				aria-expanded={headerIsOpen}
 				aria-controls="message-head-details"
 				aria-label={headerIsOpen ? 'Hide details' : 'Show details'}
 				title={headerIsOpen ? 'Hide details' : 'Show details'}
 				class="-mr-1.5 mt-0.5 shrink-0 cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text"
 			>
-				<span
-					class="block transition-transform duration-150 {headerOpen === true
-						? 'rotate-90'
-						: headerOpen === false || compact
-							? ''
-							: 'md:rotate-90'}"
-				>
+				<span class="block transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] {chevronClass}">
 					<Icon name="expand" size={16} class="block" />
 				</span>
 			</button>
 		</div>
 
-		<div
-			id="message-head-details"
-			class="fold {headerOpen === true ? 'open' : headerOpen === false || compact ? '' : 'auto'} {headerAnimating ? 'animating' : ''}"
-		>
-			<div>
-				<div class="flex flex-wrap items-start gap-x-3 gap-y-2 {compact ? 'pb-3' : 'pb-4'}">
+		<div class="relative">
+			<!-- Folded: one quiet line says who and when, and opens the rest. -->
+			<button
+				bind:this={summaryEl}
+				type="button"
+				onclick={toggleHeader}
+				aria-expanded={headerIsOpen}
+				aria-controls="message-head-details"
+				aria-hidden={headerIsOpen && !headerClosing}
+				tabindex={headerIsOpen && !headerClosing ? -1 : 0}
+				class="block w-full cursor-pointer truncate pt-0.5 text-left text-xs text-text-tertiary {summaryClass}"
+			>
+				<span class="text-text-secondary">{from?.name || from?.email || 'Unknown'}</span>
+				<span aria-hidden="true"> · </span>
+				<time datetime={email.receivedAt}>{shortDate(email.receivedAt)}</time>
+				{#if toList.length + ccList.length > 1}
+					<span aria-hidden="true"> · </span>to {toList.length + ccList.length} people
+				{/if}
+			</button>
+
+			<div bind:this={detailsEl} id="message-head-details" class={detailsClass}>
+				<div class="flex flex-wrap items-start gap-x-3 gap-y-2 pt-3">
 					<SenderAvatar email={from?.email} name={from?.name} size={compact ? 32 : 36} />
 					<div class="min-w-0 flex-1">
 						<div class="flex flex-wrap items-baseline gap-x-2">
@@ -1239,102 +1326,107 @@
 		</div>
 	</header>
 
-	{#if otp}
-		<div class="{compact ? 'mx-4' : 'mx-6'} mt-3 shrink-0">
-			<div class="flex items-center gap-3 rounded-xl border border-border bg-surface px-3.5 py-2.5 relative overflow-hidden">
-				<div class="absolute inset-y-0 left-0 w-1 bg-accent"></div>
-				<Icon name="code" size={20} class="text-accent-fg" />
-				<div class="min-w-0">
-					<div class="text-2xs font-medium uppercase tracking-wide text-accent-fg">Verification code</div>
-					<div class="font-mono text-lg font-semibold tracking-[0.2em] text-text select-all leading-7">{otp.display}</div>
-				</div>
-				<div class="ml-auto flex flex-col items-end gap-0.5 shrink-0">
-					<button
-						type="button"
-						onclick={copyVerificationCode}
-						disabled={otpBusy}
-						class="btn btn-primary btn-sm"
-					>
-						{#if otpCopied}
-							<Icon name="check" size={14} />
-							Copied
-						{:else}
-							<Icon name="copy" size={14} />
-							Copy code
+	<!-- Everything under the header, as one block: it is what slides when the
+	     header folds or opens (see toggleHeader), and it paints over the
+	     header's details while it does. -->
+	<div bind:this={belowEl} class="relative z-[1] flex min-h-0 flex-1 flex-col border-t border-border bg-bg">
+		{#if otp}
+			<div class="{compact ? 'mx-4' : 'mx-6'} mt-3 shrink-0">
+				<div class="flex items-center gap-3 rounded-xl border border-border bg-surface px-3.5 py-2.5 relative overflow-hidden">
+					<div class="absolute inset-y-0 left-0 w-1 bg-accent"></div>
+					<Icon name="code" size={20} class="text-accent-fg" />
+					<div class="min-w-0">
+						<div class="text-2xs font-medium uppercase tracking-wide text-accent-fg">Verification code</div>
+						<div class="font-mono text-lg font-semibold tracking-[0.2em] text-text select-all leading-7">{otp.display}</div>
+					</div>
+					<div class="ml-auto flex flex-col items-end gap-0.5 shrink-0">
+						<button
+							type="button"
+							onclick={copyVerificationCode}
+							disabled={otpBusy}
+							class="btn btn-primary btn-sm"
+						>
+							{#if otpCopied}
+								<Icon name="check" size={14} />
+								Copied
+							{:else}
+								<Icon name="copy" size={14} />
+								Copy code
+							{/if}
+						</button>
+						{#if otpTrashAfterCopy && !isInTrash && trashMailboxId}
+							<span class="text-3xs text-text-tertiary">Moves this email to Trash</span>
 						{/if}
-					</button>
-					{#if otpTrashAfterCopy && !isInTrash && trashMailboxId}
-						<span class="text-3xs text-text-tertiary">Moves this email to Trash</span>
-					{/if}
+					</div>
 				</div>
 			</div>
-		</div>
-	{/if}
+		{/if}
 
-	{#if calendarPart}
-		{#key calendarPart.blobId}
-			<InvitationCard emailId={email.id} blobId={calendarPart.blobId} {compact} />
-		{/key}
-	{/if}
+		{#if calendarPart}
+			{#key calendarPart.blobId}
+				<InvitationCard emailId={email.id} blobId={calendarPart.blobId} {compact} />
+			{/key}
+		{/if}
 
-	<AttachmentBar emailId={email.id} attachments={attachmentList} />
+		<AttachmentBar emailId={email.id} attachments={attachmentList} />
 
-	{#if assistantOpen}
-		<section class="shrink-0 border-b border-border bg-surface-hover/40 {compact ? 'px-4' : 'px-6'} py-3">
-			<div class="flex items-center justify-between gap-3 mb-3">
-				<h2 class="text-sm font-semibold text-text">Zajel</h2>
-				<button onclick={() => { assistantOpen = false; }} aria-label="Close Zajel" class="text-text-tertiary hover:text-text cursor-pointer"><Icon name="close" /></button>
-			</div>
-
-			<div class="flex flex-wrap gap-2">
-				<button onclick={() => runAssistant('summarize')} disabled={assistantBusy} class="px-3 py-1.5 rounded-lg text-xs border border-border text-text hover:border-accent disabled:opacity-50 cursor-pointer">Summarize</button>
-				<button onclick={() => runAssistant('draft')} disabled={assistantBusy} class="px-3 py-1.5 rounded-lg text-xs border border-border text-text hover:border-accent disabled:opacity-50 cursor-pointer">Draft reply</button>
-				<form class="flex min-w-[240px] flex-1 gap-2" onsubmit={(event) => { event.preventDefault(); runAssistant('answer'); }}>
-					<input bind:value={assistantQuestion} maxlength="500" aria-label="Ask Zajel about this email" class="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs text-text outline-none focus:border-accent" />
-					<button type="submit" disabled={assistantBusy || !assistantQuestion.trim()} class="btn btn-primary btn-sm">Ask</button>
-				</form>
-			</div>
-
-			{#if assistantBusy}
-				<p class="mt-3 text-xs text-text-tertiary">Thinking…</p>
-			{:else if assistantError}
-				<p class="mt-3 text-xs text-danger">{assistantError}</p>
-			{:else if assistantResult}
-				<div class="mt-3 max-h-48 overflow-y-auto rounded-lg border border-border bg-surface p-3">
-					<p class="whitespace-pre-wrap text-sm leading-6 text-text">{assistantResult}</p>
-					{#if assistantResultKind === 'draft'}
-						<button onclick={useAssistantDraft} class="btn btn-primary btn-sm mt-3">Use as reply</button>
-					{/if}
+		{#if assistantOpen}
+			<section class="shrink-0 border-b border-border bg-surface-hover/40 {compact ? 'px-4' : 'px-6'} py-3">
+				<div class="flex items-center justify-between gap-3 mb-3">
+					<h2 class="text-sm font-semibold text-text">Zajel</h2>
+					<button onclick={() => { assistantOpen = false; }} aria-label="Close Zajel" class="text-text-tertiary hover:text-text cursor-pointer"><Icon name="close" /></button>
 				</div>
-			{/if}
-		</section>
-	{/if}
 
-	{#if display.blockedRemote > 0 && !remoteAllowed}
-		<!-- Remote images blocked by the setting (or while a contact lookup is
-		     pending). Loading them is a per-message choice. -->
-		<div class="flex items-center gap-2 shrink-0 border-b border-border text-xs text-text-secondary {compact ? 'px-4 py-1.5' : 'px-6 py-2 max-md:px-2'}">
-			<Icon name="file-image" size={14} />
-			<span class="flex-1 min-w-0">Remote images are hidden, so the sender can't tell you opened this.</span>
-			<button onclick={() => (imagesShownFor = email.id)} class="btn btn-ghost btn-sm">Load images</button>
+				<div class="flex flex-wrap gap-2">
+					<button onclick={() => runAssistant('summarize')} disabled={assistantBusy} class="px-3 py-1.5 rounded-lg text-xs border border-border text-text hover:border-accent disabled:opacity-50 cursor-pointer">Summarize</button>
+					<button onclick={() => runAssistant('draft')} disabled={assistantBusy} class="px-3 py-1.5 rounded-lg text-xs border border-border text-text hover:border-accent disabled:opacity-50 cursor-pointer">Draft reply</button>
+					<form class="flex min-w-[240px] flex-1 gap-2" onsubmit={(event) => { event.preventDefault(); runAssistant('answer'); }}>
+						<input bind:value={assistantQuestion} maxlength="500" aria-label="Ask Zajel about this email" class="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs text-text outline-none focus:border-accent" />
+						<button type="submit" disabled={assistantBusy || !assistantQuestion.trim()} class="btn btn-primary btn-sm">Ask</button>
+					</form>
+				</div>
+
+				{#if assistantBusy}
+					<p class="mt-3 text-xs text-text-tertiary">Thinking…</p>
+				{:else if assistantError}
+					<p class="mt-3 text-xs text-danger">{assistantError}</p>
+				{:else if assistantResult}
+					<div class="mt-3 max-h-48 overflow-y-auto rounded-lg border border-border bg-surface p-3">
+						<p class="whitespace-pre-wrap text-sm leading-6 text-text">{assistantResult}</p>
+						{#if assistantResultKind === 'draft'}
+							<button onclick={useAssistantDraft} class="btn btn-primary btn-sm mt-3">Use as reply</button>
+						{/if}
+					</div>
+				{/if}
+			</section>
+		{/if}
+
+		{#if display.blockedRemote > 0 && !remoteAllowed}
+			<!-- Remote images blocked by the setting (or while a contact lookup is
+			     pending). Loading them is a per-message choice. -->
+			<div class="flex items-center gap-2 shrink-0 border-b border-border text-xs text-text-secondary {compact ? 'px-4 py-1.5' : 'px-6 py-2 max-md:px-2'}">
+				<Icon name="file-image" size={14} />
+				<span class="flex-1 min-w-0">Remote images are hidden, so the sender can't tell you opened this.</span>
+				<button onclick={() => (imagesShownFor = email.id)} class="btn btn-ghost btn-sm">Load images</button>
+			</div>
+		{/if}
+
+		<!-- Email body in sandboxed iframe. The iframe always fills the
+		     remaining vertical space of the reading pane, regardless of the
+		     email's content height — short emails no longer collapse the
+		     pane, and long ones scroll inside the iframe instead of the
+		     wrapper. -->
+		<div class="flex-1 overflow-hidden {compact ? 'px-4 py-3' : 'px-6 py-4 max-md:px-2 max-md:py-2'}">
+			<!-- bg-white matches the document's body background so swapping
+			     srcdoc (next/previous message) repaints white-on-white instead
+			     of flashing through the dark page background. -->
+			<iframe
+				srcdoc={iframeContent}
+				sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+				title="Email content"
+				class="w-full h-full border-none rounded-md bg-white"
+			></iframe>
 		</div>
-	{/if}
-
-	<!-- Email body in sandboxed iframe. The iframe always fills the
-	     remaining vertical space of the reading pane, regardless of the
-	     email's content height — short emails no longer collapse the
-	     pane, and long ones scroll inside the iframe instead of the
-	     wrapper. -->
-	<div class="flex-1 overflow-hidden {compact ? 'px-4 py-3' : 'px-6 py-4 max-md:px-2 max-md:py-2'}">
-		<!-- bg-white matches the document's body background so swapping
-		     srcdoc (next/previous message) repaints white-on-white instead
-		     of flashing through the dark page background. -->
-		<iframe
-			srcdoc={iframeContent}
-			sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-			title="Email content"
-			class="w-full h-full border-none rounded-md bg-white"
-		></iframe>
 	</div>
 
 	<EventModal
@@ -1370,48 +1462,3 @@
 	{/if}
 </div>
 
-<style>
-	/* The fold under the subject: a grid row that grows from 0fr to 1fr, so
-	   it animates open and shut without measuring anything. `.auto` is the
-	   screen's default, open from md up and folded below. Content is clipped
-	   while folded or animating and free once open, so a popover can hang
-	   over the message; hidden content is also unfocusable. */
-	.fold {
-		display: grid;
-		grid-template-rows: 0fr;
-		transition: grid-template-rows 160ms ease;
-	}
-	.fold > div {
-		min-height: 0;
-		overflow: hidden;
-		visibility: hidden;
-		transition: visibility 0s linear 160ms;
-	}
-	.fold.open {
-		grid-template-rows: 1fr;
-	}
-	.fold.open > div {
-		overflow: visible;
-		visibility: visible;
-		transition-delay: 0s;
-	}
-	.fold.animating > div {
-		overflow: hidden;
-	}
-	@media (min-width: 768px) {
-		.fold.auto {
-			grid-template-rows: 1fr;
-		}
-		.fold.auto > div {
-			overflow: visible;
-			visibility: visible;
-			transition-delay: 0s;
-		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.fold,
-		.fold > div {
-			transition: none;
-		}
-	}
-</style>
