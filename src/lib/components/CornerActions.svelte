@@ -69,7 +69,7 @@
 <div
 	data-corner-actions
 	class="fixed z-[36] flex items-center gap-2.5
-		md:right-[68px] md:bottom-[calc(1.25rem-var(--app-under))]
+		md:right-[var(--corner-buttons-right)] md:bottom-[var(--corner-buttons-bottom)]
 		max-md:right-4 max-md:bottom-[calc(6.5rem+env(safe-area-inset-bottom)-var(--app-under))]
 		{readingOnPhone ? 'max-md:hidden' : ''}"
 >

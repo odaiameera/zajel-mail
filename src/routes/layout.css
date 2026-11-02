@@ -3,16 +3,30 @@
 @import '@fontsource-variable/cairo';
 
 /*
- * The corner windows — the composer popup and the AI mail agent — open in
- * the same place, above the bottom-right corner buttons (48px circles,
- * 20px up), at the same size: between the composer's old 540px and the
- * agent's old 400px, and as tall as fits under the header.
+ * The corner: the two round buttons (CornerActions) and the windows that
+ * open above them, the composer popup and Zajel's card, at the same place
+ * and size. Everything is measured from the content panel's own edges
+ * rather than the window's: the panel stops at the 52px right rail and 8px
+ * above the bottom (the shell grid in (app)/+layout.svelte). They used to
+ * sit 16px from its side and 12px from its bottom, which read as wedged
+ * into the corner; --corner-gap is the breathing room on both sides.
  */
 :root {
-	--corner-window-right: 68px;
-	--corner-window-bottom: calc(76px - var(--app-under));
+	--panel-right: calc(52px + env(safe-area-inset-right, 0px));
+	--panel-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+	--corner-gap: 28px;
+	--corner-button: 48px;
+	--corner-buttons-right: calc(var(--panel-right) + var(--corner-gap));
+	--corner-buttons-bottom: calc(var(--panel-bottom) + var(--corner-gap) - var(--app-under));
+	/* The windows line up with the buttons' right edge, 16px above them. */
+	--corner-window-right: var(--corner-buttons-right);
+	--corner-window-bottom: calc(var(--corner-buttons-bottom) + var(--corner-button) + 16px);
 	--corner-window-width: 480px;
-	--corner-window-height: min(640px, calc(var(--app-height) - 148px));
+	/* As tall as fits under the 56px header with 20px to spare. */
+	--corner-window-height: min(
+		640px,
+		calc(var(--app-height) - var(--corner-window-bottom) - 76px - env(safe-area-inset-top, 0px))
+	);
 }
 
 /*

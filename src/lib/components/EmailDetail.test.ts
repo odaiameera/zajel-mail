@@ -131,3 +131,30 @@ describe('EmailDetail attachments', () => {
 		expect(srcdoc()).toContain('/api/email/M1/attachment/B-logo');
 	});
 });
+
+describe('EmailDetail header', () => {
+	it('keeps the subject and labels in place and switches the line below it between who-and-when and the details', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		render(EmailDetail, { email: email(), compact: true });
+
+		// Folded in the reading pane: the quiet line shows, the details don't.
+		const details = document.getElementById('message-head-details')!;
+		expect(details.className).toContain('hidden');
+		const toggle = screen.getByRole('button', { name: 'Show details' });
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+		expect(screen.getByRole('heading', { name: 'Hello' })).toBeTruthy();
+
+		await fireEvent.click(toggle);
+		await waitFor(() => expect(screen.getByRole('button', { name: 'Hide details' })).toBeTruthy());
+		expect(details.className).not.toContain('hidden');
+		// The quiet line stays in the DOM, out of the flow, so the two can crossfade.
+		const quiet = screen.getByText('Newsletter', { selector: 'button > span' }).closest('button')!;
+		expect(quiet.className).toContain('absolute');
+		expect(quiet.getAttribute('tabindex')).toBe('-1');
+		expect(screen.getByRole('heading', { name: 'Hello' })).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
+		await waitFor(() => expect(details.className).toContain('hidden'));
+		expect(quiet.className).not.toContain('absolute');
+	});
+});
