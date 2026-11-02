@@ -17,7 +17,6 @@
 	import AttachmentBar from './AttachmentBar.svelte';
 	import { attachmentCards } from '$lib/attachments/list';
 	import InvitationCard from './InvitationCard.svelte';
-	import JevWhy, { type JevSpamCheck } from './JevWhy.svelte';
 	import EventModal from './calendar/EventModal.svelte';
 	import { apiCreateEvent } from '$lib/calendar/api';
 	import { fromDayKey } from '$lib/calendar/dates';
@@ -171,7 +170,6 @@
 	const backLabel = $derived(sourceMailbox?.name ?? 'Inbox');
 
 	// Jev's spam verdict for this email (from the "Why is this here?" chip).
-	let jevSpam = $state<JevSpamCheck | null>(null);
 
 	// --- Spam classifier output (read-only for display + contextual button) ---
 	const spamScore = $derived.by<number | null>(() => {
@@ -213,7 +211,7 @@
 	// --- The header's fold ---
 	//
 	// The subject and its labels are always shown. Who sent the message, to
-	// whom, when, and what Jev and the spam filter made of it sit in a fold
+	// whom, when, and the spam score sit in a fold
 	// below: open on a wide page, folded in the reading pane and on phones,
 	// where the old four-row header took the top third of the screen before a
 	// word of the message showed. `null` is the screen's default (decided in
@@ -226,7 +224,7 @@
 	});
 	const headerIsOpen = $derived(headerOpen ?? !(compact || $isPhone));
 	// While the fold animates its content is clipped; once open it may
-	// overflow, so Jev's card can hang over the message.
+	// overflow, so the spam-score breakdown can hang over the message.
 	let headerAnimating = $state(false);
 	let headerAnimTimer: ReturnType<typeof setTimeout> | undefined;
 	function toggleHeader() {
@@ -1028,7 +1026,7 @@
 	<!--
 		Two parts. The subject with its labels is always there, on a line that
 		truncates when the header is folded. The fold below holds the sender,
-		the recipients, the date and the checks; see `headerOpen` for when it
+		the recipients, the date and the spam score; see `headerOpen` for when it
 		is open. The chevron toggles it, and on a phone so does the row.
 	-->
 	<header class="shrink-0 border-b border-border {compact ? 'px-4' : 'px-6 max-md:px-4'}">
@@ -1193,14 +1191,11 @@
 							{/if}
 						</p>
 					</div>
-					<!-- The date and the checks: a right-hand column on a wide screen, a
+					<!-- The date and the spam score: a right-hand column on a wide screen, a
 					     row under the sender on a phone, where a long address would
 					     otherwise fight them for one line. -->
 					<div class="flex shrink-0 flex-col items-end gap-1 max-md:w-full max-md:flex-row max-md:flex-wrap max-md:items-center max-md:gap-2">
 						<time datetime={email.receivedAt} class="text-xs tabular-nums text-text-tertiary">{formatDate(email.receivedAt)}</time>
-						{#if page.data.jevReads}
-							<JevWhy emailId={email.id} onSpamCheck={(check) => (jevSpam = check)} />
-						{/if}
 						{#if spamScore !== null}
 							<!-- The score is a button when there is a breakdown to show: a
 							     number on its own cannot tell you whether to train the
@@ -1243,35 +1238,6 @@
 			</div>
 		</div>
 	</header>
-
-
-	{#if jevSpam && (jevSpam.action === 'flagged' || jevSpam.action === 'junked' || jevSpam.action === 'rescued')}
-		<!-- Jev's spam verdict, when (in active mode) it acted on it. -->
-		<div class="{compact ? 'mx-4' : 'mx-6'} mt-3 shrink-0">
-			<div class="flex items-start gap-3 rounded-xl border border-border bg-surface px-3.5 py-2.5 relative overflow-hidden" role="status">
-				<div class="absolute inset-y-0 left-0 w-1 {jevSpam.action === 'rescued' ? 'bg-success' : 'bg-warning'}"></div>
-				<div class="min-w-0 text-sm">
-					{#if jevSpam.action === 'flagged'}
-						<p class="text-text font-medium">This looks suspicious</p>
-						<p class="text-xs text-text-tertiary mt-0.5">
-							Jev puts it at {Math.round(jevSpam.phishing * 100)}% likely phishing and {Math.round(jevSpam.spam * 100)}% likely spam.
-							Check who really sent it before you click a link, sign in or pay.
-						</p>
-					{:else if jevSpam.action === 'junked'}
-						<p class="text-text font-medium">Jev moved this to Junk</p>
-						<p class="text-xs text-text-tertiary mt-0.5">
-							{Math.round(Math.max(jevSpam.spam, jevSpam.phishing) * 100)}% likely {jevSpam.phishing >= jevSpam.spam ? 'phishing' : 'spam'}. If it’s fine, mark it Not spam.
-						</p>
-					{:else}
-						<p class="text-text font-medium">Jev brought this back from Junk</p>
-						<p class="text-xs text-text-tertiary mt-0.5">
-							Stalwart had flagged it, but Jev is sure it isn’t spam or phishing and the sender passed authentication.
-						</p>
-					{/if}
-				</div>
-			</div>
-		</div>
-	{/if}
 
 	{#if otp}
 		<div class="{compact ? 'mx-4' : 'mx-6'} mt-3 shrink-0">
@@ -1408,7 +1374,7 @@
 	/* The fold under the subject: a grid row that grows from 0fr to 1fr, so
 	   it animates open and shut without measuring anything. `.auto` is the
 	   screen's default, open from md up and folded below. Content is clipped
-	   while folded or animating and free once open, so Jev's card can hang
+	   while folded or animating and free once open, so a popover can hang
 	   over the message; hidden content is also unfocusable. */
 	.fold {
 		display: grid;

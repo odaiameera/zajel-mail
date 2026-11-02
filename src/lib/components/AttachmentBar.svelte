@@ -60,11 +60,11 @@
 </script>
 
 {#if attachments.length > 0}
-	<div class="border-t border-border px-6 py-3 shrink-0">
-		<div class="text-xs text-text-tertiary mb-2">
+	<div class="border-t border-border px-6 py-2.5 shrink-0">
+		<div class="text-2xs text-text-tertiary mb-1.5">
 			{attachments.length} {attachments.length === 1 ? 'attachment' : 'attachments'}
 		</div>
-		<div class="flex flex-wrap gap-2">
+		<div class="flex flex-wrap gap-1.5">
 			{#each attachments as a (a.blobId)}
 				{@const kind = iconKindFor(a.type)}
 				<!-- A body part's size is not always known (then it is 0). -->
@@ -72,37 +72,37 @@
 				<div
 					onclick={() => openViewer(a)}
 					title={a.size > 0 ? `${a.name ?? 'attachment'} · ${formatSize(a.size)}` : (a.name ?? 'attachment')}
-					class="flex items-center gap-2 px-3 py-2 bg-surface-hover border border-border rounded-lg hover:border-accent hover:bg-accent/5 transition-colors cursor-pointer group max-w-[280px]"
+					class="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-hover border border-border rounded-md hover:border-accent hover:bg-accent/5 transition-colors cursor-pointer group max-w-[210px]"
 				>
 					<span class="shrink-0 text-text-secondary group-hover:text-accent-fg transition-colors">
 						{#if kind === 'image'}
-							<Icon name="file-image" size={20} />
+							<Icon name="file-image" size={16} />
 						{:else if kind === 'pdf'}
-							<Icon name="file-pdf" size={20} />
+							<Icon name="file-pdf" size={16} />
 						{:else if kind === 'video'}
-							<Icon name="file-video" size={20} />
+							<Icon name="file-video" size={16} />
 						{:else if kind === 'audio'}
-							<Icon name="file-audio" size={20} />
+							<Icon name="file-audio" size={16} />
 						{:else if kind === 'archive'}
-							<Icon name="archive" size={20} />
+							<Icon name="archive" size={16} />
 						{:else if kind === 'doc' || kind === 'sheet' || kind === 'slides'}
-							<Icon name="file-document" size={20} />
+							<Icon name="file-document" size={16} />
 						{:else}
-							<Icon name="file" size={20} />
+							<Icon name="file" size={16} />
 						{/if}
 					</span>
 					<div class="min-w-0 flex-1">
-						<div class="text-sm text-text truncate">{a.name ?? 'unnamed'}</div>
+						<div class="text-xs text-text truncate">{a.name ?? 'unnamed'}</div>
 						{#if a.size > 0}
-							<div class="text-xs text-text-tertiary">{formatSize(a.size)}</div>
+							<div class="text-2xs text-text-tertiary">{formatSize(a.size)}</div>
 						{/if}
 					</div>
 					<button
 						onclick={(e) => downloadAttachment(a, e)}
 						title="Download"
-						class="shrink-0 p-1 rounded-md text-text-tertiary hover:text-accent-fg hover:bg-accent/10 transition-colors cursor-pointer opacity-0 group-hover:opacity-100"
+						class="shrink-0 p-0.5 rounded-md text-text-tertiary hover:text-accent-fg hover:bg-accent/10 transition-colors cursor-pointer opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
 					>
-						<Icon name="download" size={14} />
+						<Icon name="download" size={12} />
 					</button>
 				</div>
 			{/each}
