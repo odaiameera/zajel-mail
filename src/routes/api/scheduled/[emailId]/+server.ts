@@ -19,7 +19,12 @@ export const POST: RequestHandler = async ({ request, locals, params }) => {
 	if (action === 'cancel') {
 		try {
 			const result = await cancelScheduledSend(locals.activeAccountId, locals.auth, params.emailId);
-			return json(result, { status: result.success ? 200 : result.code === 'move-failed' ? 502 : 409 });
+			const status = result.success
+				? 200
+				: result.code === 'move-failed' || result.code === 'unreachable'
+					? 502
+					: 409;
+			return json(result, { status });
 		} catch (err) {
 			return json({ success: false, error: err instanceof Error ? err.message : 'Could not cancel' }, { status: 500 });
 		}
