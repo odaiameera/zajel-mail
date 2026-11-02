@@ -1,6 +1,9 @@
 import type { Cookies } from '@sveltejs/kit';
 import { getPrefs, patchPrefs, clearPrefs } from './db/queries/app-prefs';
 import { PREF_COOKIE_OPTIONS } from './prefs';
+import { PREFERENCES, type PrefKey } from '$lib/preference-keys';
+
+export type { PrefKey };
 
 /**
  * Preferences, stored server-side and keyed to the webmail login.
@@ -17,36 +20,14 @@ import { PREF_COOKIE_OPTIONS } from './prefs';
  */
 
 /** Every preference key that now lives in SQLite. */
-export const PREF_KEYS = [
-	'display_name',
-	'theme',
-	'density',
-	'reading_pane',
-	'composer_font',
-	'composer_font_size',
-	'autosave_interval',
-	'undo_send_seconds',
-	'mark_read_delay',
-	'auto_load_images',
-	'default_sort',
-	'trash_retention_days',
-	'otp_trash_after_copy',
-	'notifications',
-	'notification_folders',
-	'notify_calendar_events',
-	'notify_event_reminders',
-	'calendar_week_start',
-	'calendar_view',
-	'auto_reply_enabled',
-	'auto_reply_subject',
-	'auto_reply_body',
-	'folder_expanded',
-	// Rows per page, written by /api/user-state/settings and read by
-	// getDefaultPageSize(); the one camelCase key, kept so stored rows match.
-	'defaultPageSize'
-] as const;
+export const PREF_KEYS: readonly PrefKey[] = PREFERENCES.map((p) => p.key);
 
-export type PrefKey = (typeof PREF_KEYS)[number];
+/**
+ * Cookies from settings that no longer exist (the display name moved to its
+ * own column; conversation view and single-key shortcuts were never built).
+ * Deleted when seen, never imported.
+ */
+const RETIRED_COOKIES = ['display_name', 'conversation_view', 'keyboard_shortcuts'];
 
 /**
  * Keys whose legacy cookie held a URL-encoded value (`setPrefEncoded` /
@@ -110,7 +91,7 @@ export function readPreferences(userId: string, cookies: Cookies): Record<string
 	// Retire every migrated cookie, including on later loads — a second browser
 	// may still be carrying its own copy, and leaving them set would let a stale
 	// per-browser value shadow the stored one on the next import check.
-	for (const key of PREF_KEYS) {
+	for (const key of [...PREF_KEYS, ...RETIRED_COOKIES]) {
 		if (key === RENDER_HINT_COOKIE) continue;
 		if (cookies.get(key) !== undefined) cookies.delete(key, { path: '/' });
 	}
@@ -143,9 +124,16 @@ export function resetPreferences(userId: string, cookies: Cookies): void {
 	for (const key of PREF_KEYS) cookies.delete(key, { path: '/' });
 }
 
-/** Flat snapshot for the settings export endpoint. */
+/**
+ * Flat snapshot for the settings export endpoint: the known preferences
+ * only, so the file holds what the page lists and nothing an import would
+ * drop.
+ */
 export function exportPreferences(userId: string): Record<string, string> {
-	return getPrefs(userId);
+	const prefs = getPrefs(userId);
+	const out: Record<string, string> = {};
+	for (const key of PREF_KEYS) if (typeof prefs[key] === 'string') out[key] = prefs[key];
+	return out;
 }
 
 /** Restore an exported snapshot, ignoring keys this app doesn't recognise. */

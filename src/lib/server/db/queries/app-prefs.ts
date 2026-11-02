@@ -152,12 +152,12 @@ export function clearAvatar(userId: string): void {
 
 const ALLOWED_PAGE_SIZES = [10, 25, 50, 100] as const;
 
-/** Rows per page in the mail list. Stored as a string, like every preference. */
 /** Settings → Messages → Default sort, for the Inbox, folder and Starred lists. */
 export function getDefaultSort(userId: string): MailSort {
 	return parseMailSort(getPrefs(userId).default_sort);
 }
 
+/** Rows per page in the mail list. Stored as a string, like every preference. */
 export function getDefaultPageSize(userId: string): number {
 	const raw = getPrefs(userId).defaultPageSize;
 	const n = parseInt(String(raw), 10);
