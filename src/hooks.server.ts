@@ -1,4 +1,5 @@
-import { redirect, type Handle, type HandleServerError } from '@sveltejs/kit';
+import { redirect, type Handle, type HandleServerError, type ServerInit } from '@sveltejs/kit';
+import { building } from '$app/environment';
 import { runMigrations } from '$lib/server/db/migrate';
 import {
 	startReminderScheduler,
@@ -25,9 +26,8 @@ process.on('uncaughtExceptionMonitor', (err, origin) => {
 });
 
 // Run pending DB migrations once per process lifetime — better-sqlite3 is
-// synchronous so no promise-caching is required. Silent by design (the
-// spec calls for no log output); failures surface through subsequent
-// query errors rather than hot-path noise.
+// synchronous so no promise-caching is required. A failed migration is
+// logged by runMigrations itself.
 let migrated = false;
 let setupDone = false;
 
@@ -72,38 +72,56 @@ function crossSiteWrite(request: Request, url: URL): boolean {
 	return origin !== null && origin !== url.origin;
 }
 
-export const handle: Handle = async ({ event, resolve }) => {
-	// Fail fast on a missing/short WEBMAIL_SECRET: without it linked-account
-	// passwords can't be encrypted or decrypted, and the breakage would
-	// otherwise surface mid-flow as misleading "can't reach the mail server"
-	// errors. One loud, precise error beats a half-working app.
-	if (secretError === undefined) {
-		try {
-			assertCryptoReady();
-			secretError = null;
-		} catch (err) {
-			secretError = err instanceof Error ? err.message : String(err);
-			console.error(`[config] ${secretError}`);
-		}
+// Fail fast on a missing/short WEBMAIL_SECRET: without it linked-account
+// passwords can't be encrypted or decrypted, and the breakage would
+// otherwise surface mid-flow as misleading "can't reach the mail server"
+// errors. One loud, precise error beats a half-working app.
+function checkSecret(): void {
+	if (secretError !== undefined) return;
+	try {
+		assertCryptoReady();
+		secretError = null;
+	} catch (err) {
+		secretError = err instanceof Error ? err.message : String(err);
+		console.error(`[config] ${secretError}`);
+		logEvent('error', 'app', 'config', { error: secretError });
 	}
+}
+
+// Migrations, then every background worker: Jev's urgent alerts, Telegram,
+// reminders, rules, jobs, the search index. Started from the first request,
+// as they used to be, they stayed off after a restart until someone opened
+// the app.
+function startBackground(): void {
+	if (migrated) return;
+	migrated = true;
+	runMigrations();
+	startReminderScheduler();
+	startRulesScheduler();
+	startTrashRetentionScheduler();
+	startJevScheduler();
+	startScheduledSendWorker();
+	startPushWorker();
+	startTelegramWorker();
+	startJobWorker();
+	startSearchIndexer();
+	logEvent('info', 'app', 'started', { node: process.version });
+}
+
+// adapter-node runs this as the server starts, before any request.
+export const init: ServerInit = () => {
+	if (building) return;
+	checkSecret();
+	if (!secretError) startBackground();
+};
+
+export const handle: Handle = async ({ event, resolve }) => {
+	checkSecret();
 	if (secretError) {
 		return new Response(secretError, { status: 500 });
 	}
-
-	if (!migrated) {
-		runMigrations();
-		startReminderScheduler();
-		startRulesScheduler();
-		startTrashRetentionScheduler();
-		startJevScheduler();
-		startScheduledSendWorker();
-		startPushWorker();
-		startTelegramWorker();
-		startJobWorker();
-		startSearchIndexer();
-		migrated = true;
-		logEvent('info', 'app', 'started', { node: process.version });
-	}
+	// Normally already done by init; the dev server can skip it.
+	startBackground();
 
 	const { pathname } = event.url;
 

@@ -10,11 +10,22 @@ const API = 'https://api.telegram.org';
 export class TelegramError extends Error {
 	constructor(
 		message: string,
-		public status: number
+		public status: number,
+		/** Seconds Telegram asks to wait, on a 429. */
+		public retryAfter: number | null = null
 	) {
 		super(message);
 		this.name = 'TelegramError';
 	}
+}
+
+/**
+ * Worth trying again later: anything but a 400 or 403, which mean the chat
+ * is gone or the bot was blocked. A 401 or 404 is the bot token itself
+ * (revoked, mistyped), so messages wait for it to be fixed.
+ */
+export function retryable(err: unknown): boolean {
+	return !(err instanceof TelegramError) || (err.status !== 400 && err.status !== 403);
 }
 
 export function telegramConfigured(): boolean {
@@ -28,8 +39,13 @@ async function call<T>(method: string, body: Record<string, unknown>, timeoutMs 
 		body: JSON.stringify(body),
 		signal: AbortSignal.timeout(timeoutMs)
 	});
-	const data = (await res.json().catch(() => null)) as { ok?: boolean; result?: T; description?: string } | null;
-	if (!data?.ok) throw new TelegramError(data?.description ?? `HTTP ${res.status}`, res.status);
+	const data = (await res.json().catch(() => null)) as {
+		ok?: boolean;
+		result?: T;
+		description?: string;
+		parameters?: { retry_after?: number };
+	} | null;
+	if (!data?.ok) throw new TelegramError(data?.description ?? `HTTP ${res.status}`, res.status, data?.parameters?.retry_after ?? null);
 	return data.result as T;
 }
 

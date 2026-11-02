@@ -15,10 +15,15 @@ vi.mock('$lib/jmap/auth', () => ({
 	fetchSession: () => Promise.reject(new Error('no session in tests'))
 }));
 
-const telegram = vi.hoisted(() => ({ wanted: false, notify: vi.fn(async () => {}) }));
+// `notify` records each email queued for an alert, as notifyUrgent once did.
+const telegram = vi.hoisted(() => ({ wanted: false, notify: vi.fn(), flush: vi.fn(async () => {}) }));
 vi.mock('$lib/server/telegram/notifier', () => ({
 	urgentAlertsWanted: () => telegram.wanted,
-	notifyUrgent: telegram.notify
+	queueUrgent: (account: string, email: unknown) => {
+		telegram.notify(account, email);
+		return 'user-1';
+	},
+	flushAlerts: telegram.flush
 }));
 // Whether something is urgent is Jev's call; here every judged email is.
 vi.mock('$lib/server/telegram/urgent', async (importOriginal) => ({
@@ -220,9 +225,21 @@ describe('sortNewMail', () => {
 		// Already in a tab: Jev isn't even asked, so nothing is spent on it.
 		expect(getDecision(ACCT, 'moved')).toMatchObject({ status: 'done', category: null, applied: null, model: null });
 		expect(getDecision(ACCT, 'old')).toBeNull();
-		expect(getJevSettings(ACCT).sortCursor).toBe(at(10).toISOString());
+		// A minute back from the pass, so mail landing later in its last second is read again.
+		expect(getJevSettings(ACCT).sortCursor).toBe(at(9).toISOString());
 		// Mock answers cost nothing and aren't counted.
 		expect(getUsage(ACCT).requests).toBe(0);
+	});
+
+	it('moves on past a full page of mail stamped with the same second', async () => {
+		// A bulk import: 100 messages, one receivedAt.
+		for (let i = 0; i < 100; i += 1) fake.add(`bulk-${i}`, 5);
+		await sortNewMail(ACCT, ME, auth, at(10));
+		await sortNewMail(ACCT, ME, auth, at(11));
+		// Stepping back a second for ties would land on the same cursor forever.
+		expect(getJevSettings(ACCT).sortCursor).toBe(at(5).toISOString());
+		await sortNewMail(ACCT, ME, auth, at(12));
+		expect(getJevSettings(ACCT).sortCursor).toBe(at(11).toISOString());
 	});
 
 	it('does nothing while the tabs are off', async () => {
@@ -230,6 +247,34 @@ describe('sortNewMail', () => {
 		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
 		await sortNewMail(ACCT, ME, auth, at(10));
 		expect(getDecision(ACCT, 'news')).toBeNull();
+	});
+
+	it('charges an attempt to an email that fails while others are answered', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const answer = () =>
+			new Response(
+				JSON.stringify({
+					model: 'jev-1.13.0',
+					answers: { category: { type: 'choice', choice: 'newsletters', probabilities: { newsletters: 0.9 }, confidence: 0.8 } },
+					usage: { input_tokens: 10, output_tokens: 2 }
+				}),
+				{ status: 200 }
+			);
+		// Every try for 'a' fails; 'b' is answered.
+		vi.stubGlobal(
+			'fetch',
+			vi.fn().mockImplementation(async (_url: string, init?: RequestInit) =>
+				String(init?.body).includes('fail-me') ? new Response('{}', { status: 500 }) : answer()
+			)
+		);
+		fake.add('a', 1, { 'header:list-unsubscribe': ' <x>', subject: 'fail-me' });
+		fake.add('b', 2, { 'header:list-unsubscribe': ' <x>', subject: 'fine' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+		expect(getDecision(ACCT, 'a')).toMatchObject({ status: 'pending', attempts: 1 });
+		expect(getDecision(ACCT, 'b')?.status).toBe('done');
 	});
 
 	it('retries an email when TypeSafe fails, and counts live usage when it answers', async () => {
@@ -241,7 +286,9 @@ describe('sortNewMail', () => {
 		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
 
 		await sortNewMail(ACCT, ME, auth, at(10));
-		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'pending', attempts: 1 });
+		// Every email asked failed: TypeSafe is down, so nothing is charged
+		// against the email; it is simply asked again next pass.
+		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'pending', attempts: 0 });
 		expect(fake.emails.get('news')!.keywords).toEqual({});
 
 		fetchMock.mockResolvedValue(
@@ -488,7 +535,7 @@ describe('sortNewMail', () => {
 			await sortNewMail(ACCT, ME, auth, at(MONTH + 10));
 			expect(fake.emails.get('news')!.keywords).toEqual({});
 			expect(getDecision(ACCT, 'news')?.status).toBe('skipped');
-			expect(getJevSettings(ACCT).sortCursor).toBe(at(MONTH + 10).toISOString());
+			expect(getJevSettings(ACCT).sortCursor).toBe(at(MONTH + 9).toISOString());
 		});
 	});
 

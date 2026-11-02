@@ -37,8 +37,9 @@ vi.mock('$lib/server/db/queries/reminders', () => ({ scheduleReminder: mocks.sch
 
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
-import { addReminder, createButton, createLinkCode, getLink, setLinkFlags } from './store';
-import { handleUpdate, notifyUrgent, sendDueReminders, sendTestAlert } from './notifier';
+import { addReminder, createButton, createLinkCode, getLink, queueAlert, setLinkFlags } from './store';
+import { TelegramError } from './bot';
+import { flushAlerts, handleUpdate, notifySignInLost, notifyUrgent, sendDueReminders, sendTestAlert } from './notifier';
 
 const CHAT = 555;
 const start = (code: string, chatId = CHAT, type = 'private') =>
@@ -61,7 +62,7 @@ beforeAll(() => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	getDb().exec('DELETE FROM telegram_links; DELETE FROM telegram_link_codes; DELETE FROM telegram_buttons; DELETE FROM agent_reminders;');
+	getDb().exec('DELETE FROM telegram_links; DELETE FROM telegram_link_codes; DELETE FROM telegram_buttons; DELETE FROM agent_reminders; DELETE FROM telegram_outbox;');
 });
 
 describe('linking', () => {
@@ -132,6 +133,59 @@ describe('buttons', () => {
 });
 
 describe('urgent alerts', () => {
+	it('keeps an alert whose send fails, sends it on a later run, and never twice', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		mocks.sendMessage.mockRejectedValueOnce(new TelegramError('Bad Gateway', 502));
+		await notifyUrgent('acct-1', { id: 'e7', subject: 'Server down', from: [{ name: 'Ops', email: 'ops@example.test' }] });
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+		// Judged urgent again on a later pass: still one alert.
+		await notifyUrgent('acct-1', { id: 'e7', subject: 'Server down', from: [] });
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+		// The minute run, once the retry is due.
+		await flushAlerts(null, Date.now() + 60_000);
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+		expect(sentTexts().at(-1)).toContain('Server down');
+		await flushAlerts(null, Date.now() + 10 * 60_000);
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+	});
+
+	it('gives up on an alert Telegram refuses for good', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		mocks.sendMessage.mockRejectedValueOnce(new TelegramError('Forbidden: bot was blocked by the user', 403));
+		await notifyUrgent('acct-1', { id: 'e8', subject: 'x' });
+		await flushAlerts(null, Date.now() + 30 * 60_000);
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+	});
+
+	it('tells the chat when an account can no longer sign in, and holds it while paused', async () => {
+		await start(createLinkCode('user-1'));
+		setLinkFlags('user-1', { paused: true });
+		mocks.sendMessage.mockClear();
+		await notifySignInLost('acct-1');
+		expect(mocks.sendMessage).not.toHaveBeenCalled();
+
+		setLinkFlags('user-1', { paused: false });
+		await flushAlerts(null, Date.now() + 10 * 60_000);
+		expect(sentTexts()).toEqual([
+			'<b>Zajel can’t sign in</b> to me@example.test. Urgent alerts and reminders for it are off until you sign in again.'
+		]);
+		// Only an Open button: a notice names no email.
+		const buttons = (mocks.sendMessage.mock.calls[0] as unknown as [string, string, { text: string }[][]])[2];
+		expect(buttons.flat().map((b) => b.text)).toEqual(['Open']);
+	});
+
+	it('holds alerts while the bot token is rejected, instead of dropping them', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		mocks.sendMessage.mockRejectedValueOnce(new TelegramError('Unauthorized', 401));
+		await notifyUrgent('acct-1', { id: 'e9', subject: 'Token test' });
+		await flushAlerts(null, Date.now() + 60_000);
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+		expect(sentTexts().at(-1)).toContain('Token test');
+	});
+
 	it('sends sender and subject, escaped, with buttons and an app link', async () => {
 		await start(createLinkCode('user-1'));
 		mocks.sendMessage.mockClear();
@@ -172,7 +226,43 @@ describe('test alert', () => {
 	});
 });
 
+describe('buttons that fail', () => {
+	it('keep the button, on the message, for another try', async () => {
+		await start(createLinkCode('user-1'));
+		const data = createButton({ userId: 'user-1', accountId: 'acct-1', emailId: 'e5', action: 'read' });
+		mocks.updateEmailMailboxes.mockRejectedValueOnce(new Error('503 Service Unavailable'));
+		await press(data);
+		expect(mocks.answerCallback).toHaveBeenLastCalledWith('q1', 'That didn’t work');
+		expect(mocks.clearButtons).not.toHaveBeenCalled();
+		await press(data);
+		expect(mocks.answerCallback).toHaveBeenLastCalledWith('q1', 'Marked read');
+		expect(mocks.clearButtons).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe('reminders', () => {
+	it('gives a reminder back when Telegram fails, and sends it on the next run', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		addReminder({ userId: 'user-1', accountId: null, emailId: null, text: 'Pay rent', dueAt: new Date(Date.now() - 1000).toISOString() });
+		mocks.sendMessage.mockRejectedValueOnce(new TelegramError('Too Many Requests', 429, 3));
+		await sendDueReminders();
+		await sendDueReminders();
+		await sendDueReminders();
+		// One failed try, then one delivery, then nothing more.
+		expect(sentTexts()).toEqual(['<b>Reminder</b>\nPay rent', '<b>Reminder</b>\nPay rent']);
+	});
+
+	it('does not retry a reminder Telegram refuses for good', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		addReminder({ userId: 'user-1', accountId: null, emailId: null, text: 'Call back', dueAt: new Date(Date.now() - 1000).toISOString() });
+		mocks.sendMessage.mockRejectedValueOnce(new TelegramError('Forbidden: bot was blocked by the user', 403));
+		await sendDueReminders();
+		await sendDueReminders();
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+	});
+
 	it('sends due reminders once, and holds them while paused', async () => {
 		await start(createLinkCode('user-1'));
 		mocks.sendMessage.mockClear();
@@ -186,5 +276,25 @@ describe('reminders', () => {
 		await sendDueReminders();
 		await sendDueReminders();
 		expect(sentTexts()).toEqual(['<b>Reminder</b>\nCall the bank']);
+	});
+});
+
+// Last: it fills the hourly cap, which is kept in memory for the whole file.
+describe('hourly cap', () => {
+	it('holds urgent alerts past the cap instead of dropping them', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		// An hour clear of every send the earlier tests made.
+		const later = Date.now() + 5 * 3_600_000;
+		for (let i = 0; i < 21; i += 1) {
+			queueAlert({ userId: 'user-1', accountId: 'acct-1', emailId: `cap-${i}`, html: `alert ${i}`, summary: '' }, later);
+		}
+		await flushAlerts(null, later);
+		await flushAlerts(null, later + 1000);
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(20);
+		// Sent once the hour frees up.
+		await flushAlerts(null, later + 3_600_000 + 2000);
+		expect(mocks.sendMessage).toHaveBeenCalledTimes(21);
+		expect(sentTexts().at(-1)).toBe('alert 20');
 	});
 });

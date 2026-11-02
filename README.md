@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/screenshots/zajel-logo.png" alt="The Zajel Mail logo, a pigeon folded from paper" width="140"></p>
+
 <h1 align="center">zajel.</h1>
 
 <p align="center"><strong>Your mail, calendar and contacts in one fast, self-hosted workspace, with an AI agent that works for you and never behind your back.</strong></p>
@@ -146,6 +148,8 @@ The **+** button is one place to start anything: a message, an event or a contac
 ### Zajel, the AI agent
 
 ![Zajel summarising today's mail: three things need a reply, plus what's good to know](docs/screenshots/agent.png)
+
+<img src="docs/screenshots/zajel-bird.webp" alt="Zajel, drawn as a low-poly blue bird" width="140" align="right">
 
 Zajel lives in the corner next to **+**. Ask it anything about your mail or calendar.
 

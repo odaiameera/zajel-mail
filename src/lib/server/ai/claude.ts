@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { env } from '$env/dynamic/private';
 import { MailAssistantError, type AIChatMessage } from './mail-assistant';
 import { errorFields, logEvent } from '$lib/server/log';
+import { aiSettings, chosenProvider, type Effort } from './settings';
 
 /**
  * Claude through the Anthropic SDK. Two models with two jobs:
@@ -12,7 +13,8 @@ import { errorFields, logEvent } from '$lib/server/log';
  *   summaries, drafts, digests and extraction.
  *
  * Claude takes over every AI feature once `ANTHROPIC_API_KEY` is set, unless
- * `AI_PROVIDER` names OpenAI or Ollama instead.
+ * another provider is chosen in Settings → Agent or named by `AI_PROVIDER`.
+ * Models and effort chosen in Settings win over their variables (settings.ts).
  */
 
 export const DEFAULT_AGENT_MODEL = 'claude-opus-5-5';
@@ -23,16 +25,23 @@ export const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 export function claudeConfigured(): boolean {
 	if (!env.ANTHROPIC_API_KEY) return false;
+	const chosen = chosenProvider();
+	if (chosen) return chosen === 'anthropic';
 	const pick = env.AI_PROVIDER?.trim().toLowerCase();
 	return !pick || pick === 'anthropic' || pick === 'claude';
 }
 
 export function agentModel(): string {
-	return env.ANTHROPIC_MODEL || DEFAULT_AGENT_MODEL;
+	return aiSettings().agentModel || env.ANTHROPIC_MODEL || DEFAULT_AGENT_MODEL;
 }
 
 export function writerModel(): string {
-	return env.ANTHROPIC_FAST_MODEL || DEFAULT_WRITER_MODEL;
+	return aiSettings().writerModel || env.ANTHROPIC_FAST_MODEL || DEFAULT_WRITER_MODEL;
+}
+
+/** How hard the agent thinks before acting; writing always runs at low. */
+export function agentEffort(): Effort {
+	return aiSettings().agentEffort ?? 'medium';
 }
 
 /** Only the Opus line takes `fallbacks`; Haiku has no server-side fallback. */
@@ -62,7 +71,7 @@ export function claudeError(err: unknown): MailAssistantError {
 		return new MailAssistantError('The AI service rejected its API key', 502);
 	}
 	if (err instanceof Anthropic.NotFoundError) {
-		return new MailAssistantError('The AI service does not serve the configured model — check ANTHROPIC_MODEL', 502);
+		return new MailAssistantError('The AI service does not serve the configured model — choose another in Settings → Agent', 502);
 	}
 	if (err instanceof Anthropic.RateLimitError) {
 		return new MailAssistantError('The AI service is rate limiting this account — wait a moment and try again', 502);

@@ -33,7 +33,7 @@ import {
 	type RuleActionCtx,
 	type RuleOutcome
 } from '$lib/server/rules-engine';
-import { askJev, jevMode } from './client';
+import { askJev, JevError, jevMode } from './client';
 import {
 	CATEGORY_QUESTION,
 	CATEGORY_QUESTION_ID,
@@ -45,7 +45,8 @@ import { gatherFacts, senderAddress } from './facts';
 import { conditionAnswers, ruleChecks, ruleQuestions } from './rules';
 import { decideSpam, SPAM_QUESTIONS, spamAnswers, type SpamAction } from './spam';
 import { isUrgent, URGENT_QUESTION, URGENT_QUESTION_ID } from '$lib/server/telegram/urgent';
-import { notifyUrgent, urgentAlertsWanted } from '$lib/server/telegram/notifier';
+import { flushAlerts, queueUrgent, urgentAlertsWanted } from '$lib/server/telegram/notifier';
+import { errorFields, logEvent } from '$lib/server/log';
 import type { JevQuestion, JevResponse } from './types';
 
 /**
@@ -69,6 +70,8 @@ import type { JevQuestion, JevResponse } from './types';
 
 /** New arrivals queued per run. */
 const QUEUE_PAGE = 100;
+// How far each pass looks back past its own start; see the cursor below.
+const CURSOR_LOOKBACK_MS = 60_000;
 /** Queued new emails judged per run. */
 const JUDGE_BATCH = 25;
 /** Queued existing emails judged per run, after the new ones. */
@@ -146,6 +149,8 @@ export interface JudgedEmail {
 	/** The tab decision, when the tab was asked about. */
 	decision: CategoryDecision | null;
 	error: string | null;
+	/** TypeSafe's status for a failed call: 429 means it is busy, not that the email is bad. */
+	errorStatus?: number;
 }
 
 export interface JudgeContext {
@@ -202,7 +207,8 @@ export async function judgeEmails(
 				facts: emailFacts,
 				response: null,
 				decision: null,
-				error: err instanceof Error ? err.message : String(err)
+				error: err instanceof Error ? err.message : String(err),
+				errorStatus: err instanceof JevError ? err.status : undefined
 			};
 		}
 	});
@@ -383,7 +389,19 @@ export async function sortNewMail(
 		enqueueEmails(accountRowId, arrived.map((e) => e.id), now.getTime());
 		if (arrived.length >= QUEUE_PAGE) resumeAt.push(arrived[arrived.length - 1].receivedAt);
 	}
-	const nextCursor = resumeAt.length ? resumeAt.sort()[0] : now.toISOString();
+	// Stalwart stamps receivedAt to the second and `after` is strict, so a
+	// cursor at this pass's own instant would never again match mail landing
+	// later in the same second. Re-read a short window instead: ids already
+	// queued are ignored, and the window never reaches back past the cursor
+	// it started from.
+	// On a full page the cursor steps back a second for ties, unless the whole
+	// page is that one second: then stepping back would never move it on.
+	const lastSeen = resumeAt.sort()[0];
+	const nextCursor = lastSeen
+		? Date.parse(lastSeen) - 1000 > Date.parse(settings.sortCursor)
+			? new Date(Date.parse(lastSeen) - 1000).toISOString()
+			: lastSeen
+		: new Date(Math.max(Date.parse(settings.sortCursor), now.getTime() - CURSOR_LOOKBACK_MS)).toISOString();
 	advanceSortCursor(accountRowId, settings.sortCursor, nextCursor, now);
 
 	// Fetched only once there is mail to judge (contacts need the session).
@@ -473,6 +491,19 @@ async function judgeAndApply(
 				}
 	);
 
+	// Every email that was asked failed: TypeSafe is down, not these emails.
+	// Charging each an attempt would let a few minutes' outage fail them for
+	// good, urgent ones included, so they wait for the next pass instead.
+	const asked = judged.filter((j) => j.facts);
+	if (asked.length && asked.every((j) => j.error)) {
+		noteFailure('typesafe', b.accountRowId, 'typesafe_unavailable', { count: asked.length, error: asked[0].error });
+		return;
+	}
+	if (asked.length) noteRecovered('typesafe', b.accountRowId, 'typesafe_recovered');
+	const failed = judged.filter((j) => j.error);
+	if (failed.length) noteFailure('judge', b.accountRowId, 'judge_failed', { failed: failed.length, error: failed[0].error });
+	else noteRecovered('judge', b.accountRowId, 'judge_recovered');
+
 	// Plan each email. A failed call is retried next run; once it has failed
 	// for good, the rules still run, with no Jev answers. Spam goes first:
 	// mail that goes to Junk skips rules and tabs.
@@ -480,6 +511,8 @@ async function judgeAndApply(
 	const toJunk = new Set<string>();
 	for (const j of judged) {
 		if (j.error) {
+			// Rate limited: TypeSafe is busy, so it isn't charged to the email.
+			if (j.errorStatus === 429) continue;
 			recordFailure(b.accountRowId, j.email.id, j.error, now);
 			if (inJunk(j.email) || getDecision(b.accountRowId, j.email.id)?.status !== 'failed' || rules.length === 0) continue;
 			plans.set(j.email.id, planFor({ ...j, decision: null }, rules, b.ruleCtx, false, null));
@@ -557,18 +590,45 @@ async function judgeAndApply(
 
 	// Urgent Inbox mail goes to the linked Telegram chat; never Junk, or mail
 	// on its way there.
+	// Every alert is queued before any is sent: the emails are already marked
+	// done, so one not queued before a crash would never be alerted.
 	if (alertUrgent) {
+		const flushFor = new Set<string>();
 		for (const j of judged) {
 			if (j.error || inJunk(j.email) || toJunk.has(j.email.id) || !isUrgent(j.response)) continue;
-			await notifyUrgent(b.accountRowId, j.email).catch((err) =>
-				console.error('[jev] urgent alert failed', err instanceof Error ? err.message : err)
-			);
+			try {
+				const userId = queueUrgent(b.accountRowId, j.email);
+				if (userId) flushFor.add(userId);
+			} catch (err) {
+				console.error('[jev] urgent alert failed', err instanceof Error ? err.message : err);
+				logEvent('error', 'jev', 'urgent_alert_failed', { account: b.accountRowId, ...errorFields(err) });
+			}
+		}
+		for (const userId of flushFor) {
+			await flushAlerts(userId).catch((err) => logEvent('error', 'jev', 'urgent_alert_failed', { account: b.accountRowId, ...errorFields(err) }));
 		}
 	}
 }
 
 let started = false;
 const inFlight = new Set<string>();
+
+// The failure last logged, per kind and account: a failing pass is logged
+// when it starts failing or fails differently, and once when it recovers,
+// not every minute in between.
+const lastFailure = new Map<string, string>();
+
+function noteFailure(kind: string, accountRowId: string, event: string, fields: Record<string, unknown>): void {
+	const key = `${kind}:${accountRowId}`;
+	const text = `${event}:${String(fields.error)}`;
+	if (lastFailure.get(key) === text) return;
+	lastFailure.set(key, text);
+	logEvent('error', 'jev', event, { account: accountRowId, ...fields });
+}
+
+function noteRecovered(kind: string, accountRowId: string, event: string): void {
+	if (lastFailure.delete(`${kind}:${accountRowId}`)) logEvent('info', 'jev', event, { account: accountRowId });
+}
 
 /** One account's pass, never throwing; overlapping passes are skipped. */
 export async function sortNewMailSafe(
@@ -580,9 +640,14 @@ export async function sortNewMailSafe(
 	inFlight.add(accountRowId);
 	try {
 		await sortNewMail(accountRowId, accountEmail, auth);
+		noteRecovered('pass', accountRowId, 'pass_recovered');
 	} catch (err) {
+		// A 401 is logged, and sent to Telegram, by markNeedsReauth.
 		if (err instanceof JMAPAuthError) markNeedsReauth(accountRowId);
-		else console.error('[jev] sorting failed', accountEmail, err);
+		else {
+			console.error('[jev] sorting failed', accountEmail, err);
+			noteFailure('pass', accountRowId, 'pass_failed', errorFields(err));
+		}
 	} finally {
 		inFlight.delete(accountRowId);
 	}

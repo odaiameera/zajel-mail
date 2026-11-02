@@ -1,4 +1,5 @@
 import { getDb } from './index';
+import { errorFields, logEvent } from '$lib/server/log';
 
 /**
  * Bundle migration SQL into the build at compile time. Vite's eager glob
@@ -52,6 +53,7 @@ export function runMigrations(): void {
 				`[migrate] ${name} failed and was not applied:`,
 				err instanceof Error ? err.message : err
 			);
+			logEvent('error', 'db', 'migration_failed', { migration: name, ...errorFields(err) });
 		}
 	}
 }

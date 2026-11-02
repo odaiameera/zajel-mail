@@ -111,7 +111,7 @@ describe('runMailAssistant', () => {
 					receivedAt: '',
 					bodyText: 'Hello'
 				})
-			).rejects.toThrow(/set OLLAMA_MODEL to a model your endpoint currently provides/);
+			).rejects.toThrow(/choose another in Settings → Agent/);
 		}
 	});
 
@@ -186,7 +186,7 @@ describe('listAvailableModels', () => {
 
 		const logged = warn.mock.calls.map((call) => String(call[0])).join('\n');
 		expect(logged).toContain('deepseek-v3.1:671b-cloud');
-		expect(logged).toContain('set OLLAMA_MODEL to one of these');
+		expect(logged).toContain('choose one in Settings → Agent');
 	});
 
 	it('does not go looking for models on an unrelated failure', async () => {

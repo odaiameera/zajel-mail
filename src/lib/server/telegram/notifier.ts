@@ -6,22 +6,34 @@ import { labelMailboxIds } from '$lib/types/labels';
 import { authStateForAccount, getAccount, listAccounts } from '$lib/server/auth/accounts';
 import { scheduleReminder } from '$lib/server/db/queries/reminders';
 import { recordAudit } from '$lib/server/agent/store';
+import { errorFields, logEvent } from '$lib/server/log';
 import {
 	answerCallback,
 	clearButtons,
 	escapeHtml,
+	retryable,
 	sendMessage,
 	telegramConfigured,
+	TelegramError,
 	type InlineButton,
 	type TelegramUpdate
 } from './bot';
 import {
+	claimAlert,
+	claimReminder,
 	createButton,
+	dueAlerts,
 	dueReminders,
+	finishAlert,
 	getLink,
 	getLinkByChat,
+	holdAlertUntil,
 	linkChatWithCode,
 	markReminderSent,
+	queueAlert,
+	releaseButton,
+	releaseReminder,
+	retryAlertAt,
 	setLinkFlags,
 	takeButton,
 	type ButtonToken
@@ -35,16 +47,52 @@ import {
  */
 
 const MAX_PER_HOUR = 20;
+const HOUR_MS = 3_600_000;
 const SNOOZE_MS = 60 * 60 * 1000;
+// An urgent alert Telegram still hasn't taken after this long is stale news;
+// a notice from Zajel itself (a lost sign-in) keeps for a week.
+const ALERT_EXPIRY_MS = 12 * HOUR_MS;
+const NOTICE_EXPIRY_MS = 7 * 24 * HOUR_MS;
+// How long a notice waits while alerts are paused before looking again.
+const PAUSED_RECHECK_MS = 5 * 60_000;
+const BUTTON_TIMEOUT_MS = 20_000;
 const sentLog = new Map<string, number[]>();
+const cappedLogged = new Map<string, number>();
 
 /** A burst of mail can't turn into a burst of pings. */
 function allowSend(userId: string, nowMs = Date.now()): boolean {
-	const recent = (sentLog.get(userId) ?? []).filter((t) => nowMs - t < 3_600_000);
+	const recent = (sentLog.get(userId) ?? []).filter((t) => nowMs - t < HOUR_MS);
 	if (recent.length >= MAX_PER_HOUR) return false;
 	recent.push(nowMs);
 	sentLog.set(userId, recent);
 	return true;
+}
+
+/** A send that failed doesn't use up the hour. */
+function giveBackSend(userId: string): void {
+	sentLog.get(userId)?.pop();
+}
+
+function capFreesAt(userId: string, nowMs: number): number {
+	const recent = (sentLog.get(userId) ?? []).filter((t) => nowMs - t < HOUR_MS);
+	return recent.length ? Math.min(...recent) + HOUR_MS : nowMs;
+}
+
+// While Telegram keeps failing, a send failure is logged when it starts or
+// changes, and once when sending works again; not on every retry.
+let sendFailure = '';
+
+function noteSendFailure(event: string, fields: Record<string, unknown>): void {
+	const text = `${event}:${String(fields.error)}`;
+	if (text === sendFailure) return;
+	sendFailure = text;
+	logEvent('error', 'telegram', event, fields);
+}
+
+function noteSendOk(): void {
+	if (!sendFailure) return;
+	sendFailure = '';
+	logEvent('info', 'telegram', 'send_recovered');
 }
 
 /** Links in messages only ever point at this app. */
@@ -72,15 +120,18 @@ export function urgentAlertsWanted(accountRowId: string): boolean {
 	return !!link && link.urgent && !link.paused;
 }
 
-/** Tell the linked chat about a message Jev judged urgent. */
-export async function notifyUrgent(
-	accountRowId: string,
-	email: { id: string; subject?: string | null; from?: { name?: string | null; email: string }[] | null }
-): Promise<void> {
+type UrgentEmail = { id: string; subject?: string | null; from?: { name?: string | null; email: string }[] | null };
+
+/**
+ * Queue an alert about a message Jev judged urgent, without sending it:
+ * flushAlerts sends it, now or on a later run if it fails or waits for the
+ * hourly cap, so it is late rather than lost. An email is only ever alerted
+ * once. Synchronous, so a pass can queue all its alerts before it sends any.
+ * Returns the login to flush for, or null when nothing was queued.
+ */
+export function queueUrgent(accountRowId: string, email: UrgentEmail): string | null {
 	const account = getAccount(accountRowId);
-	if (!account || !urgentAlertsWanted(accountRowId)) return;
-	const link = getLink(account.user_id)!;
-	if (!allowSend(link.userId)) return;
+	if (!account || !urgentAlertsWanted(accountRowId)) return null;
 
 	const sender = email.from?.[0];
 	const several = listAccounts(account.user_id).length > 1;
@@ -89,16 +140,105 @@ export async function notifyUrgent(
 		escapeHtml(email.subject || '(no subject)'),
 		...(several ? [`<i>${escapeHtml(account.email)}</i>`] : [])
 	].join('\n');
-	await sendMessage(link.chatId, html, emailButtons(link.userId, account.id, email.id));
-	recordAudit({
-		userId: link.userId,
-		accountId: account.id,
-		source: 'telegram',
-		tool: 'notify_urgent',
-		tier: 'self',
-		summary: `Sent an urgent alert: “${(email.subject ?? '').slice(0, 80)}”`,
-		outcome: 'done'
-	});
+	const summary = `Sent an urgent alert: “${(email.subject ?? '').slice(0, 80)}”`;
+	return queueAlert({ userId: account.user_id, accountId: account.id, emailId: email.id, html, summary }) ? account.user_id : null;
+}
+
+/** Queue an alert (queueUrgent) and send it straight away. */
+export async function notifyUrgent(accountRowId: string, email: UrgentEmail): Promise<void> {
+	const userId = queueUrgent(accountRowId, email);
+	if (userId) await flushAlerts(userId);
+}
+
+/**
+ * Send the queued alerts that are due: one login's, or everyone's (the minute
+ * cron). `nowMs` is for tests; otherwise each alert reads the clock afresh,
+ * since one slow send can take 15 s and leases must stay ahead of it.
+ */
+export async function flushAlerts(userId: string | null = null, nowMs?: number): Promise<void> {
+	if (!telegramConfigured()) return;
+	const clock = () => nowMs ?? Date.now();
+	for (const alert of dueAlerts(userId, clock())) {
+		const now = clock();
+		// Another run may be sending this one already.
+		if (!claimAlert(alert.id, now)) continue;
+		const notice = alert.kind === 'notice';
+		const link = getLink(alert.userId);
+		// Unlinked, or urgent alerts switched off, since it was queued: dropped,
+		// as a new alert would be. Paused: an alert is dropped, while a notice
+		// waits, so it is seen once alerts are back on.
+		if (!link || (!notice && (link.paused || !link.urgent))) {
+			finishAlert(alert.id, 'dropped', now);
+			continue;
+		}
+		if (now - Date.parse(alert.createdAt) > (notice ? NOTICE_EXPIRY_MS : ALERT_EXPIRY_MS)) {
+			finishAlert(alert.id, 'expired', now);
+			logEvent('error', 'telegram', 'urgent_expired', { account: alert.accountId, kind: alert.kind, attempts: alert.attempts });
+			continue;
+		}
+		if (link.paused) {
+			holdAlertUntil(alert.id, now + PAUSED_RECHECK_MS);
+			continue;
+		}
+		if (!notice && !allowSend(alert.userId, now)) {
+			holdAlertUntil(alert.id, capFreesAt(alert.userId, now));
+			if ((cappedLogged.get(alert.userId) ?? 0) + HOUR_MS < now) {
+				cappedLogged.set(alert.userId, now);
+				logEvent('warn', 'telegram', 'urgent_capped', { account: alert.accountId });
+			}
+			continue;
+		}
+		try {
+			await sendMessage(link.chatId, alert.html, notice ? openButton() : emailButtons(link.userId, alert.accountId, alert.emailId));
+			noteSendOk();
+		} catch (err) {
+			if (!notice) giveBackSend(alert.userId);
+			const again = retryable(err);
+			if (again) {
+				const waitMs =
+					err instanceof TelegramError && err.retryAfter ? err.retryAfter * 1000 : Math.min(30_000 * 2 ** alert.attempts, 10 * 60_000);
+				retryAlertAt(alert.id, clock() + waitMs);
+			} else {
+				finishAlert(alert.id, 'refused', clock());
+			}
+			console.error('[telegram] alert failed', err instanceof Error ? err.message : err);
+			noteSendFailure('urgent_failed', { account: alert.accountId, kind: alert.kind, retrying: again, ...errorFields(err) });
+			// Telegram is failing: the rest wait for the next run.
+			break;
+		}
+		if (finishAlert(alert.id, 'sent', clock()) && !notice) {
+			recordAudit({
+				userId: alert.userId,
+				accountId: alert.accountId,
+				source: 'telegram',
+				tool: 'notify_urgent',
+				tier: 'self',
+				summary: alert.summary,
+				outcome: 'done'
+			});
+		}
+	}
+}
+
+function openButton(): InlineButton[][] {
+	const origin = env.ORIGIN?.replace(/\/+$/, '');
+	return origin ? [[{ text: 'Open', url: `${origin}/` }]] : [];
+}
+
+/**
+ * Once, when an account's stored password stops working (markNeedsReauth):
+ * every background pass for it stops, urgent alerts included, so the user
+ * hears it rather than mistaking the quiet for no urgent mail. It goes
+ * through the outbox like an alert, so a failed send is retried; it isn't
+ * capped, and while alerts are paused it waits until they're back on.
+ */
+export async function notifySignInLost(accountRowId: string, nowMs = Date.now()): Promise<void> {
+	if (!telegramConfigured()) return;
+	const account = getAccount(accountRowId);
+	if (!account || !getLink(account.user_id)) return;
+	const html = `<b>Zajel can’t sign in</b> to ${escapeHtml(account.email)}. Urgent alerts and reminders for it are off until you sign in again.`;
+	queueAlert({ kind: 'notice', userId: account.user_id, accountId: account.id, emailId: `reauth:${nowMs}`, html, summary: '' }, nowMs);
+	await flushAlerts(account.user_id);
 }
 
 /**
@@ -112,7 +252,12 @@ export async function sendTestAlert(userId: string): Promise<'sent' | 'not_linke
 	if (!link) return 'not_linked';
 	if (!allowSend(userId)) return 'limited';
 	const origin = env.ORIGIN?.replace(/\/+$/, '');
-	await sendMessage(link.chatId, '<b>Urgent</b> · Zajel\nTest alert', origin ? [[{ text: 'Open', url: `${origin}/` }]] : []);
+	try {
+		await sendMessage(link.chatId, '<b>Urgent</b> · Zajel\nTest alert', origin ? [[{ text: 'Open', url: `${origin}/` }]] : []);
+	} catch (err) {
+		giveBackSend(userId);
+		throw err;
+	}
 	recordAudit({
 		userId,
 		accountId: null,
@@ -131,11 +276,22 @@ export async function sendDueReminders(nowMs = Date.now()): Promise<void> {
 	for (const reminder of dueReminders(nowMs)) {
 		const link = getLink(reminder.userId);
 		// Paused or unlinked: it waits rather than being lost.
-		if (!link || link.paused || !markReminderSent(reminder.id)) continue;
+		if (!link || link.paused || !claimReminder(reminder.id)) continue;
 		const buttons = reminder.emailId && reminder.accountId ? emailButtons(link.userId, reminder.accountId, reminder.emailId) : [];
-		await sendMessage(link.chatId, `<b>Reminder</b>\n${escapeHtml(reminder.text)}`, buttons).catch((err) =>
-			console.error('[telegram] reminder failed', err instanceof Error ? err.message : err)
-		);
+		try {
+			await sendMessage(link.chatId, `<b>Reminder</b>\n${escapeHtml(reminder.text)}`, buttons);
+			markReminderSent(reminder.id);
+			noteSendOk();
+		} catch (err) {
+			// Not delivered: give it back unless Telegram refused it for good,
+			// and leave the rest for the next run.
+			const again = retryable(err);
+			if (again) releaseReminder(reminder.id);
+			else markReminderSent(reminder.id);
+			console.error('[telegram] reminder failed', err instanceof Error ? err.message : err);
+			noteSendFailure('reminder_failed', { retrying: again, ...errorFields(err) });
+			break;
+		}
 	}
 }
 
@@ -176,18 +332,35 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
 			await answerCallback(query.id, 'This button has expired');
 			return;
 		}
-		const result = await runButton(token).catch(() => 'That didn’t work');
-		recordAudit({
-			userId: link.userId,
-			accountId: token.accountId,
-			source: 'telegram',
-			tool: `button_${token.action}`,
-			tier: 'self',
-			summary: result,
-			outcome: 'done'
+		const buttonId = query.data!;
+		const messageId = query.message?.message_id;
+		const audit = (summary: string, outcome: 'done' | 'failed') =>
+			recordAudit({ userId: link.userId, accountId: token.accountId, source: 'telegram', tool: `button_${token.action}`, tier: 'self', summary, outcome });
+		// What happens once the action has really finished, however long it took.
+		const action = runButton(token).then(
+			async (result) => {
+				audit(result, 'done');
+				if (messageId !== undefined) await clearButtons(chatId, messageId).catch(() => {});
+				return result;
+			},
+			(err) => {
+				// Not done: the button works again, and stays on the message.
+				releaseButton(buttonId);
+				audit('That didn’t work', 'failed');
+				logEvent('error', 'telegram', 'button_failed', { action: token.action, ...errorFields(err) });
+				return 'That didn’t work';
+			}
+		);
+		// The answer is bounded, so a mail server that never replies can't hold
+		// up the poll loop, and with it /stop and every other button. The action
+		// itself carries on, and the button stays spent until it settles.
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const slow = new Promise<string>((resolve) => {
+			timer = setTimeout(() => resolve('The mail server is slow; this may still go through'), BUTTON_TIMEOUT_MS);
 		});
-		await answerCallback(query.id, result);
-		if (query.message) await clearButtons(chatId, query.message.message_id).catch(() => {});
+		const reply = await Promise.race([action, slow]);
+		clearTimeout(timer);
+		await answerCallback(query.id, reply).catch(() => {});
 		return;
 	}
 

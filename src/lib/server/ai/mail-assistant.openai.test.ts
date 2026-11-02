@@ -79,7 +79,7 @@ describe('runAIChat with OpenAI', () => {
 		expect(body.text.format).toEqual({ type: 'json_schema', name: 'answer', schema, strict: false });
 	});
 
-	it('names OPENAI_MODEL for an unknown model and skips Ollama tag listing', async () => {
+	it('points to Settings for an unknown model and skips Ollama tag listing', async () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const fetchMock = vi.fn().mockResolvedValue(new Response('{"error":{}}', { status: 404 }));
 		vi.stubGlobal('fetch', fetchMock);
@@ -88,7 +88,7 @@ describe('runAIChat with OpenAI', () => {
 			(caught) => caught
 		);
 		expect(error).toBeInstanceOf(MailAssistantError);
-		expect(error.message).toContain('OPENAI_MODEL');
+		expect(error.message).toContain('choose another in Settings → Agent');
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 });
