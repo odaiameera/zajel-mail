@@ -49,6 +49,10 @@ export const actions: Actions = {
 		}
 
 		const user = await createAppUser(email, password);
+		// Someone else's submission got in first while this password was hashing.
+		if (!user) {
+			return fail(409, { error: 'Setup is already complete', email: '' });
+		}
 		// The password was just chosen, which counts as a fresh re-check, so
 		// a passkey or an authenticator can be added straight away.
 		const sessionId = createAppSession(

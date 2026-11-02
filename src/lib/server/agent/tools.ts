@@ -11,10 +11,14 @@ import { ensureArchiveMailbox, ensureRemindMeLaterMailbox, getMailboxes } from '
 import { categoryOf, INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
 import { labelMailboxIds } from '$lib/types/labels';
 import { wallClockToUtc } from '$lib/server/calendar/tz';
-import { parseLocalTime } from './local-time';
+import { listAccounts } from '$lib/server/auth/accounts';
+import { listIdentities } from '$lib/server/db/queries/identities';
+import { spend, type TurnBudget } from './budget';
+import { localClock, parseLocalTime } from './local-time';
 import { scheduleReminder } from '$lib/server/db/queries/reminders';
 import { getDecision } from '$lib/server/db/queries/jev-decisions';
 import { htmlToPromptText } from '$lib/server/ai/extract-event';
+import { mailFilterConditions, parseMailSearchSpec } from '$lib/server/ai/mail-search';
 import { searchMail as searchMailbox } from '$lib/server/search/hybrid';
 import { createPendingAction, type AgentSource, type PendingAction, type ToolTier } from './store';
 import { composeReply, saveComposedDraft, type ComposeRequest } from './compose';
@@ -45,6 +49,8 @@ export interface ToolContext {
 	conversationId: string | null;
 	source: AgentSource;
 	timeZone: string;
+	/** What this turn has used of what it may do on its own (budget.ts). */
+	budget: TurnBudget;
 	mailboxes(): Promise<Mailbox[]>;
 }
 
@@ -109,14 +115,14 @@ function placeOf(email: Email, boxes: Mailbox[]): string {
 		.join(', ');
 }
 
-function summaryLine(email: Email, boxes: Mailbox[]): string {
+function summaryLine(email: Email, boxes: Mailbox[], timeZone: string): string {
 	const flags = [
 		email.keywords?.$seen ? '' : 'unread',
 		email.keywords?.$flagged ? 'starred' : ''
 	].filter(Boolean);
 	return [
 		`id=${email.id}`,
-		`date=${email.receivedAt}`,
+		`date=${localClock(email.receivedAt, timeZone)}`,
 		`from=${who(email.from)}`,
 		`subject=${JSON.stringify(email.subject ?? '')}`,
 		`in=${placeOf(email, boxes)}`,
@@ -159,18 +165,10 @@ const searchMail: AgentTool = {
 		limit: { type: 'integer' }
 	}),
 	async run(ctx, input) {
-		const conditions: Record<string, unknown>[] = [];
-		if (str(input.text)) conditions.push({ text: str(input.text, 200) });
-		if (str(input.from)) conditions.push({ from: str(input.from, 200) });
-		for (const key of ['after', 'before'] as const) {
-			const value = str(input[key], 40);
-			const at = value ? new Date(value.length === 10 ? `${value}T00:00:00Z` : value) : null;
-			if (at && !Number.isNaN(at.getTime())) conditions.push({ [key]: at.toISOString() });
-		}
+		// The same reading of text, sender and ISO dates as the search box.
+		const conditions = mailFilterConditions(parseMailSearchSpec(input));
 		if (input.unread_only === true) conditions.push({ notKeyword: '$seen' });
-		if (conditions.length === 0) {
-			conditions.push({ inMailbox: (await inbox(ctx)).id });
-		}
+		if (conditions.length === 0) conditions.push({ inMailbox: (await inbox(ctx)).id });
 		const filter = conditions.length === 1 ? conditions[0] : { operator: 'AND', conditions };
 		const limit = Math.min(Math.max(Number(input.limit) || 15, 1), MAX_RESULTS);
 		const [boxes, { emails, total, ranked }] = await Promise.all([
@@ -180,7 +178,7 @@ const searchMail: AgentTool = {
 		if (emails.length === 0) return { content: 'No messages matched.' };
 		return {
 			content: `${total} matched; showing ${emails.length}${ranked ? ', best match first' : ''}.\n${emails
-				.map((e) => untrusted('email_summary', e.id, summaryLine(e, boxes)))
+				.map((e) => untrusted('email_summary', e.id, summaryLine(e, boxes, ctx.timeZone)))
 				.join('\n')}`
 		};
 	}
@@ -199,7 +197,7 @@ const readEmail: AgentTool = {
 			`From: ${who(email.from)}`,
 			`To: ${who(email.to)}`,
 			email.cc?.length ? `Cc: ${who(email.cc)}` : '',
-			`Date: ${email.receivedAt}`,
+			`Date: ${localClock(email.receivedAt, ctx.timeZone)}`,
 			`Subject: ${email.subject ?? ''}`,
 			`Folder: ${placeOf(email, boxes)}`,
 			email.attachments?.length ? `Attachments: ${email.attachments.map((a) => a.name ?? a.type).join(', ')}` : ''
@@ -248,7 +246,7 @@ const inboxTriage: AgentTool = {
 			const jev = decision?.status === 'done' && decision.category
 				? `jev=${decision.category}@${(decision.confidence ?? 0).toFixed(2)}`
 				: 'jev=none';
-			return untrusted('email_summary', e.id, `${summaryLine(e, boxes)} | ${jev}`);
+			return untrusted('email_summary', e.id, `${summaryLine(e, boxes, ctx.timeZone)} | ${jev}`);
 		});
 		return { content: lines.join('\n') };
 	}
@@ -290,6 +288,8 @@ const archive: AgentTool = {
 		if (list.length === 0) return { content: 'No valid email ids', isError: true };
 		const target = await ensureArchiveMailbox(ctx.client, ctx.auth.accountId);
 		if (!target) return { content: 'Could not find or create Archive', isError: true };
+		const refused = spend(ctx.budget, 'moved', list.length);
+		if (refused) return { content: refused, isError: true };
 		await moveEmails(ctx.client, ctx.auth.accountId, list, target, undefined, labelMailboxIds(await ctx.mailboxes()));
 		const done = `Archived ${plural(list.length, 'message')}`;
 		return { content: `Done: ${done}.`, done };
@@ -307,6 +307,8 @@ const moveToTrash: AgentTool = {
 		const boxes = await ctx.mailboxes();
 		const trash = boxes.find((m) => m.role === 'trash');
 		if (!trash) return { content: 'This account has no Trash', isError: true };
+		const refused = spend(ctx.budget, 'trashed', list.length);
+		if (refused) return { content: refused, isError: true };
 		await moveEmails(ctx.client, ctx.auth.accountId, list, trash.id, undefined, labelMailboxIds(boxes));
 		const done = `Moved ${plural(list.length, 'message')} to Trash`;
 		return { content: `Done: ${done}.`, done };
@@ -324,6 +326,8 @@ const moveToFolder: AgentTool = {
 		const labels = labelMailboxIds(boxes);
 		const folder = boxes.find((m) => m.id === input.folder_id && !labels.has(m.id));
 		if (list.length === 0 || !folder) return { content: 'Unknown folder or no valid email ids', isError: true };
+		const refused = spend(ctx.budget, 'moved', list.length);
+		if (refused) return { content: refused, isError: true };
 		await moveEmails(ctx.client, ctx.auth.accountId, list, folder.id, undefined, labels);
 		const done = `Moved ${plural(list.length, 'message')} to ${folder.name}`;
 		return { content: `Done: ${done}.`, done };
@@ -412,15 +416,42 @@ function composeInput(input: Record<string, unknown>): ComposeRequest {
 	};
 }
 
+/** The addresses that are the user's own: the linked accounts and their identities. */
+function ownAddresses(ctx: ToolContext): Set<string> {
+	return new Set(
+		[ctx.userEmail, ...listAccounts(ctx.userId).map((a) => a.email), ...listIdentities(ctx.userEmail).map((i) => i.email)].map((a) =>
+			a.toLowerCase()
+		)
+	);
+}
+
 const saveDraftTool: AgentTool = {
 	name: 'save_draft',
 	tier: 'self',
-	description: 'Write a message and save it to Drafts without sending, for the user to review.',
+	description:
+		'Write a message and save it to Drafts without sending, for the user to review. A draft addressed to anyone but the user waits for their click first.',
 	input_schema: schema(COMPOSE_PROPS),
 	async run(ctx, input) {
 		const message = await composeReply(ctx, composeInput(input));
 		if ('error' in message) return { content: message.error, isError: true };
-		const saved = await saveComposedDraft(ctx, message);
+		// A draft to someone else is one click from leaving the account, and
+		// mail content can talk the model into writing one: it waits for a card.
+		const own = ownAddresses(ctx);
+		if ([...message.to, ...message.cc].some((address) => !own.has(address.toLowerCase()))) {
+			if (ctx.source !== 'chat') return { content: 'A draft to someone else needs the user to confirm it in Zajel', isError: true };
+			const pending = createPendingAction({
+				userId: ctx.userId,
+				accountId: ctx.accountRowId,
+				conversationId: ctx.conversationId,
+				kind: 'save_draft',
+				payload: { ...message }
+			});
+			return {
+				content: `Waiting for the user to confirm saving a draft to ${message.to.join(', ')}: “${message.subject}”. Nothing has been saved.`,
+				pending
+			};
+		}
+		const saved = await saveComposedDraft(ctx.auth, ctx.userEmail, message);
 		if (!saved.success) return { content: saved.error ?? 'Could not save the draft', isError: true };
 		const done = `Saved a draft to ${message.to.join(', ')}: “${message.subject}”`;
 		return { content: `Done: ${done}.\n\n${message.text}`, done };
@@ -436,6 +467,8 @@ const remindMe: AgentTool = {
 	async run(ctx, input) {
 		if (!telegramConfigured()) return { content: 'Telegram isn’t set up on this server', isError: true };
 		if (!getLink(ctx.userId)) return { content: 'The user hasn’t linked Telegram yet (Settings → Notifications)', isError: true };
+		const refused = spend(ctx.budget, 'reminders', 1);
+		if (refused) return { content: refused, isError: true };
 		const text = str(input.text, 500);
 		const [emailId] = ids([input.email_id]);
 		if (!text) return { content: 'text is required', isError: true };

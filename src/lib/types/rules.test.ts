@@ -6,6 +6,7 @@ import {
 	isUsableCondition,
 	jevThreshold,
 	ruleHolds,
+	withoutOffLimitsTargets,
 	type Rule,
 	type RuleCondition
 } from './rules';
@@ -88,5 +89,29 @@ describe('effectiveActions', () => {
 	it('drops a tab action with no tab picked', () => {
 		const actions = [{ type: 'setCategory' as const, value: '' }, { type: 'setCategory' as const, value: 'updates' }];
 		expect(effectiveActions(rule({ actions }))).toEqual([{ type: 'setCategory', value: 'updates' }]);
+	});
+});
+
+describe('withoutOffLimitsTargets', () => {
+	const offLimits = new Set(['trash', 'junk']);
+
+	it('drops Trash and Junk as targets from a rule Jev judges, keeping the rest', () => {
+		const actions = [
+			{ type: 'moveToFolder' as const, value: 'junk' },
+			{ type: 'applyLabel' as const, value: 'trash' },
+			{ type: 'moveToFolder' as const, value: 'receipts' },
+			{ type: 'markRead' as const }
+		];
+		expect(withoutOffLimitsTargets(rule({ actions }), offLimits).actions).toEqual([
+			{ type: 'moveToFolder', value: 'receipts' },
+			{ type: 'markRead' }
+		]);
+	});
+
+	it('leaves other rules, and rules with nothing to drop, as they are', () => {
+		const exact = rule({ conditions: [from()], actions: [{ type: 'moveToFolder', value: 'trash' }] });
+		expect(withoutOffLimitsTargets(exact, offLimits)).toBe(exact);
+		const fine = rule();
+		expect(withoutOffLimitsTargets(fine, offLimits)).toBe(fine);
 	});
 });

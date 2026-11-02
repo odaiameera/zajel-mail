@@ -1,7 +1,7 @@
 import { browser } from '$app/environment';
 import { invalidateAll, goto } from '$app/navigation';
 import { showToast } from './toast';
-import { wasTouchedRecently } from '$lib/calendar/api';
+import { CALENDAR_CHANGED_EVENT, wasTouchedRecently } from '$lib/calendar/api';
 import { canNotify, showNotification } from '$lib/notifications';
 
 /**
@@ -11,10 +11,13 @@ import { canNotify, showNotification } from '$lib/notifications';
  * VALARM reminders ("Event in 10 minutes") — matching what Google/Apple
  * calendars do while a tab is open.
  *
- * Dedupe state lives in localStorage so reloads don't re-fire:
+ * Shared state lives in localStorage so reloads and other tabs agree:
  *  - sync tokens   → only post-baseline changes notify
  *  - fired alarms  → each occurrence+lead-time fires once
  *  - touched ids   → our own edits (marked by the API helper) stay silent
+ *  - reminders     → the last poll's list; every tab schedules timers from
+ *                    it (via the `storage` event), so closing the tab that
+ *                    happened to poll doesn't lose the reminders it held
  */
 
 // 5 minutes: calendar changes from other devices are ambient information,
@@ -25,6 +28,7 @@ const POLL_INTERVAL_MS = 5 * 60_000;
 const TOKENS_KEY = 'cal-sync-tokens-v1';
 const FIRED_KEY = 'cal-fired-alarms-v1';
 const LAST_POLL_KEY = 'cal-last-poll-v1';
+export const REMINDERS_KEY = 'cal-reminders-v1';
 const FIRED_TTL_MS = 2 * 86400000;
 
 interface ReminderItem {
@@ -84,6 +88,9 @@ function createCalendarNotify() {
 	let options: CalendarNotifyOptions = { newEvents: true, reminders: true };
 	let reminderTimers: ReturnType<typeof setTimeout>[] = [];
 	let polling = false;
+	// Bumped by stop(): a poll that was in flight when the engine stopped
+	// must not schedule timers into a stopped engine.
+	let generation = 0;
 
 	function clearReminderTimers() {
 		for (const t of reminderTimers) clearTimeout(t);
@@ -135,6 +142,11 @@ function createCalendarNotify() {
 		}
 	}
 
+	/** Timers from the list the last poll (in any tab) left behind. */
+	function scheduleFromShared() {
+		scheduleReminders(readJson<ReminderItem[]>(REMINDERS_KEY, []));
+	}
+
 	function notifyChanged(changed: ChangedEvent[]) {
 		if (!options.newEvents) return;
 		const fresh = changed.filter((c) => !wasTouchedRecently(c.id));
@@ -161,7 +173,11 @@ function createCalendarNotify() {
 		}
 	}
 
-	async function poll() {
+	/**
+	 * One poll. `force` skips the cross-tab gate: after this tab wrote to the
+	 * calendar its reminder timers are stale, whoever polled last.
+	 */
+	async function poll(force = false) {
 		if (polling) return;
 		// Cross-tab gate: with several tabs open, only the one whose timer
 		// fires first actually polls each window — the rest see the fresh
@@ -169,24 +185,29 @@ function createCalendarNotify() {
 		// duplicate desktop notifications (system notifications from the
 		// polling tab reach the user regardless of which tab is focused).
 		const lastPoll = readJson<number>(LAST_POLL_KEY, 0);
-		if (Date.now() - lastPoll < POLL_INTERVAL_MS * 0.9) return;
+		if (!force && Date.now() - lastPoll < POLL_INTERVAL_MS * 0.9) return;
 		writeJson(LAST_POLL_KEY, Date.now());
 		polling = true;
+		const started = generation;
 		try {
 			const tokens = readJson<Record<string, string>>(TOKENS_KEY, {});
 			const res = await fetch('/api/calendar/poll', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ tokens })
+				body: JSON.stringify({ tokens, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })
 			});
-			if (!res.ok) return;
+			if (!res.ok || started !== generation) return;
 			const data = (await res.json()) as {
 				tokens: Record<string, string>;
 				changed: ChangedEvent[];
 				reminders: ReminderItem[];
 			};
+			if (started !== generation) return;
 			if (data.tokens) writeJson(TOKENS_KEY, data.tokens);
 			if (data.changed?.length) notifyChanged(data.changed);
+			// Written before scheduling: the `storage` event hands the same
+			// list to every other open tab.
+			writeJson(REMINDERS_KEY, data.reminders ?? []);
 			scheduleReminders(data.reminders ?? []);
 		} catch {
 			// Network hiccup — next interval retries.
@@ -195,22 +216,34 @@ function createCalendarNotify() {
 		}
 	}
 
+	const onStorage = (e: StorageEvent) => {
+		if (e.key === REMINDERS_KEY) scheduleFromShared();
+	};
+	const onCalendarChanged = () => void poll(true);
+
 	return {
 		start(opts: CalendarNotifyOptions) {
 			if (!browser) return;
 			options = opts;
 			if (timer) return;
+			window.addEventListener('storage', onStorage);
+			window.addEventListener(CALENDAR_CHANGED_EVENT, onCalendarChanged);
+			scheduleFromShared();
 			void poll();
 			timer = setInterval(() => void poll(), POLL_INTERVAL_MS);
 		},
 		setOptions(opts: CalendarNotifyOptions) {
 			options = opts;
 			if (!opts.reminders) clearReminderTimers();
+			else if (reminderTimers.length === 0) scheduleFromShared();
 		},
 		stop() {
+			generation++;
 			if (timer) {
 				clearInterval(timer);
 				timer = null;
+				window.removeEventListener('storage', onStorage);
+				window.removeEventListener(CALENDAR_CHANGED_EVENT, onCalendarChanged);
 			}
 			clearReminderTimers();
 		}

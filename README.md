@@ -175,11 +175,11 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
 - **Persistent conversations** with history. Answers are rendered in Markdown.
 
 **On Claude, Zajel acts.** With `ANTHROPIC_API_KEY` set, Zajel runs on **Claude Opus 5.5** for the agent and **Claude Haiku 5.5** for writing, with native tool use.
-- **Your own mailbox:** it marks, stars, archives, moves, labels, snoozes, drafts and sets Telegram reminders. These changes are reversible, happen straight away and are logged.
-- **Anything that leaves your account or changes your calendar** (sending, adding or deleting an event, invitations, scheduling a job) becomes a card you confirm.
-- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), with **Mark read**, **Snooze 1h** and **Archive** buttons, and sends reminders. It doesn't take typed messages.
+- **Your own mailbox:** it marks, stars, archives, moves, labels and snoozes mail, saves drafts addressed to you and sets Telegram reminders. These changes are reversible, happen straight away and are logged. One request can archive or move up to 100 messages, move up to 30 to Trash and set up to 3 reminders this way; for more, Zajel asks you.
+- **Anything that leaves your account or changes your calendar** (sending, a draft to someone else, adding or deleting an event, invitations, scheduling a job) becomes a card you confirm.
+- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), with **Mark read**, **Snooze 1h** and **Archive** buttons, and sends reminders. A reminder more than a week late is dropped rather than sent. It doesn't take typed messages.
 - **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools only. They run once, hourly, daily, on weekdays, on chosen days of the week, or weekly.
-- **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from what each provider offers. **Check** sends a real request.
+- **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from what each provider offers. **Check** sends a real request to the provider in use, and checks the fallback model when `ANTHROPIC_FALLBACK_MODEL` is set.
 
 Without an Anthropic key, Zajel answers and proposes but doesn't act. It runs on **OpenAI's GPT-5.6** when `OPENAI_API_KEY` is set:
 - `gpt-5.6-terra` by default, the balanced tier
@@ -202,9 +202,9 @@ Otherwise it runs on **any Ollama-compatible endpoint**: Ollama Cloud, or a mode
 A confident pick is applied. Anything else stays in **Important**, so nothing is hidden because Jev was unsure. The message view shows **why** a message landed where it did.
 
 Jev learns from you:
-- **It never moves mail you've put in a tab yourself.**
+- **It never moves mail you've put in a tab yourself**, Important included.
 - **Your moves teach it.** When you move a message, that's passed to Jev with that sender's next email.
-- **Pinning** a sender, or a whole `@domain`, to a tab means Jev isn't asked again.
+- **Pinning** a sender, or a whole `@domain`, to a tab means Jev isn't asked again. Pins act while Inbox tabs and Jev are on for the account.
 
 Before switching it on, **Try Jev** shows where it would put your newest 200 Inbox emails, without moving anything. Afterwards, the mail already in your Inbox can be **sorted in the background**, with a cost estimate first.
 
@@ -213,13 +213,13 @@ Before switching it on, **Try Jev** shows where it would put your newest 200 Inb
 - Normal (80%)
 - Strict (95%)
 
-Mix these conditions freely with exact matches like *From contains…*, and test the rule on recent mail before you save it. Rules with a Jev condition never delete.
+Mix these conditions freely with exact matches like *From contains…*, and test the rule on recent mail before you save it. Rules with a Jev condition never delete, and never move mail to Trash or Junk.
 
 ![A Jev rule that moves invoices and receipts to the Receipts folder](docs/screenshots/jev-rule.png)
 
 **3. A second opinion on spam and phishing.** Jev runs beside Stalwart's filter, which keeps running.
 - **Watch only** records Jev's verdict next to Stalwart's, with a report of where the two disagree. Nothing moves.
-- **Active** moves mail Jev is at least 90% sure is spam or phishing to Junk. It warns from 60%, and never moves mail from your contacts or people you've written to. It also brings mail back out of Junk when Jev is very sure it's fine and the sender passed DMARC. A missing or errored DMARC result doesn't count as a pass.
+- **Active** moves mail Jev is at least 90% sure is spam or phishing to Junk. It warns from 60%, and never moves mail from your contacts or people you've written to, nor any mail when it couldn't check that. It also brings mail back out of Junk when Jev is very sure it's fine and the sender passed DMARC. A missing or errored DMARC result doesn't count as a pass.
 
 Jev is **off until you turn it on, account by account.** For a demo or development without a key, `JEV_MOCK=1` answers on the server and labels every answer as a mock, so a demo can never be mistaken for Jev. [JEV_PLAN.md](JEV_PLAN.md) has the full design.
 
@@ -231,8 +231,8 @@ Jev is **off until you turn it on, account by account.** For a demo or developme
 - **Five views**: month, week, work week, 3-day and day. The app remembers the one you last used. There's a mini-month for jumping around, and a line marking the current time.
 - **Several calendars**, each with its own colour, that you can show or hide. Create, rename and delete calendars from the sidebar.
 - **Events**: create, edit and delete, recurring series included. Changes to a series ask whether you mean this event or all of them, and either way the series keeps the occurrences you skipped or moved.
-- **Invitations.** Invites that arrive by email show as an RSVP card in the message, parsed straight from the attached calendar file. A change or cancellation of one meeting in a series updates just that meeting.
-- **Reminders and notifications** for upcoming events, and for events that are new or changed.
+- **Invitations.** Invites that arrive by email show as an RSVP card in the message, parsed straight from the attached calendar file. Your answer is saved to your calendar and sent to the organizer as a calendar reply. A change or cancellation of one meeting in a series updates just that meeting, and invitations from Outlook with a custom time zone keep the right time and their zone when you edit them.
+- **Reminders and notifications** for upcoming events (up to a week ahead), and for events that are new or changed. All-day reminders follow your own midnight, and every open tab keeps them.
 - **Keyboard shortcuts**:
 
   | Key | Action |
@@ -329,14 +329,14 @@ Zajel Mail holds the keys to your mail, so security comes first.
 - **Spam and authentication signals** are visible: the spam score, authentication results and sender trust are shown, not hidden.
 
 **AI that asks first**
-- **Anything that leaves your account waits for your click.** Sending, calendar changes, invitations and scheduled jobs are cards that name exactly what will happen.
-- **What Zajel does on its own stays in your mailbox and can be undone.** Marking, filing, labelling, snoozing and drafts are logged in Settings → Agent.
+- **Anything that leaves your account waits for your click.** Sending, drafts to other people, calendar changes, invitations and scheduled jobs are cards that name exactly what will happen.
+- **What Zajel does on its own stays in your mailbox and can be undone.** Marking, filing, labelling, snoozing, drafts to you and reminders are logged in Settings → Agent.
 
 ### Where your data goes
 
 - **AI.** Email content goes only to the AI service you choose: Anthropic, OpenAI or your own Ollama endpoint. **Semantic search** sends mail text only to the Ollama you name for it: the endpoint is reached from the server, receives the text of every indexed message, and a redirect to another host is refused. OpenAI requests are sent with `store: false`, but OpenAI's abuse-monitoring logs keep API content for up to 30 days unless you have Zero Data Retention.
 - **Jev.** Mail goes to TypeSafe only for accounts where you switch Jev on.
-  - Each new email is sent **once**: sender, recipients, subject, the first 2,000 characters of the body with quoted replies removed, and the facts the app works out about it.
+  - Each new email is sent **once**: the sender, To and Cc addresses, subject, the first 2,000 characters of the body as text with quoted replies removed, and the facts the app works out about it. With spam checks on, new mail also carries its authentication results, whether its Reply-To or display name points at another domain, up to five domains its body links to (read from its first 16 KB), and Stalwart's spam score and rule names. If the mail server refuses Jev's change, the email can be sent again on a later pass, up to five times.
   - Jev returns probabilities. The app keeps those and the facts; it **never stores the email text**.
   - "Try Jev" sends your newest 200 Inbox emails the same way, once, when you press it.
   - TypeSafe states it doesn't train on customer data. Its documentation doesn't state a retention period, and zero data retention is an enterprise option.
@@ -400,6 +400,14 @@ docker compose up --build -d
 The example binds to `127.0.0.1:3001`. Put it behind a TLS reverse proxy (Caddy, nginx or Traefik) for remote access, and set `ORIGIN` to the public URL. Attachments can be up to 25 MB, so let the proxy pass request bodies that large. nginx stops at 1 MB by default, so set `client_max_body_size 30m;` there. The example also sets `ADDRESS_HEADER=X-Forwarded-For` and `XFF_DEPTH=1`, so sign-in limits see each client's own address rather than the proxy's. Drop those two lines if nothing sits in front of the app, or anyone could pick the address they are counted under.
 
 The SQLite database lives at `/data/ameera.db`, so mount a volume there. Back up `WEBMAIL_SECRET` with it: if you rotate the secret, you have to re-enter every linked account's mail password.
+
+**Backups.** The database runs in SQLite's WAL mode, so copying `ameera.db` on its own can miss writes still in `ameera.db-wal`. Take backups with SQLite itself, which writes one consistent file:
+
+```sh
+docker compose exec webmail node -e "require('better-sqlite3')('/data/ameera.db').backup('/data/backup-' + new Date().toISOString().slice(0,10) + '.db')"
+```
+
+Or, with the `sqlite3` tool on the host: `sqlite3 /path/to/ameera.db ".backup '/path/to/ameera-backup.db'"`. Keep `WEBMAIL_SECRET` with the backup, since the linked mail passwords in it only decrypt with the secret they were saved under. To restore, stop the container, replace `ameera.db`, delete any `ameera.db-wal` and `ameera.db-shm` beside it, and start it again.
 
 ### Installing with Jev
 
@@ -495,10 +503,11 @@ To let Zajel create tasks, configure any combination of Todoist, Linear, Notion 
 | `WEBMAIL_SECRET` | Yes | Encrypts linked mail-account passwords at rest. Use a stable random value of at least 32 characters. |
 | `JMAP_BASE_URL` | Recommended | Default mail-server URL offered when linking an account. |
 | `ORIGIN` | Production | Public URL used by SvelteKit's request-origin checks. |
+| `ADDRESS_HEADER`, `XFF_DEPTH` | Behind a proxy | `X-Forwarded-For` and `1`, so sign-in limits count each client on its own instead of all of them as the proxy. The log warns (`ip_lockout_behind_proxy`) when a private address trips the limit without them. |
 | `DATABASE_PATH` | No | SQLite path. Defaults to a local development database, or `/data/ameera.db` in production. |
 | `ANTHROPIC_API_KEY` | AI only | Runs Zajel on Claude, as an agent that acts on your mailbox. |
 | `ANTHROPIC_MODEL`, `ANTHROPIC_FAST_MODEL` | No | The agent and writing models. Default to Claude Opus 5.5 and Claude Haiku 5.5; Settings → Agent can override them. |
-| `ANTHROPIC_FALLBACK_MODEL` | No | Takes a turn when the agent model is rate-limited. Defaults to Claude Sonnet 5.5. |
+| `ANTHROPIC_FALLBACK_MODEL` | No | Takes a turn when the agent model is rate-limited. Defaults to Claude Sonnet 5.5. Settings → Agent → Check tests it when set. |
 | `AI_PROVIDER` | No | `anthropic`, `openai` or `ollama`, when more than one key is set. Settings → Agent overrides it. |
 | `OPENAI_API_KEY` | AI only | Runs Zajel and event extraction on OpenAI. |
 | `OPENAI_MODEL` | No | OpenAI model. Defaults to `gpt-5.6-terra`; `gpt-5.6-luna` is faster and cheaper. |

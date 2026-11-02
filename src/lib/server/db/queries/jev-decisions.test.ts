@@ -12,6 +12,7 @@ import {
 	addUsage,
 	backfillProgress,
 	cancelBackfill,
+	correctedEmailIds,
 	decisionStats,
 	enqueueEmails,
 	getDecision,
@@ -93,12 +94,36 @@ describe('jev decisions', () => {
 		recordCorrections(ACCT, ['e1'], 'promotions'); // Jev said Updates: corrected
 		recordCorrections(ACCT, ['e4'], 'updates'); // moved back where Jev had it: not
 		recordCorrections(ACCT, ['e5'], 'important'); // left in Important, kept there: not
-		recordCorrections(ACCT, ['e2'], 'important'); // never answered: ignored
+		recordCorrections(ACCT, ['e2'], 'important'); // never answered: your choice is kept all the same
 
 		expect(getDecision(ACCT, 'e1')?.correctedTo).toBe('promotions');
-		expect(getDecision(ACCT, 'e2')?.correctedTo).toBeNull();
+		expect(getDecision(ACCT, 'e2')).toMatchObject({ status: 'failed', correctedTo: 'important' });
 		expect(decisionStats(ACCT, 0)).toEqual({ sorted: 3, corrected: 1 });
 		expect(decisionStats(ACCT, 3500)).toEqual({ sorted: 2, corrected: 0 });
+	});
+
+	it('remembers a tab you chose for mail Jev never saw, so it is never sorted', () => {
+		recordCorrections(ACCT, ['mine'], 'important', 4500);
+		expect(getDecision(ACCT, 'mine')).toMatchObject({
+			status: 'done',
+			category: null,
+			applied: null,
+			correctedTo: 'important',
+			model: null
+		});
+		// Known to the backfill, and marked as your choice for the worker...
+		expect(knownEmailIds(ACCT, ['mine', 'e3'])).toEqual(new Set(['mine']));
+		expect(correctedEmailIds(ACCT, ['mine', 'e3', 'never-seen'])).toEqual(new Set(['mine']));
+		// ...but not Jev's doing, so neither sorted nor corrected in the stats.
+		expect(decisionStats(ACCT, 4400)).toEqual({ sorted: 0, corrected: 0 });
+
+		// Sorted by you before the pass queued it, it is still queued as new mail
+		// (for spam, rules and urgency), keeping your choice; once judged, never again.
+		expect(enqueueEmails(ACCT, ['mine'], 4600)).toBe(1);
+		expect(getDecision(ACCT, 'mine')).toMatchObject({ status: 'pending', correctedTo: 'important' });
+		recordDecision(ACCT, 'mine', { ...answer, category: null, confidence: null, applied: null, model: null }, 4700);
+		expect(enqueueEmails(ACCT, ['mine'], 4800)).toBe(0);
+		expect(getDecision(ACCT, 'mine')).toMatchObject({ status: 'done', correctedTo: 'important' });
 	});
 
 	it('adds up usage per calendar month', () => {

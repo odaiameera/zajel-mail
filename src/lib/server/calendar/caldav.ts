@@ -489,8 +489,10 @@ export async function putObject(
 	}
 }
 
-export async function deleteObject(auth: AuthState, href: string): Promise<void> {
-	const res = await davRequest(auth, 'DELETE', href);
+export async function deleteObject(auth: AuthState, href: string, etag?: string | null): Promise<void> {
+	// With an etag the delete is conditional (If-Match): an object that changed
+	// on another device since it was read stays, and the caller hears 412.
+	const res = await davRequest(auth, 'DELETE', href, etag ? { headers: { 'If-Match': etag } } : {});
 	if (!res.ok && res.status !== 204 && res.status !== 404) {
 		throw new CalDAVError(`DELETE ${href} failed: ${res.status}`, res.status);
 	}
@@ -510,8 +512,21 @@ export function hrefToId(href: string): string {
 }
 
 /**
+ * A calendar collection id as it may appear in a URL: one path segment. `.`
+ * and `..` (and their `%2e` spellings, which SvelteKit decodes before the
+ * route sees them) would send the request to the calendar home's parent.
+ */
+export function isCollectionId(id: string): boolean {
+	return id.length > 0 && id.length <= 255 && id !== '.' && id !== '..' && !/[/\\\u0000-\u001f]/.test(id);
+}
+
+/**
  * Decode an object id back to an href, verifying it stays inside the user's
  * calendar home so a forged id can't reach other accounts' collections.
+ *
+ * Checked against the path fetch will actually request: the WHATWG parser
+ * resolves `..` and its `%2e%2e` spelling, so an href passes only when that
+ * resolution changes nothing and the result still starts with the home.
  */
 export function idToHref(id: string, userEmail: string): string | null {
 	let href: string;
@@ -520,11 +535,14 @@ export function idToHref(id: string, userEmail: string): string | null {
 	} catch {
 		return null;
 	}
-	if (href.includes('..')) return null;
+	if (!href.startsWith('/')) return null;
 	try {
-		const decodedHref = decodeURIComponent(href);
-		const decodedHome = decodeURIComponent(calendarHomeHref(userEmail));
-		if (!decodedHref.startsWith(decodedHome)) return null;
+		const resolved = new URL(href, 'http://caldav.invalid');
+		if (resolved.search || resolved.hash) return null;
+		const decoded = decodeURIComponent(href);
+		if (decodeURIComponent(resolved.pathname) !== decoded) return null;
+		if (decoded.split('/').some((segment) => segment === '.' || segment === '..')) return null;
+		if (!decoded.startsWith(decodeURIComponent(calendarHomeHref(userEmail)))) return null;
 	} catch {
 		return null;
 	}

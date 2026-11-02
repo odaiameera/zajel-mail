@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { userEmailFromAuth } from '$lib/server/user';
 import { importInvitation } from '$lib/server/calendar/imip';
+import { sendItipReply, type ReplyOutcome } from '$lib/server/calendar/itip-reply';
 import { CalDAVError } from '$lib/server/calendar/caldav';
 
 const PARTSTATS = new Set(['ACCEPTED', 'TENTATIVE', 'DECLINED']);
@@ -40,9 +41,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return json({ error: 'Download failed' }, { status: 502 });
 	}
 
+	let result: { eventId: string; uid: string };
 	try {
-		const result = await importInvitation(locals.auth, userEmail, ics, body.calendarId, partStat);
-		return json({ success: true, eventId: result.eventId, uid: result.uid });
+		result = await importInvitation(locals.auth, userEmail, ics, body.calendarId, partStat);
 	} catch (err) {
 		if (err instanceof CalDAVError && err.status === 412) {
 			return json({ error: 'Event changed on the server — reload and try again' }, { status: 409 });
@@ -52,4 +53,16 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			err instanceof CalDAVError && (err.status === 422 || err.status === 404) ? err.message : 'Failed to add to calendar';
 		return json({ error: message }, { status });
 	}
+
+	// An RSVP reaches the organizer by iMIP. The calendar already holds it,
+	// so a failed send is reported, not fatal.
+	let replied: ReplyOutcome = 'none';
+	if (partStat) {
+		try {
+			replied = await sendItipReply(locals.auth, userEmail, ics, partStat);
+		} catch {
+			replied = 'failed';
+		}
+	}
+	return json({ success: true, eventId: result.eventId, uid: result.uid, replied });
 };

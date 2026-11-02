@@ -10,9 +10,16 @@ const env = vi.hoisted(() => ({}) as Record<string, string | undefined>);
 vi.mock('$env/dynamic/private', () => ({ env }));
 
 const jmap = vi.hoisted(() => ({ client: null as unknown }));
+// A session with an address book, so "is the sender a contact" gets a real
+// answer (the fake holds no cards) rather than "couldn't tell".
 vi.mock('$lib/jmap/auth', () => ({
 	createClient: () => jmap.client,
-	fetchSession: () => Promise.reject(new Error('no session in tests'))
+	fetchSession: () =>
+		Promise.resolve({
+			capabilities: { 'urn:ietf:params:jmap:contacts': {} },
+			primaryAccounts: { 'urn:ietf:params:jmap:contacts': 'jmap-acc' },
+			accounts: { 'jmap-acc': { accountCapabilities: { 'urn:ietf:params:jmap:contacts': {} } } }
+		})
 }));
 
 // `notify` records each email queued for an alert, as notifyUrgent once did.
@@ -34,12 +41,12 @@ vi.mock('$lib/server/telegram/urgent', async (importOriginal) => ({
 import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import { getJevSettings, updateJevSettings } from '$lib/server/db/queries/jev-settings';
-import { enqueueEmails, getDecision, getUsage } from '$lib/server/db/queries/jev-decisions';
+import { enqueueEmails, getDecision, getUsage, recordCorrections } from '$lib/server/db/queries/jev-decisions';
 import { setRules } from '$lib/server/db/queries/rules';
 import { recordSenderMoves, setPin } from '$lib/server/db/queries/jev-learning';
 import type { AuthState, MethodCall } from '$lib/jmap/types';
 import type { Rule } from '$lib/types/rules';
-import { sortNewMail } from './worker';
+import { forgetRateLimits, sortNewMail } from './worker';
 import { jevHandlesRules } from './rules';
 
 const ACCT = 'acct-1';
@@ -102,7 +109,8 @@ class FakeJmap {
 							{ id: 'inbox', name: 'Inbox', role: 'inbox', sortOrder: 1, parentId: null },
 							{ id: 'sent', name: 'Sent', role: 'sent', sortOrder: 2, parentId: null },
 							{ id: 'archive', name: 'Archive', role: 'archive', sortOrder: 3, parentId: null },
-							{ id: 'junk', name: 'Junk', role: 'junk', sortOrder: 4, parentId: null }
+							{ id: 'junk', name: 'Junk', role: 'junk', sortOrder: 4, parentId: null },
+							{ id: 'trash', name: 'Trash', role: 'trash', sortOrder: 5, parentId: null }
 						]
 					};
 					break;
@@ -125,7 +133,8 @@ class FakeJmap {
 				}
 				case 'Email/get': {
 					const ids = resolve(args) ?? [];
-					result = { list: ids.map((id) => this.emails.get(id)).filter(Boolean) };
+					// Copies, as a server sends: what was read doesn't follow later changes.
+					result = { list: ids.map((id) => this.emails.get(id)).filter(Boolean).map((e) => structuredClone(e)) };
 					break;
 				}
 				case 'Thread/get':
@@ -181,6 +190,7 @@ beforeEach(() => {
 	setRules(ME, []);
 	getDb().prepare('DELETE FROM jev_sender_pins').run();
 	getDb().prepare('DELETE FROM jev_sender_moves').run();
+	forgetRateLimits();
 	// Off and on again, so every test's cursor starts at T0.
 	updateJevSettings(ACCT, { jevEnabled: false });
 	updateJevSettings(ACCT, { inboxTabs: true, jevEnabled: true, spamMode: 'off' }, T0);
@@ -189,7 +199,19 @@ beforeEach(() => {
 afterEach(() => {
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
+
+/** A live answer from TypeSafe: Newsletters, confidently. */
+const liveAnswer = () =>
+	new Response(
+		JSON.stringify({
+			model: 'jev-1.13.0',
+			answers: { category: { type: 'choice', choice: 'newsletters', probabilities: { newsletters: 0.9 }, confidence: 0.8 } },
+			usage: { input_tokens: 10, output_tokens: 2 }
+		}),
+		{ status: 200 }
+	);
 
 describe('sortNewMail', () => {
 	it('starts the clock on its first run instead of sorting the backlog', async () => {
@@ -330,6 +352,102 @@ describe('sortNewMail', () => {
 		expect(getDecision(ACCT, 'gone')?.status).toBe('skipped');
 	});
 
+	it('does not write over a move or a tab change made while Jev was judging', async () => {
+		const invoices: Rule = {
+			id: 'invoices',
+			name: 'Invoices',
+			enabled: true,
+			logic: 'allof',
+			conditions: [{ id: 'j1', field: 'jev', op: 'contains', value: 'an invoice', negate: false }],
+			actions: [{ type: 'applyLabel', value: 'archive' }],
+			createdAt: 0
+		};
+		setRules(ME, [invoices]);
+		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
+		fake.add('bill', 2, { subject: 'Your October invoice' });
+		fake.add('deal', 3, { 'header:list-unsubscribe': ' <x>', subject: '30% off this week' });
+		// Between Jev's read of the messages and its write: you drag the
+		// newsletter to Promotions, delete the invoice and star the offer.
+		const realRequest = fake.request.bind(fake);
+		let meanwhile = false;
+		fake.request = async (calls: MethodCall[]) => {
+			const result = await realRequest(calls);
+			if (!meanwhile && calls[0][0] === 'Email/get' && (calls[0][1].properties as string[]).includes('textBody')) {
+				meanwhile = true;
+				fake.emails.get('news')!.keywords = { $cat_promotions: true };
+				fake.emails.get('bill')!.mailboxIds = { trash: true };
+				fake.emails.get('deal')!.keywords = { $flagged: true };
+			}
+			return result;
+		};
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		// Your tab stands, and Jev's is not added beside it.
+		expect(fake.emails.get('news')!.keywords).toEqual({ $cat_promotions: true });
+		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'done', category: 'newsletters', applied: null });
+		// Deleted mail stays deleted: the label is not written from the old snapshot.
+		expect(fake.emails.get('bill')!.mailboxIds).toEqual({ trash: true });
+		expect(getDecision(ACCT, 'bill')?.status).toBe('done');
+		// A change that is not a move is kept, and Jev's tab still goes on.
+		expect(fake.emails.get('deal')!.keywords).toEqual({ $flagged: true, $cat_promotions: true });
+	});
+
+	it('leaves mail you put in Important yourself where it is', async () => {
+		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
+		enqueueEmails(ACCT, ['news'], at(1).getTime());
+		// Dragged to Updates and back to Important before Jev got to it.
+		recordCorrections(ACCT, ['news'], 'important');
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('news')!.keywords).toEqual({});
+		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'done', applied: null, correctedTo: 'important', model: null });
+	});
+
+	it('gives up on a message TypeSafe refuses, even when it is the only one asked', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"error":"state too large"}', { status: 400 })));
+		fake.add('huge', 1, { 'header:list-unsubscribe': ' <x>' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+		// A refusal is about this request, not an outage: it counts against the email.
+		expect(getDecision(ACCT, 'huge')).toMatchObject({ status: 'pending', attempts: 1 });
+	});
+
+	it('pauses an account for a while after TypeSafe rate-limits every call', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { status: 429 }));
+		vi.stubGlobal('fetch', fetchMock);
+		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
+
+		// The retries' backoff sleeps are skipped over.
+		vi.useFakeTimers({ toFake: ['setTimeout'] });
+		const first = sortNewMail(ACCT, ME, auth, at(10));
+		await vi.advanceTimersByTimeAsync(5000);
+		await first;
+		vi.useRealTimers();
+		expect(fetchMock).toHaveBeenCalledTimes(3); // the call and its two retries
+		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'pending', attempts: 0 });
+
+		// The next passes leave TypeSafe alone, while still queuing what arrives...
+		fetchMock.mockClear();
+		fake.add('later', 11, { 'header:list-unsubscribe': ' <x>' });
+		await sortNewMail(ACCT, ME, auth, at(12));
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(getDecision(ACCT, 'later')?.status).toBe('pending');
+
+		// ...and once the pause is over, it asks again.
+		fetchMock.mockImplementation(async () => liveAnswer());
+		await sortNewMail(ACCT, ME, auth, at(16));
+		expect(getDecision(ACCT, 'news')?.status).toBe('done');
+		expect(getDecision(ACCT, 'later')?.status).toBe('done');
+	});
+
 	it('runs rules with Jev conditions, and the exact rules beside them, in the same pass', async () => {
 		const invoices: Rule = {
 			id: 'invoices',
@@ -378,6 +496,26 @@ describe('sortNewMail', () => {
 			}
 		]);
 		expect(getDecision(ACCT, 'bill')?.category).toBeNull();
+	});
+
+	it('never lets a rule Jev judges move mail to Trash or Junk', async () => {
+		const junkIt: Rule = {
+			id: 'junkit',
+			name: 'Junk invoices',
+			enabled: true,
+			logic: 'allof',
+			conditions: [{ id: 'j1', field: 'jev', op: 'contains', value: 'an invoice', negate: false }],
+			actions: [{ type: 'moveToFolder', value: 'junk' }, { type: 'markRead' }],
+			createdAt: 0
+		};
+		setRules(ME, [junkIt]);
+		fake.add('bill', 1, { subject: 'Your October invoice' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		// The move is dropped, as Delete is; the rest of the rule still runs.
+		expect(fake.emails.get('bill')!.mailboxIds).toEqual({ inbox: true });
+		expect(fake.emails.get('bill')!.keywords).toEqual({ $seen: true });
 	});
 
 	it('leaves rules to the rules scheduler while Jev may not read the account', () => {
@@ -461,6 +599,18 @@ describe('sortNewMail', () => {
 		// Already in a tab: left alone, and nothing asked.
 		expect(fake.emails.get('oldSorted')!.keywords).toEqual({ $cat_updates: true });
 		expect(getDecision(ACCT, 'oldSorted')).toMatchObject({ status: 'done', model: null });
+	});
+
+	it('sends no origin evidence with existing mail, whose spam is not checked', async () => {
+		updateJevSettings(ACCT, { spamMode: 'active' });
+		fake.add('old', -60, { 'header:list-unsubscribe': ' <x>' });
+		enqueueEmails(ACCT, ['old'], T0.getTime(), true);
+		fake.add('fresh', 1, { 'header:list-unsubscribe': ' <x>' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(getDecision(ACCT, 'fresh')?.facts).toHaveProperty('security');
+		expect(getDecision(ACCT, 'old')?.facts).not.toHaveProperty('security');
 	});
 
 	describe('urgent mail on Telegram', () => {
@@ -581,6 +731,25 @@ describe('sortNewMail', () => {
 			expect(getDecision(ACCT, 'friendPhish')?.spamAction).toBe('flagged');
 			// Junked mail skips tabs and rules; no $junk keyword, so Stalwart isn't trained.
 			expect(fake.emails.get('spammy')!.keywords).toEqual({});
+		});
+
+		it('in active mode, only warns when it couldn’t check whether you know the sender', async () => {
+			updateJevSettings(ACCT, { spamMode: 'active' });
+			fake.add('phish', 1, lookalike);
+			// The Sent lookup fails this pass, so "have you written to them" is unknown.
+			const realRequest = fake.request.bind(fake);
+			fake.request = async (calls: MethodCall[]) => {
+				if (calls.some(([name, args]) => name === 'Email/query' && !!(args.filter as { to?: string }).to)) {
+					throw new Error('Sent is unavailable');
+				}
+				return realRequest(calls);
+			};
+
+			await sortNewMail(ACCT, ME, auth, at(10));
+
+			expect(fake.emails.get('phish')!.mailboxIds).toEqual({ inbox: true });
+			expect(getDecision(ACCT, 'phish')).toMatchObject({ spamAction: 'flagged' });
+			expect(getDecision(ACCT, 'phish')?.facts).toMatchObject({ you_have_written_to_sender: null });
 		});
 
 		it('in active mode, brings clean mail back from Junk and leaves real spam there', async () => {

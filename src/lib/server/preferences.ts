@@ -42,7 +42,10 @@ export const PREF_KEYS = [
 	'auto_reply_enabled',
 	'auto_reply_subject',
 	'auto_reply_body',
-	'folder_expanded'
+	'folder_expanded',
+	// Rows per page, written by /api/user-state/settings and read by
+	// getDefaultPageSize(); the one camelCase key, kept so stored rows match.
+	'defaultPageSize'
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];

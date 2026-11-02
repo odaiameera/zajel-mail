@@ -47,6 +47,9 @@ export const PATCH: RequestHandler = async ({ locals, params, request, cookies }
 		if (err instanceof CalDAVError && err.status === 412) {
 			return json({ error: 'Event changed on the server — reload and try again' }, { status: 409 });
 		}
+		// A 409 from the service names its own conflict (e.g. the target
+		// calendar already holds this event).
+		if (err instanceof CalDAVError && err.status === 409) return json({ error: err.message }, { status: 409 });
 		const status = err instanceof CalDAVError ? err.status : 502;
 		return json({ error: 'Failed to update event' }, { status });
 	}

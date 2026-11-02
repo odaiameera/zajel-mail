@@ -22,6 +22,13 @@ vi.mock('$lib/jmap/auth', () => ({
 			if (name === 'Mailbox/get') {
 				return { methodResponses: [['Mailbox/get', { list: state.mailboxes }, '0']], sessionState: '' };
 			}
+			if (name === 'Email/get') {
+				const ids = args.ids as string[];
+				return {
+					methodResponses: [['Email/get', { list: state.emails.filter((e) => ids.includes(e.id as string)) }, 'g']],
+					sessionState: ''
+				};
+			}
 			if (name === 'Email/query') {
 				state.queries.push(args);
 				const position = (args.position as number) ?? 0;
@@ -131,5 +138,25 @@ describe('apply now', () => {
 		expect(state.queries.map((q) => q.position)).toEqual([0, 0]);
 		expect(events.at(-1)).toMatchObject({ type: 'done', scanned: 201, matched: 201, applied: 201 });
 		expect(state.emails).toEqual([]);
+	});
+});
+
+describe('applying a Jev rule to the emails the editor chose', () => {
+	const jev = (value: string): RuleCondition => ({ id: 'j1', field: 'jev', op: 'contains', value, negate: false });
+
+	it('never moves mail to Trash, whatever the rule says, and still does the rest', async () => {
+		state.emails = [email('m1', 'invoice')];
+		const events = await apply({
+			rules: [rule([jev('it is an invoice')], [{ type: 'moveToFolder', value: 'TRASH' }, { type: 'markRead' }])],
+			ids: ['m1']
+		});
+		expect(state.sets).toEqual([{ m1: { 'keywords/$seen': true } }]);
+		expect(events.at(-1)).toMatchObject({ type: 'done', applied: 1, failed: 0 });
+	});
+
+	it('moves to an ordinary folder as asked', async () => {
+		state.emails = [email('m1', 'invoice')];
+		await apply({ rules: [rule([jev('it is an invoice')], [{ type: 'moveToFolder', value: 'ARCH' }])], ids: ['m1'] });
+		expect(state.sets).toEqual([{ m1: { mailboxIds: { ARCH: true } } }]);
 	});
 });

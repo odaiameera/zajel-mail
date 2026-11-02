@@ -108,15 +108,18 @@ async function folders(client: JMAPClient, accountId: string) {
 	return { drafts: boxes.find((m) => m.role === 'drafts'), sent: boxes.find((m) => m.role === 'sent') };
 }
 
+/** Save a message to Drafts, straight away or on confirm, in the account it was written in. */
 export async function saveComposedDraft(
-	ctx: ToolContext,
+	auth: AuthState,
+	userEmail: string,
 	message: ComposedMessage
 ): Promise<{ success: boolean; error?: string }> {
-	const identity = resolveIdentity(ctx.userEmail, null, ctx.userEmail);
+	const identity = resolveIdentity(userEmail, null, userEmail);
 	if (!identity) return { success: false, error: 'No sending identity available' };
-	const { drafts } = await folders(ctx.client, ctx.auth.accountId);
+	const client = createClient(auth);
+	const { drafts } = await folders(client, auth.accountId);
 	if (!drafts) return { success: false, error: 'This account has no Drafts folder' };
-	return saveDraft(ctx.client, ctx.auth.accountId, drafts.id, toCompose(message, identity));
+	return saveDraft(client, auth.accountId, drafts.id, toCompose(message, identity));
 }
 
 /** Send a confirmed message, from the account it was written in. */

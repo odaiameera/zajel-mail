@@ -95,10 +95,13 @@ export const actions: Actions = {
 			cookies.delete(MFA_COOKIE, { path: '/' });
 			return fail(401, { error: 'Sign in again', email: '' });
 		}
-		// Wrong codes count per address and per login: someone who has the
-		// password can't keep guessing by moving between addresses.
+		// Wrong codes count per login (and each challenge allows five), so
+		// someone who has the password can't keep guessing by moving between
+		// addresses. The per-address lock is not checked here: behind a proxy
+		// that isn't passing client addresses, every client shares one, and a
+		// stranger's failures on the password form would bar the owner's code.
 		const codeScope = `second-step:${userId}`;
-		if (isIpLockedOut(ip) || isLockedOut(codeScope, '')) {
+		if (isLockedOut(codeScope, '')) {
 			return fail(429, { error: 'Too many attempts. Try again in a few minutes.', email: '', ...secondStep(userId) });
 		}
 

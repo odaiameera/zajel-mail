@@ -87,8 +87,12 @@
 	const occurrenceOnly = $derived(!!invitation?.recurrenceId);
 	const monthShort = $derived(startDate.toLocaleDateString(undefined, { month: 'short' }));
 
+	type Replied = 'sent' | 'failed' | 'none';
+
 	/** Send the invitation to the server, which stores it or folds it into the series it belongs to. */
-	async function postInvitation(partStat: string | null): Promise<{ ok: boolean; error?: string; eventId?: string }> {
+	async function postInvitation(
+		partStat: string | null
+	): Promise<{ ok: boolean; error?: string; eventId?: string; replied?: Replied }> {
 		if (!invitation) return { ok: false };
 		const res = await fetch('/api/calendar/invitation', {
 			method: 'POST',
@@ -99,10 +103,10 @@
 				partStat
 			})
 		});
-		const data = (await res.json().catch(() => ({}))) as { error?: string; eventId?: string };
+		const data = (await res.json().catch(() => ({}))) as { error?: string; eventId?: string; replied?: Replied };
 		if (!res.ok) return { ok: false, error: data.error };
 		if (data.eventId) markTouched(data.eventId);
-		return { ok: true, eventId: data.eventId };
+		return { ok: true, eventId: data.eventId, replied: data.replied };
 	}
 
 	async function importWith(partStat: string | null, busyKey: string) {
@@ -123,10 +127,15 @@
 					myStatus: partStat ?? invitation.existing?.myStatus ?? null
 				}
 			};
-			showToast({
-				message: partStat ? 'RSVP saved to your calendar' : 'Added to your calendar',
-				action: { label: 'View', onClick: () => viewInCalendar() }
-			});
+			// The RSVP goes to the organizer as an iTIP reply; say so, or say it didn't.
+			const message = !partStat
+				? 'Added to your calendar'
+				: res.replied === 'sent'
+					? 'RSVP saved and sent to the organizer'
+					: res.replied === 'failed'
+						? 'RSVP saved to your calendar; the organizer could not be notified'
+						: 'RSVP saved to your calendar';
+			showToast({ message, action: { label: 'View', onClick: () => viewInCalendar() } });
 		} finally {
 			busy = null;
 		}

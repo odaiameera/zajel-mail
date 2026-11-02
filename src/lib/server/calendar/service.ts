@@ -34,6 +34,7 @@ import {
 	type VEventData
 } from './ics';
 import { applySeriesEdit, mergeAttendees, tailRRule } from './series';
+import { wallClockToUtc } from './tz';
 import { getCalendarMetaForUser } from '../db/queries/calendar-meta';
 
 /**
@@ -219,7 +220,7 @@ export async function updateEvent(
 		override.transp = existing.transp;
 		override.icalClass = existing.icalClass;
 		const others = parsed.overrides.filter((o) => o.recurrenceId !== key);
-		await putObject(auth, href, buildIcs(master, [...others, override]), obj.etag);
+		await putObject(auth, href, buildIcs(master, [...others, override], parsed.timezones), obj.etag);
 		return { id };
 	}
 
@@ -277,13 +278,21 @@ export async function updateEvent(
 		edited.attendees = mergeAttendees(edited.attendees, master.attendees);
 		const split = applySeriesEdit(tail, laterOverrides, edited, payload, recurrenceId);
 		const newHref = newObjectHref(userEmail, payload.calendarId || currentCalendarId || '', newUid);
-		await putObject(auth, newHref, buildIcs(split.master, split.overrides), null);
+		await putObject(auth, newHref, buildIcs(split.master, split.overrides, parsed.timezones), null);
 
-		if (splitDate <= masterStartMs) {
-			// Nothing left of the original series.
-			await deleteObject(auth, href);
-		} else {
-			await putObject(auth, href, buildIcs(truncated, keptOverrides), obj.etag);
+		try {
+			if (splitDate <= masterStartMs) {
+				// Nothing left of the original series.
+				await deleteObject(auth, href, obj.etag);
+			} else {
+				await putObject(auth, href, buildIcs(truncated, keptOverrides, parsed.timezones), obj.etag);
+			}
+		} catch (err) {
+			// The original changed under us (412) or the write failed: take the
+			// new tail back out, or a retry would show every later occurrence
+			// twice. The original is untouched either way.
+			await deleteObject(auth, newHref).catch(() => undefined);
+			throw err;
 		}
 		return { id: hrefToId(newHref) };
 	}
@@ -314,12 +323,29 @@ export async function updateEvent(
 	if (currentCalendarId && targetCalendarId !== currentCalendarId) {
 		// Calendar move: write to the new collection, then remove the old object.
 		const newHref = newObjectHref(userEmail, targetCalendarId, master.uid || randomUUID());
-		await putObject(auth, newHref, buildIcs(next, overrides), null);
-		await deleteObject(auth, href);
+		try {
+			await putObject(auth, newHref, buildIcs(next, overrides, parsed.timezones), null);
+		} catch (err) {
+			// If-None-Match failed: the target already holds this UID (an
+			// invitation imported there, a move that half-failed before). That
+			// is not "the event changed", which is what a 412 reads as upstream.
+			if (err instanceof CalDAVError && err.status === 412) {
+				throw new CalDAVError('That calendar already has this event', 409);
+			}
+			throw err;
+		}
+		try {
+			// Conditional: a change made on another device since we read the
+			// object must not be deleted along with it.
+			await deleteObject(auth, href, obj.etag);
+		} catch (err) {
+			await deleteObject(auth, newHref).catch(() => undefined);
+			throw err;
+		}
 		return { id: hrefToId(newHref) };
 	}
 
-	await putObject(auth, href, buildIcs(next, overrides), obj.etag);
+	await putObject(auth, href, buildIcs(next, overrides, parsed.timezones), obj.etag);
 	return { id };
 }
 
@@ -379,7 +405,7 @@ export async function deleteEvent(
 			exdates: master.exdates.includes(key) ? master.exdates : [...master.exdates, key]
 		};
 		const overrides = parsed.overrides.filter((o) => o.recurrenceId !== key);
-		await putObject(auth, href, buildIcs(next, overrides), obj.etag);
+		await putObject(auth, href, buildIcs(next, overrides, parsed.timezones), obj.etag);
 		return;
 	}
 
@@ -406,7 +432,7 @@ export async function deleteEvent(
 		if (master.rrule) next.rrule = { ...master.rrule, until: untilIso, count: undefined };
 	}
 	const overrides = parsed.overrides.filter((o) => keyToDateMs(o.recurrenceId as string) < splitDate);
-	await putObject(auth, href, buildIcs(next, overrides), obj.etag);
+	await putObject(auth, href, buildIcs(next, overrides, parsed.timezones), obj.etag);
 }
 
 /** Calendar-date milliseconds (UTC midnight) of a wall key — used for split comparisons. */
@@ -513,23 +539,41 @@ export interface ReminderItem {
 	minutesBefore: number;
 }
 
-/** Reminders (VALARMs) firing within the next `horizonMs`. */
+/** The longest lead time the event dialog offers ("1 week before"). */
+const MAX_REMINDER_LEAD_MS = 7 * 86400000;
+
+/**
+ * Reminders (VALARMs) firing within the next `horizonMs`.
+ *
+ * Events are fetched as far ahead as the longest lead time, else a "2 days
+ * before" reminder belongs to an event outside the window and never fires.
+ * All-day events start at midnight in the user's zone (`timeZone`, from the
+ * browser) — the server's clock has nothing to do with it. The key carries
+ * the occurrence start, so a rescheduled event is a new reminder rather than
+ * one that already fired.
+ */
 export async function upcomingReminders(
 	auth: AuthState,
 	userEmail: string,
-	horizonMs: number
+	horizonMs: number,
+	timeZone = 'UTC'
 ): Promise<ReminderItem[]> {
 	const now = Date.now();
-	const { events } = await getEventsInRange(auth, userEmail, now - 86400000, now + horizonMs + 86400000);
+	const { events } = await getEventsInRange(
+		auth,
+		userEmail,
+		now - 86400000,
+		now + horizonMs + MAX_REMINDER_LEAD_MS + 86400000
+	);
 	const out: ReminderItem[] = [];
 	for (const ev of events) {
 		if (ev.alarms.length === 0) continue;
-		const startMs = ev.allDay ? new Date(`${ev.start}T00:00:00`).getTime() : new Date(ev.start).getTime();
+		const startMs = ev.allDay ? localMidnight(ev.start, timeZone) : new Date(ev.start).getTime();
 		for (const minutes of ev.alarms) {
 			const fireAt = startMs - minutes * 60000;
 			if (fireAt < now - 5 * 60000 || fireAt > now + horizonMs) continue;
 			out.push({
-				key: `${ev.uid}:${ev.recurrenceId ?? ''}:${minutes}`,
+				key: `${ev.uid}:${ev.recurrenceId ?? ''}:${minutes}:${ev.start}`,
 				eventId: ev.id,
 				title: ev.title || '(untitled event)',
 				start: ev.start,
@@ -540,4 +584,10 @@ export async function upcomingReminders(
 		}
 	}
 	return out.sort((a, b) => a.fireAt - b.fireAt);
+}
+
+/** Midnight of a `YYYY-MM-DD` day in `timeZone`, as an instant. */
+function localMidnight(day: string, timeZone: string): number {
+	const [year, month, date] = day.split('-').map(Number);
+	return wallClockToUtc({ year, month, day: date, hour: 0, minute: 0, second: 0 }, timeZone);
 }

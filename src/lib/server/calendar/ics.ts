@@ -8,8 +8,10 @@ import type {
 	RRuleWeekday
 } from '$lib/calendar/types';
 import {
+	FLOATING,
 	normalizeTzid,
 	parseWallClock,
+	registerVTimezone,
 	utcToWallClock,
 	wallClockToIcs,
 	wallClockToUtc,
@@ -76,6 +78,11 @@ export interface ParsedObject {
 	overrides: VEventData[];
 	/** iTIP METHOD of the enclosing VCALENDAR (REQUEST/REPLY/CANCEL/…), if any. */
 	method: string | null;
+	/**
+	 * The object's VTIMEZONE blocks, verbatim. A rewrite ships them again, so
+	 * a TZID only they define keeps meaning the same thing to other clients.
+	 */
+	timezones?: string[];
 }
 
 const MAX_OCCURRENCES = 1000;
@@ -121,8 +128,13 @@ function valueZone(prop: ICAL.Property, time: ICAL.Time): string | null {
 }
 
 function propZone(prop: ICAL.Property, time: ICAL.Time): string {
-	// Unknown zones and floating times degrade to UTC rather than crashing the parse.
-	return valueZone(prop, time) ?? 'UTC';
+	const zone = valueZone(prop, time);
+	if (zone) return zone;
+	// A TZID nothing can resolve is kept as written: its times read as UTC on
+	// screen, but the name is never rewritten, so clients that do know the
+	// zone keep reading the event right. No TZID and no Z is a floating time.
+	const tzid = prop.getParameter('tzid');
+	return typeof tzid === 'string' && tzid.trim() ? tzid.replace(/^\//, '').trim() : FLOATING;
 }
 
 /**
@@ -379,6 +391,13 @@ export function parseIcs(ics: string): ParsedObject {
 		if (!salvaged) return { master: null, overrides: [], method: null };
 		comp = salvaged;
 	}
+	// Before any date is read: a TZID that only this object's VTIMEZONE
+	// defines must resolve through it, not degrade to UTC.
+	const timezones: string[] = [];
+	for (const tz of comp.getAllSubcomponents('vtimezone')) {
+		registerVTimezone(tz);
+		timezones.push(tz.toString());
+	}
 	let master: VEventData | null = null;
 	const overrides: VEventData[] = [];
 	for (const vevent of comp.getAllSubcomponents('vevent')) {
@@ -390,7 +409,7 @@ export function parseIcs(ics: string): ParsedObject {
 	if (master) for (const o of overrides) alignOverrideKey(o, master);
 	const methodRaw = comp.getFirstPropertyValue('method');
 	const method = typeof methodRaw === 'string' && methodRaw ? methodRaw.toUpperCase() : null;
-	return { master, overrides, method };
+	return { master, overrides, method, timezones };
 }
 
 /**
@@ -498,7 +517,7 @@ function instanceFromData(
 		status: data.status,
 		attendees: data.attendees,
 		organizer: data.organizer?.email ?? null,
-		timeZone: data.allDay ? null : data.tzid
+		timeZone: data.allDay || data.tzid === FLOATING ? null : data.tzid
 	};
 }
 
@@ -721,6 +740,7 @@ function foldLine(line: string): string {
 
 function dtLine(name: string, data: VEventData, wc: WallClock): string {
 	if (data.allDay) return `${name};VALUE=DATE:${wallClockToIcs(wc).slice(0, 8)}`;
+	if (data.tzid === FLOATING) return `${name}:${wallClockToIcs(wc)}`;
 	if (data.tzid === 'UTC') return `${name}:${wallClockToIcs(wc)}Z`;
 	return `${name};TZID=${data.tzid}:${wallClockToIcs(wc)}`;
 }
@@ -827,7 +847,7 @@ function quoteParam(v: string): string {
 	return /[;:,]/.test(clean) ? `"${clean}"` : clean;
 }
 
-export function buildIcs(master: VEventData, overrides: VEventData[] = []): string {
+export function buildIcs(master: VEventData, overrides: VEventData[] = [], timezones: string[] = []): string {
 	const dtstamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 	const lines: string[] = [
 		'BEGIN:VCALENDAR',
@@ -835,6 +855,8 @@ export function buildIcs(master: VEventData, overrides: VEventData[] = []): stri
 		'PRODID:-//Zajel Mail//webmail calendar//EN',
 		'CALSCALE:GREGORIAN'
 	];
+	// The VTIMEZONE blocks the object came with, as they were (already folded).
+	for (const tz of timezones) lines.push(...tz.split(/\r?\n/).filter((l) => l.length > 0));
 	lines.push(...buildVEvent(master, dtstamp));
 	for (const o of overrides) lines.push(...buildVEvent(o, dtstamp));
 	lines.push('END:VCALENDAR');

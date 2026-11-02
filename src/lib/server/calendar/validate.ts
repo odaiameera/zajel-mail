@@ -1,4 +1,5 @@
 import type { EventAttendee, EventWritePayload, RecurrenceRule, RRuleWeekday } from '$lib/calendar/types';
+import { isCollectionId } from './caldav';
 import { isValidTimeZone } from './tz';
 
 const FREQS = new Set(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']);
@@ -71,6 +72,7 @@ export function validatePayload(body: unknown): EventWritePayload | string {
 	const p = body as Partial<EventWritePayload> | null;
 	if (!p || typeof p !== 'object') return 'Invalid body';
 	if (!p.calendarId || typeof p.calendarId !== 'string') return 'calendarId is required';
+	if (!isCollectionId(p.calendarId)) return 'calendarId is invalid';
 	if (typeof p.title !== 'string') return 'title is required';
 	if (typeof p.start !== 'string' || typeof p.end !== 'string') return 'start/end are required';
 	const allDay = !!p.allDay;

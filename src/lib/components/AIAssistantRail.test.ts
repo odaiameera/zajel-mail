@@ -121,3 +121,27 @@ describe('the cards a session still has', () => {
 		expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain('/api/ai/conversations/s1');
 	});
 });
+
+describe('while a reply is on its way', () => {
+	it('keeps History and New conversation out of reach, so the reply can’t land in another session', async () => {
+		let finish!: (response: Response) => void;
+		fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url === '/api/ai/conversations') return json({ conversations: [], retentionDays: 7 });
+			if (url === '/api/ai/agent') return new Promise<Response>((resolve) => (finish = resolve));
+			throw new Error(`unexpected ${url}`);
+		});
+		render(AIAssistantRail, props);
+		await send('Archive the receipts');
+
+		const history = screen.getByRole('button', { name: 'Conversation history' }) as HTMLButtonElement;
+		const fresh = screen.getByRole('button', { name: 'New conversation' }) as HTMLButtonElement;
+		await waitFor(() => expect(history.disabled).toBe(true));
+		expect(fresh.disabled).toBe(true);
+
+		finish(json({ message: 'Archived 3 messages.', conversationId: 's1' }, 200, { 'X-Conversation-Id': 's1' }));
+		expect(await screen.findByText('Archived 3 messages.')).toBeTruthy();
+		await waitFor(() => expect(history.disabled).toBe(false));
+		expect(fresh.disabled).toBe(false);
+	});
+});

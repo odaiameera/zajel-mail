@@ -242,6 +242,8 @@
 	}
 
 	async function openSession(sessionId: string) {
+		// Any reply still on its way belongs to the session being left.
+		following += 1;
 		historyOpen = false;
 		error = '';
 		busy = true;
@@ -291,7 +293,11 @@
 		input = '';
 		busy = true;
 		error = '';
-		following += 1;
+		// The reply belongs to the session as it is now. Should the user have
+		// moved to another one by the time it arrives (History and New are
+		// disabled while busy, but a deleted session resets the panel), it
+		// stays where the server saved it instead of landing here.
+		const ticket = ++following;
 		await scrollToLatest();
 
 		const today = dayRange(0);
@@ -322,6 +328,7 @@
 				lost = true;
 				throw new Error(LOST_REPLY);
 			});
+			if (ticket !== following) return;
 			// Sent ahead of the reply, so a reply cut off half way still says
 			// which session the turn is in, new ones included.
 			conversationId = response.headers.get('X-Conversation-Id') ?? conversationId;
@@ -338,6 +345,7 @@
 				done?: string[];
 				pending?: PendingCard[];
 			} | null;
+			if (ticket !== following) return;
 			if (!response.ok || !data?.message) {
 				// No JSON at all means the reply was cut off, or something in
 				// front of the app answered (a proxy timeout, a refused request),
@@ -379,6 +387,7 @@
 			];
 			void loadSessions();
 		} catch (err) {
+			if (ticket !== following) return;
 			const reason = err instanceof Error ? err.message : 'The mail agent could not answer';
 			const sessionId = conversationId;
 			const landed = lost && sessionId ? await followTurn(sessionId) : null;
@@ -554,7 +563,8 @@
 			<button
 				type="button"
 				onclick={startNewChat}
-				class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text"
+				disabled={busy}
+				class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text disabled:cursor-default disabled:opacity-50"
 				aria-label="New conversation"
 				title="New conversation"
 			>
@@ -563,7 +573,8 @@
 			<button
 				type="button"
 				onclick={() => { historyOpen = !historyOpen; }}
-				class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-surface-hover hover:text-text {historyOpen ? 'bg-surface-hover text-text' : 'text-text-tertiary'}"
+				disabled={busy}
+				class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-surface-hover hover:text-text disabled:cursor-default disabled:opacity-50 {historyOpen ? 'bg-surface-hover text-text' : 'text-text-tertiary'}"
 				aria-label="Conversation history"
 				aria-pressed={historyOpen}
 				title="Conversation history"
@@ -592,7 +603,8 @@
 								<button
 									type="button"
 									onclick={() => openSession(session.id)}
-									class="min-w-0 flex-1 cursor-pointer px-2.5 py-2 text-left"
+									disabled={busy}
+									class="min-w-0 flex-1 cursor-pointer px-2.5 py-2 text-left disabled:cursor-default"
 								>
 									<span class="block truncate text-xs font-medium text-text">{session.title}</span>
 									<span class="block text-2xs text-text-tertiary">
@@ -602,7 +614,8 @@
 								<button
 									type="button"
 									onclick={() => removeSession(session.id)}
-									class="mr-1.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-text-tertiary opacity-0 transition-opacity hover:text-danger focus:opacity-100 group-hover:opacity-100"
+									disabled={busy}
+									class="mr-1.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-text-tertiary opacity-0 transition-opacity hover:text-danger focus:opacity-100 group-hover:opacity-100 disabled:cursor-default"
 									aria-label="Delete conversation {session.title}"
 								>
 									<Icon name="delete" size={14} />

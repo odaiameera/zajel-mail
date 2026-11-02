@@ -12,6 +12,8 @@ export type ActionStatus = 'pending' | 'done' | 'cancelled' | 'failed' | 'expire
 
 /** How long a proposal can wait for a decision. */
 const ACTION_TTL_MS = 24 * 60 * 60 * 1000;
+/** The kind of the agent_actions row that journals a running chat turn. */
+const JOURNAL_KIND = 'turn_journal';
 /** How long the audit log keeps an entry. */
 const AUDIT_DAYS = 90;
 
@@ -72,7 +74,22 @@ function prepareStmts() {
 			`SELECT tool, tier, summary, outcome, source, created_at FROM agent_audit
 			 WHERE user_id = ? ORDER BY id DESC LIMIT ?`
 		),
-		auditPrune: db.prepare(`DELETE FROM agent_audit WHERE created_at < datetime('now', ?)`)
+		auditPrune: db.prepare(`DELETE FROM agent_audit WHERE created_at < datetime('now', ?)`),
+		// A running chat turn's journal: an agent_actions row that is never a
+		// card (its own kind, status 'done'), see the journal section below.
+		journalInsert: db.prepare(
+			`INSERT INTO agent_actions (id, user_id, account_id, conversation_id, kind, payload_json, status, expires_at)
+			 VALUES (@id, @userId, @accountId, @conversationId, '${JOURNAL_KIND}', @payload, 'done', @expiresAt)`
+		),
+		journalGet: db.prepare(`SELECT payload_json FROM agent_actions WHERE id = ? AND kind = '${JOURNAL_KIND}'`),
+		journalNote: db.prepare(`UPDATE agent_actions SET payload_json = ? WHERE id = ? AND kind = '${JOURNAL_KIND}'`),
+		journalEnd: db.prepare(`DELETE FROM agent_actions WHERE id = ? AND kind = '${JOURNAL_KIND}'`),
+		journalLeft: db.prepare(
+			`SELECT id, payload_json FROM agent_actions
+			 WHERE user_id = ? AND conversation_id = ? AND kind = '${JOURNAL_KIND}' AND expires_at > datetime('now')
+			 ORDER BY created_at, rowid`
+		),
+		journalPrune: db.prepare(`DELETE FROM agent_actions WHERE kind = '${JOURNAL_KIND}' AND expires_at <= datetime('now')`)
 	};
 }
 function stmts() {
@@ -154,6 +171,52 @@ export interface AuditEntry {
 	outcome: string;
 	source: AgentSource;
 	createdAt: string;
+}
+
+/**
+ * A chat turn's journal: what it has changed so far, kept while it runs and
+ * removed once its reply is saved. A journal still there when the next turn
+ * in that session starts means the process stopped mid-turn, so that turn
+ * puts what was done into the transcript before it runs (see the agent
+ * route), and nothing is done twice or forgotten.
+ */
+
+export interface InterruptedTurn {
+	/** What the user asked. */
+	message: string;
+	/** The changes made before the turn was cut short, in order. */
+	done: string[];
+}
+
+export function startTurnJournal(input: { userId: string; accountId: string; conversationId: string; message: string }): string {
+	const id = randomUUID();
+	const expiresAt = new Date(Date.now() + ACTION_TTL_MS).toISOString().replace('T', ' ').slice(0, 19);
+	stmts().journalInsert.run({ ...input, id, payload: JSON.stringify({ message: input.message, done: [] }), expiresAt });
+	return id;
+}
+
+export function noteTurnProgress(id: string, done: string[]): void {
+	const row = stmts().journalGet.get(id) as { payload_json: string } | undefined;
+	if (!row) return;
+	const message = (JSON.parse(row.payload_json) as InterruptedTurn).message;
+	stmts().journalNote.run(JSON.stringify({ message, done }), id);
+}
+
+export function endTurnJournal(id: string): void {
+	stmts().journalEnd.run(id);
+}
+
+/** The journals of turns cut short in one session, oldest first, each handed over once; empty ones are just dropped. */
+export function takeInterruptedTurns(userId: string, conversationId: string): InterruptedTurn[] {
+	stmts().journalPrune.run();
+	const rows = stmts().journalLeft.all(userId, conversationId) as { id: string; payload_json: string }[];
+	const turns: InterruptedTurn[] = [];
+	for (const row of rows) {
+		stmts().journalEnd.run(row.id);
+		const turn = JSON.parse(row.payload_json) as InterruptedTurn;
+		if (turn.done.length) turns.push({ message: turn.message, done: turn.done });
+	}
+	return turns;
 }
 
 export function listAudit(userId: string, limit = 100): AuditEntry[] {

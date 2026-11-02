@@ -12,20 +12,22 @@ vi.mock('$lib/server/ai/claude', async (importOriginal) => ({
 }));
 vi.mock('$lib/server/agent/runtime', () => ({ runAgentTurn: mocks.runAgentTurn }));
 
+import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import { listMessages } from '$lib/server/db/queries/ai-conversations';
+import { noteTurnProgress, startTurnJournal, takeInterruptedTurns } from '$lib/server/agent/store';
 import { turnRunning } from '$lib/server/agent/turns';
-import type { AgentTurnResult } from '$lib/server/agent/runtime';
+import type { AgentTurnInput, AgentTurnResult } from '$lib/server/agent/runtime';
 import { POST } from './+server';
 
 const EMAIL = 'me@example.test';
 const auth = { authHeader: `Basic ${Buffer.from(`${EMAIL}:pw`).toString('base64')}`, accountId: 'jmap' };
 
-function ask(message: string) {
+function ask(message: string, conversationId?: string) {
 	return POST({
 		request: new Request('http://localhost/api/ai/agent', {
 			method: 'POST',
-			body: JSON.stringify({ action: 'chat', message, timeZone: 'Asia/Amman' })
+			body: JSON.stringify({ action: 'chat', message, timeZone: 'Asia/Amman', conversationId })
 		}),
 		locals: { auth, user: { id: 'user-1' }, activeAccountId: 'acct-1' }
 	} as unknown as Parameters<typeof POST>[0]);
@@ -41,6 +43,13 @@ const result = (overrides: Partial<AgentTurnResult>): AgentTurnResult => ({
 
 beforeAll(() => {
 	runMigrations();
+	getDb().prepare(`INSERT INTO app_user (id, email, password_hash) VALUES ('user-1', 'u@example.test', 'x')`).run();
+	getDb()
+		.prepare(
+			`INSERT INTO mail_accounts (id, user_id, email, server_url, jmap_account_id, secret_enc)
+			 VALUES ('acct-1', 'user-1', 'me@example.test', 'https://mail.example', 'jmap', 'x')`
+		)
+		.run();
 });
 
 beforeEach(() => {
@@ -70,6 +79,33 @@ describe('POST /api/ai/agent', () => {
 		finish(result({}));
 		await response.text();
 		expect(turnRunning(id)).toBe(false);
+	});
+
+	it('puts what an interrupted turn had done into the transcript before the next turn runs', async () => {
+		mocks.runAgentTurn.mockResolvedValue(result({ message: 'Nothing left to archive.' }));
+		const first = await ask('Start a session');
+		const id = first.headers.get('X-Conversation-Id')!;
+		await first.text();
+		// A turn archived mail, then the process stopped before it could answer.
+		const journal = startTurnJournal({ userId: 'user-1', accountId: 'acct-1', conversationId: id, message: 'Archive the receipts' });
+		noteTurnProgress(journal, ['Archived 2 messages']);
+
+		const response = await ask('Archive the receipts', id);
+		await response.text();
+		const interrupted = 'I was interrupted before I could answer. Done before that: Archived 2 messages.';
+		expect(listMessages(id, EMAIL).map((m) => [m.role, m.content])).toEqual([
+			['user', 'Start a session'],
+			['assistant', 'Nothing left to archive.'],
+			['user', 'Archive the receipts'],
+			['assistant', interrupted],
+			['user', 'Archive the receipts'],
+			['assistant', 'Nothing left to archive.']
+		]);
+		// The retried turn is told, so it doesn't do it again; and it is told once.
+		const input = mocks.runAgentTurn.mock.calls[1][0] as AgentTurnInput;
+		expect(input.history.map((m) => m.content)).toContain(interrupted);
+		expect(input.onProgress).toBeTypeOf('function');
+		expect(takeInterruptedTurns('user-1', id)).toEqual([]);
 	});
 
 	it('keeps a refusal out of the transcript', async () => {

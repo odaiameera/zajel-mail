@@ -14,6 +14,7 @@ import { startTelegramWorker } from '$lib/server/telegram/worker';
 import { startJobWorker } from '$lib/server/jobs/worker';
 import { startSearchIndexer } from '$lib/server/search/worker';
 import { getAppSession, verifiedAtMs } from '$lib/server/auth/app-session';
+import { SESSION_COOKIE_OPTIONS } from '$lib/server/auth/sign-in';
 import { getUserById, hasAppUser } from '$lib/server/auth/user';
 import { authStateForAccount, listAccounts, toPublic } from '$lib/server/auth/accounts';
 import { assertCryptoReady } from '$lib/server/auth/crypto';
@@ -33,6 +34,10 @@ let setupDone = false;
 
 // undefined = not yet checked, null = ok, string = the operator-facing error.
 let secretError: string | null | undefined;
+
+// Set when a migration failed at start: every request is then refused with
+// it, since serving on a half-migrated schema fails later in stranger ways.
+let startupError: string | null = null;
 
 // Throttle on-demand reminder checks so we don't hit SQLite on every
 // static asset request. Map is process-local; cron handles cross-process
@@ -95,7 +100,13 @@ function checkSecret(): void {
 function startBackground(): void {
 	if (migrated) return;
 	migrated = true;
-	runMigrations();
+	try {
+		runMigrations();
+	} catch (err) {
+		startupError = err instanceof Error ? err.message : String(err);
+		console.error(`[startup] ${startupError}`);
+		return;
+	}
 	startReminderScheduler();
 	startRulesScheduler();
 	startTrashRetentionScheduler();
@@ -122,6 +133,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 	// Normally already done by init; the dev server can skip it.
 	startBackground();
+	if (startupError) {
+		return new Response(startupError, { status: 500 });
+	}
 
 	const { pathname } = event.url;
 
@@ -155,6 +169,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 			event.locals.user = user;
 			event.locals.sessionId = session.id;
 			event.locals.sessionVerifiedAt = verifiedAtMs(session);
+			// The server just slid expires_at forward; the cookie's own lifetime
+			// has to follow, or the browser drops it 30 days after sign-in however
+			// active the person is, and the row lingers as a phantom device.
+			if (session.extended) event.cookies.set('session', session.id, SESSION_COOKIE_OPTIONS);
 
 			const accounts = listAccounts(user.id);
 			event.locals.accounts = accounts.map(toPublic);

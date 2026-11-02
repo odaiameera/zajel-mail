@@ -119,3 +119,23 @@ export function effectiveActions(rule: Rule): RuleAction[] {
 	const actions = hasJevCondition(rule) ? rule.actions.filter((a) => a.type !== 'delete') : rule.actions;
 	return actions.filter((a) => a.type !== 'setCategory' || isInboxCategory(a.value));
 }
+
+/**
+ * Mailbox roles a rule Jev judges may never move mail into, for the reason
+ * it never deletes: Trash empties itself, and Junk is as good as deleted for
+ * mail nobody reads. The editor hides them as targets; the worker drops them.
+ */
+export const JEV_OFF_LIMITS_ROLES: ReadonlySet<string> = new Set(['trash', 'junk']);
+
+/**
+ * The rule as the Jev worker may run it: a rule Jev judges loses any folder
+ * or label action aimed at one of `offLimits` (the Trash and Junk ids). Other
+ * rules, and rules with nothing to drop, come back as they are.
+ */
+export function withoutOffLimitsTargets(rule: Rule, offLimits: ReadonlySet<string>): Rule {
+	if (!hasJevCondition(rule)) return rule;
+	const actions = rule.actions.filter(
+		(a) => !((a.type === 'moveToFolder' || a.type === 'applyLabel') && a.value && offLimits.has(a.value))
+	);
+	return actions.length === rule.actions.length ? rule : { ...rule, actions };
+}

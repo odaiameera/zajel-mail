@@ -17,11 +17,13 @@
 	let trashRetentionDays = $state(String(data.trashRetentionDays));
 	let otpTrashAfterCopy = $state(data.otpTrashAfterCopy);
 
-	const defaultPageSize = $derived(
-		typeof $userState.settings.defaultPageSize === 'number'
-			? ($userState.settings.defaultPageSize as number)
-			: 50
-	);
+	// Stored as a string like every preference, so parse rather than type-check,
+	// or the select would show 50 after every reload.
+	const PAGE_SIZES = [10, 25, 50, 100];
+	const defaultPageSize = $derived.by(() => {
+		const n = Number($userState.settings.defaultPageSize);
+		return PAGE_SIZES.includes(n) ? n : 50;
+	});
 	let pageSizeState = $state<SaveState>('idle');
 
 	async function savePageSize(v: string) {

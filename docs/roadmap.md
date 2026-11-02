@@ -42,38 +42,42 @@ Verified bugs that lose mail or events, or weaken the account, but need a user t
 - [x] Non-ASCII mail passwords cannot be linked (`btoa` versus `Buffer`).
 
 **Calendar (`dev-calendar`)**
-- `UNTIL` is written as `T235959Z`, off by a day outside UTC; `EXDATE`/`RDATE` ignore their own zone; unknown time zones become UTC and are saved that way.
-- The time grid positions events by elapsed milliseconds, so DST days draw an hour off and zero-length events vanish; a plain click on a resize handle saves the event.
-- `%2e%2e` in an event id escapes the calendar home; the calendars route has no `..` guard at all.
-- Reminders: only the polling tab schedules them; all-day reminders fire at UTC midnight; a rescheduled event gets no reminder; reminders more than a day out never fire.
-- Opening `/calendar` without a date uses the UTC day.
-- The RSVP card patches the stored copy and sends no iTIP reply; the UI does not say so.
+- [x] `UNTIL` is written as `T235959Z`, off by a day outside UTC; `EXDATE`/`RDATE` ignore their own zone; unknown time zones become UTC and are saved that way.
+- [x] The time grid positions events by elapsed milliseconds, so DST days draw an hour off and zero-length events vanish; a plain click on a resize handle saves the event.
+- [x] `%2e%2e` in an event id escapes the calendar home; the calendars route has no `..` guard at all.
+- [x] Reminders: only the polling tab schedules them; all-day reminders fire at UTC midnight; a rescheduled event gets no reminder; reminders more than a day out never fire.
+- [x] Opening `/calendar` without a date uses the UTC day.
+- [x] The RSVP card patches the stored copy and sends no iTIP reply; the UI does not say so. Left: push reminders for all-day events still use UTC midnight, since the push worker has no stored per-user zone; the reply goes as an attachment rather than an inline calendar part.
 
 **Contacts, avatars, push (`dev-contacts`)**
+
+Not started: the first attempt was stopped part way, and its partial work was set aside rather than merged.
+
 - The account avatar endpoint serves SVG without the sandbox CSP its sibling has (stored XSS).
 - The layout re-subscribes a device to push whenever the account preference is on, so a device the user turned off re-subscribes itself. Make push per device, using the `user_agent` and `last_sent_at` columns that are already written.
 - Transient DNS and network failures are cached as "no avatar" for seven days; freemail domains get the provider's logo; the SSE stream stays bound to the account that was active when it connected.
 - Renaming a contact keeps the old `name.components`, so other clients can restore the old name.
 
 **AI, Jev, Telegram, jobs (`dev-AI`)**
-- Jev writes `mailboxIds` and keywords from a snapshot taken before the model call, so it can undo a move the user made meanwhile and pull mail out of Trash.
-- Hand-moving mail to Important leaves no row, so the next backfill re-sorts it; a failed contacts or Sent lookup in active spam mode makes a real contact's mail junk-able.
-- The agent's self tier is wider than the README admits: cap destructive counts per turn and treat reminders and drafts to outside addresses as needing a card, or document the current behaviour.
-- A restart mid-turn leaves no transcript of what the turn already did, so a retry duplicates it; an interrupted job counts as a failure.
-- Reminders are never expired, capped or pruned.
-- HTML-only mail is handed to Jev as raw markup; the privacy text undersells what is sent.
+- [x] Jev writes `mailboxIds` and keywords from a snapshot taken before the model call, so it can undo a move the user made meanwhile and pull mail out of Trash.
+- [x] Hand-moving mail to Important leaves no row, so the next backfill re-sorts it; a failed contacts or Sent lookup in active spam mode makes a real contact's mail junk-able.
+- [x] The agent's self tier is wider than the README admits: cap destructive counts per turn and treat reminders and drafts to outside addresses as needing a card, or document the current behaviour.
+- [x] A restart mid-turn leaves no transcript of what the turn already did, so a retry duplicates it; an interrupted job counts as a failure.
+- [x] Reminders are never expired, capped or pruned.
+- [x] HTML-only mail is handed to Jev as raw markup; the privacy text undersells what is sent.
+- [x] A rule with a Jev condition could move mail to Trash or Junk through "Move to folder". Left: pins act only while Jev is on (now said in Settings); Jev's mixed-batch failures still burn attempts; the dotted display-name false positive (jev#8).
 
 **Search (`dev-search`)**
-- Vectors stored under a model are kept when a new tick switches model mid-batch; loaded vectors are never evicted on unlink; the first search after a restart loads synchronously.
-- The user-set embedding endpoint accepts internal hosts; note it in the UI.
+- [x] Vectors stored under a model are kept when a new tick switches model mid-batch; loaded vectors are never evicted on unlink; the first search after a restart loads synchronously. Also fixed: migration 026's late columns are repaired on databases that ran its first version.
+- [x] The user-set embedding endpoint accepts internal hosts; note it in the UI.
 
 **Settings and auth (`dev-settings`)**
-- Unlinking an account cascades away pending scheduled sends, agent jobs, the Telegram outbox and the search index while the UI promises they return on re-link.
-- The session cookie has a fixed 30-day lifetime while the server slides expiry; sessions outlive cookies as phantom devices.
-- Two simultaneous setup submissions can each create a master user; add a one-time setup token.
-- A failed migration is logged and the next one runs; stop and refuse to serve instead.
-- With `ADDRESS_HEADER` unset, the per-IP login counter lets a stranger lock the owner out; default it for the documented proxy setup.
-- Document backups: WAL mode means copying `ameera.db` alone can miss writes.
+- [x] Unlinking an account cascades away pending scheduled sends, agent jobs, the Telegram outbox and the search index while the UI promises they return on re-link.
+- [x] The session cookie has a fixed 30-day lifetime while the server slides expiry; sessions outlive cookies as phantom devices.
+- [x] Two simultaneous setup submissions can each create a master user. Fixed with an insert that only succeeds into an empty table; a one-time setup token is still worth adding.
+- [x] A failed migration is logged and the next one runs; stop and refuse to serve instead.
+- [x] With `ADDRESS_HEADER` unset, the per-IP login counter lets a stranger lock the owner out. The TOTP step no longer uses the per-IP lock and the log names `ADDRESS_HEADER` when a private address trips it; defaulting the header is still open.
+- [x] Document backups: WAL mode means copying `ameera.db` alone can miss writes.
 
 ## Phase 3: make the app do what it says
 
@@ -87,6 +91,7 @@ Settings that store values nothing reads, copy that promises features that do no
 - Jev: pins act only while Jev is on; say so or apply them without Jev.
 - "Check" in Settings → Agent sends a real request only on Claude; check the fallback model too.
 - `scripts/ai-models.mjs` ignores the Anthropic and OpenAI keys.
+- Add a request-level smoke test per form page (a real POST through the built server, expecting anything but a 500). Unit tests call action functions directly and never go through SvelteKit's own checks, which is how a `default` action beside named ones broke password sign-in from PR 51 to PR 74 unnoticed.
 - Move `tests/ics-qa.mjs` and `tests/caldav-discovery.mjs` under vitest (the `npx esbuild` they shell out to is no longer a dependency, and the mock server is not in the repo).
 - CI: add a linter, pin actions by SHA, add a `permissions` block; `.dockerignore` should exclude `local-data/`.
 - Move `JEV_PLAN.md` to `docs/` and trim it to what is not built.

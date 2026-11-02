@@ -93,3 +93,45 @@ describe('exceptions written in another zone', () => {
 		expect(buildIcs(parsed.master!, parsed.overrides)).toContain('RECURRENCE-ID;VALUE=DATE:20260106');
 	});
 });
+
+describe('zones nothing can name', () => {
+	const JAN = Date.UTC(2026, 0, 1);
+	const FEB = Date.UTC(2026, 1, 1);
+	const customZone = [
+		'BEGIN:VTIMEZONE',
+		'TZID:Customized Time Zone',
+		'BEGIN:STANDARD',
+		'DTSTART:16010101T000000',
+		'TZOFFSETFROM:+0300',
+		'TZOFFSETTO:+0300',
+		'END:STANDARD',
+		'END:VTIMEZONE'
+	].join('\r\n');
+
+	it("reads an Outlook 'Customized Time Zone' from its VTIMEZONE and writes it back untouched", () => {
+		const ics = wrap(
+			customZone,
+			vevent('UID:o', 'DTSTART;TZID=Customized Time Zone:20260105T090000', 'DTEND;TZID=Customized Time Zone:20260105T100000', 'SUMMARY:Outlook')
+		);
+		const parsed = parseIcs(ics);
+		expect(expandToInstances(parsed, 'id', 'cal', JAN, FEB).map((i) => i.start)).toEqual(['2026-01-05T06:00:00.000Z']);
+		const rebuilt = buildIcs(parsed.master!, parsed.overrides, parsed.timezones);
+		expect(rebuilt).toContain('DTSTART;TZID=Customized Time Zone:20260105T090000');
+		expect(rebuilt).toContain('TZID:Customized Time Zone');
+		// And the rewritten object still means the same instant.
+		expect(expandToInstances(parseIcs(rebuilt), 'id', 'cal', JAN, FEB).map((i) => i.start)).toEqual(['2026-01-05T06:00:00.000Z']);
+	});
+
+	it('keeps a TZID it cannot resolve rather than rewriting the event in UTC', () => {
+		const parsed = parseIcs(wrap(vevent('UID:m', 'DTSTART;TZID=Mars/Olympus:20260105T090000', 'DTEND;TZID=Mars/Olympus:20260105T100000', 'SUMMARY:m')));
+		expect(parsed.master?.tzid).toBe('Mars/Olympus');
+		expect(buildIcs(parsed.master!, [])).toContain('DTSTART;TZID=Mars/Olympus:20260105T090000');
+	});
+
+	it('keeps a floating time floating', () => {
+		const parsed = parseIcs(wrap(vevent('UID:f', 'DTSTART:20260105T090000', 'DTEND:20260105T100000', 'SUMMARY:f')));
+		expect(expandToInstances(parsed, 'id', 'cal', JAN, FEB)[0].timeZone).toBeNull();
+		expect(buildIcs(parsed.master!, [])).toContain('DTSTART:20260105T090000\r\n');
+		expect(buildIcs(parsed.master!, [])).not.toContain('DTSTART:20260105T090000Z');
+	});
+});

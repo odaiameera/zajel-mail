@@ -7,10 +7,11 @@ import {
 	claudeConfigured,
 	claudeError,
 	FALLBACK_BETA,
+	fallbackModel,
 	supportsFallbacks,
 	writerModel
 } from './claude';
-import { aiEndpoint, aiModel, aiProvider, listAvailableModels, upstreamErrorMessage } from './mail-assistant';
+import { aiModel, aiProvider, listAvailableModels, MailAssistantError, runAIChat, upstreamErrorMessage } from './mail-assistant';
 import { availableProviders, type Effort, type ProviderName } from './settings';
 import { schemasRefused, sendWithStrictFallback } from '$lib/server/agent/runtime';
 import { toolsFor } from '$lib/server/agent/tools';
@@ -145,24 +146,11 @@ export function forgetProbeForTests(): void {
 	probing = null;
 }
 
-/**
- * Claude: both models must be available to the key (free), and then the
- * real requests must be accepted (probeClaude).
- */
-async function checkClaude(models: string[]): Promise<string | null> {
-	for (const model of new Set(models)) {
-		try {
-			await claudeClient().models.retrieve(model);
-		} catch (err) {
-			const failure = claudeError(err);
-			// Name the model, since either of the two can be the wrong one.
-			return err instanceof Anthropic.NotFoundError ? `This key can't use ${model}` : failure.message;
-		}
-	}
-	const key = `${agentModel()}|${writerModel()}|${agentEffort()}`;
+/** Run `probe` for `key` unless it passed recently; overlapping presses share one run. */
+async function probeOnce(key: string, probe: () => Promise<string | null>): Promise<string | null> {
 	if (lastProbe?.key === key && Date.now() - lastProbe.at < PROBE_REUSE_MS) return null;
 	if (probing?.key !== key) {
-		const result = probeClaude().finally(() => {
+		const result = probe().finally(() => {
 			probing = null;
 		});
 		probing = { key, result };
@@ -172,31 +160,48 @@ async function checkClaude(models: string[]): Promise<string | null> {
 	return error;
 }
 
-async function checkOpenAI(model: string): Promise<string | null> {
-	const response = await fetch(`${aiEndpoint()}/models/${encodeURIComponent(model)}`, {
-		headers: { Authorization: `Bearer ${env.OPENAI_API_KEY ?? ''}` },
-		signal: AbortSignal.timeout(10_000)
-	}).catch(() => null);
-	if (!response) return 'Could not reach the assistant';
-	return response.ok ? null : upstreamErrorMessage(response.status);
+/**
+ * Claude: every model in use must be available to the key (free), and then
+ * the real requests must be accepted (probeClaude).
+ */
+async function checkClaude(models: string[]): Promise<string | null> {
+	for (const model of new Set(models)) {
+		try {
+			await claudeClient().models.retrieve(model);
+		} catch (err) {
+			const failure = claudeError(err);
+			// Name the model, since any of them can be the wrong one.
+			return err instanceof Anthropic.NotFoundError ? `This key can't use ${model}` : failure.message;
+		}
+	}
+	return probeOnce(`anthropic|${models.join('|')}|${agentEffort()}`, probeClaude);
 }
 
-async function checkOllama(model: string): Promise<string | null> {
-	const served = await listAvailableModels();
-	if (!served.length) return 'Could not reach the assistant';
-	return served.includes(model) ? null : `The AI service does not serve ${model}`;
+/**
+ * OpenAI and Ollama: the same small chat request a turn would send, through
+ * the same code, so a key that can list models but not use one, or a model
+ * that refuses the request's shape, fails here and not in the first turn.
+ */
+async function probeChat(): Promise<string | null> {
+	try {
+		await runAIChat({ system: PROBE, messages: [{ role: 'user', content: PROBE }], temperature: 0 });
+		return null;
+	} catch (err) {
+		return err instanceof MailAssistantError ? err.message : 'Could not reach the assistant';
+	}
 }
 
 export async function checkAssistant(): Promise<{ ok: boolean; error?: string }> {
 	const status = assistantStatus();
+	// The fallback takes a turn when the agent model is down, so when the
+	// operator named one it must work too.
+	const claudeModels = [status.agentModel!, status.writerModel!, ...(env.ANTHROPIC_FALLBACK_MODEL ? [fallbackModel()] : [])];
 	const error =
 		status.provider === 'anthropic'
-			? await checkClaude([status.agentModel!, status.writerModel!])
-			: status.provider === 'openai'
-				? await checkOpenAI(status.agentModel!)
-				: status.provider === 'ollama'
-					? await checkOllama(status.agentModel!)
-					: 'No AI provider is set up';
+			? await checkClaude(claudeModels)
+			: status.provider === 'openai' || status.provider === 'ollama'
+				? await probeOnce(`${status.provider}|${status.agentModel}`, probeChat)
+				: 'No AI provider is set up';
 	logEvent(error ? 'warn' : 'info', 'ai', 'check', { provider: status.provider, ...(error ? { error } : {}) });
 	return error ? { ok: false, error } : { ok: true };
 }

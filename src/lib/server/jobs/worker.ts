@@ -6,6 +6,7 @@ import { runJob, thrownStatus, type JobOutcome } from './runner';
 import { claimNextDueJob, MAX_FAILURES, recordJobResult, type AgentJob } from './store';
 import { JMAPAuthError } from '$lib/jmap/client';
 import { markNeedsReauth } from '$lib/server/auth/accounts';
+import { pruneExpiredConversations } from '$lib/server/db/queries/ai-conversations';
 import { errorFields, logEvent } from '$lib/server/log';
 
 /** Checks for due jobs once a minute and runs them one at a time. */
@@ -31,8 +32,10 @@ async function runOne(job: AgentJob): Promise<void> {
 	const started = Date.now();
 	let outcome: JobOutcome;
 	if (job.runningSince) {
-		// Its lease ran out with no result: the process stopped mid-run.
-		outcome = { status: 'failed', result: 'Interrupted before it finished' };
+		// Its lease ran out with no result: the process stopped mid-run. That
+		// is the server's doing, not the job's, so it is tried again soon and
+		// doesn't count toward switching the job off.
+		outcome = { status: 'retry', result: 'Interrupted before it finished' };
 	} else {
 		try {
 			outcome = await runJob(job, started);
@@ -75,6 +78,9 @@ export async function runDueJobs(): Promise<void> {
 	if (running) return;
 	running = true;
 	try {
+		// Chat history has a retention period, and until now only opening the
+		// panel's history list enforced it: an idle account kept its transcripts.
+		pruneExpiredConversations();
 		for (let n = 0; n < MAX_PER_TICK; n += 1) {
 			const job = claimNextDueJob();
 			if (!job) break;

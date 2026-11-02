@@ -6,23 +6,36 @@ import type { EventWritePayload } from '$lib/calendar/types';
 const fake = vi.hoisted(() => ({
 	store: new Map<string, { ics: string; etag: string }>(),
 	puts: [] as { href: string; ics: string; etag: string | null | undefined }[],
-	deleted: [] as string[]
+	deleted: [] as string[],
+	/** Runs after each GET: a stand-in for another device writing between our read and our write. */
+	afterGet: null as null | (() => void)
 }));
 vi.mock('./caldav', async (importOriginal) => {
 	const real = await importOriginal<typeof import('./caldav')>();
+	const conflict = (verb: string, href: string) => new real.CalDAVError(`${verb} ${href} failed: 412`, 412);
 	return {
 		...real,
 		resolveCalendarHome: async () => HOME,
+		listCalendars: async () => [{ id: 'default', href: `${HOME}default/`, name: 'Calendar', ctag: null }],
+		queryEvents: async (_auth: AuthState, calHref: string) =>
+			[...fake.store].filter(([href]) => href.startsWith(calHref)).map(([href, o]) => ({ href, etag: o.etag, ics: o.ics })),
 		getObject: async (_auth: AuthState, href: string) => {
 			const obj = fake.store.get(href);
 			if (!obj) throw new real.CalDAVError(`GET ${href} failed: 404`, 404);
+			fake.afterGet?.();
 			return { href, etag: obj.etag, ics: obj.ics };
 		},
+		// Honours the conditional headers the real server does: If-None-Match
+		// (etag null) refuses an existing object, If-Match a changed one.
 		putObject: async (_auth: AuthState, href: string, ics: string, etag?: string | null) => {
+			const current = fake.store.get(href);
+			if (etag === null && current) throw conflict('PUT', href);
+			if (etag && current?.etag !== etag) throw conflict('PUT', href);
 			fake.puts.push({ href, ics, etag });
 			fake.store.set(href, { ics, etag: 'etag-2' });
 		},
-		deleteObject: async (_auth: AuthState, href: string) => {
+		deleteObject: async (_auth: AuthState, href: string, etag?: string | null) => {
+			if (etag && fake.store.get(href)?.etag !== etag) throw conflict('DELETE', href);
 			fake.deleted.push(href);
 			fake.store.delete(href);
 		}
@@ -32,7 +45,8 @@ vi.mock('../db/queries/calendar-meta', () => ({ getCalendarMetaForUser: () => ne
 
 import { hrefToId } from './caldav';
 import { expandToInstances, parseIcs } from './ics';
-import { deleteEvent, updateEvent } from './service';
+import { deleteEvent, upcomingReminders, updateEvent } from './service';
+import { wallClockToUtc } from './tz';
 
 const HOME = '/dav/cal/me%40example.test/';
 const USER = 'me@example.test';
@@ -76,6 +90,7 @@ beforeEach(() => {
 	fake.store.clear();
 	fake.puts.length = 0;
 	fake.deleted.length = 0;
+	fake.afterGet = null;
 	fake.store.set(HREF, { ics: SERIES, etag: 'etag-1' });
 });
 
@@ -161,5 +176,66 @@ describe('deleteEvent', () => {
 		]);
 		expect(line(ics, 'DTSTART')).toBe('DTSTART;TZID=Asia/Riyadh:20261102T090000');
 		expect(fake.deleted).toEqual([]);
+	});
+});
+
+describe('writes that touch two objects', () => {
+	it('"this and following" takes the new tail back when the original changed meanwhile, leaving the original alone', async () => {
+		fake.afterGet = () => fake.store.set(HREF, { ics: SERIES, etag: 'etag-from-another-device' });
+		await expect(
+			updateEvent(auth, USER, hrefToId(HREF), payload('2026-11-16T11:00', '2026-11-16T12:00', { title: 'v2' }), 'following', '2026-11-16T09:00:00', null)
+		).rejects.toMatchObject({ status: 412 });
+		expect(fake.puts).toHaveLength(1);
+		expect(fake.deleted).toEqual([fake.puts[0].href]);
+		expect(fake.store.get(HREF)?.ics).toBe(SERIES);
+	});
+
+	it('refuses to move onto a calendar that already holds the event, and keeps the original', async () => {
+		fake.store.set(`${HOME}work/p1.ics`, { ics: SERIES, etag: 'w' });
+		await expect(
+			updateEvent(auth, USER, hrefToId(HREF), payload('2026-11-30T09:00', '2026-11-30T09:30', { calendarId: 'work' }), 'all', '2026-11-30T09:00:00', null)
+		).rejects.toMatchObject({ status: 409, message: 'That calendar already has this event' });
+		expect(fake.store.has(HREF)).toBe(true);
+		expect(fake.deleted).toEqual([]);
+	});
+
+	it('a move deletes the original only if it is still the version that was read', async () => {
+		fake.afterGet = () => fake.store.set(HREF, { ics: SERIES, etag: 'etag-from-another-device' });
+		await expect(
+			updateEvent(auth, USER, hrefToId(HREF), payload('2026-11-30T09:00', '2026-11-30T09:30', { calendarId: 'work' }), 'all', '2026-11-30T09:00:00', null)
+		).rejects.toMatchObject({ status: 412 });
+		expect(fake.store.has(HREF)).toBe(true);
+		expect(fake.store.has(`${HOME}work/p1.ics`)).toBe(false);
+	});
+});
+
+describe('upcomingReminders', () => {
+	const stamp = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+
+	it('finds a "2 days before" reminder whose event starts two days out, keyed by the occurrence start', async () => {
+		const start = Date.now() + 2 * 86400000 + 10 * 60000;
+		fake.store.set(HREF, {
+			ics: wrap(vevent('UID:far', `DTSTART:${stamp(start)}`, `DTEND:${stamp(start + 3600000)}`, 'SUMMARY:Far', 'BEGIN:VALARM', 'ACTION:DISPLAY', 'TRIGGER:-P2D', 'END:VALARM')),
+			etag: 'e'
+		});
+		const items = await upcomingReminders(auth, USER, 30 * 60000);
+		expect(items).toHaveLength(1);
+		expect(items[0].minutesBefore).toBe(2880);
+		expect(items[0].key).toBe(`far::2880:${new Date(Math.floor(start / 1000) * 1000).toISOString()}`);
+	});
+
+	it("fires an all-day reminder at midnight in the user's zone, not the server's", async () => {
+		const zone = 'America/Los_Angeles';
+		const day = new Date(Date.now() + 36 * 3600000).toLocaleDateString('sv', { timeZone: zone });
+		const [y, m, d] = day.split('-').map(Number);
+		const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10).replace(/-/g, '');
+		fake.store.set(HREF, {
+			ics: wrap(vevent('UID:ad', `DTSTART;VALUE=DATE:${day.replace(/-/g, '')}`, `DTEND;VALUE=DATE:${next}`, 'SUMMARY:Holiday', 'BEGIN:VALARM', 'ACTION:DISPLAY', 'TRIGGER:PT0S', 'END:VALARM')),
+			etag: 'e'
+		});
+		const [item] = await upcomingReminders(auth, USER, 48 * 3600000, zone);
+		const midnightInLa = wallClockToUtc({ year: y, month: m, day: d, hour: 0, minute: 0, second: 0 }, zone);
+		expect(item.fireAt).toBe(midnightInLa);
+		expect(item.fireAt).not.toBe(Date.UTC(y, m - 1, d));
 	});
 });

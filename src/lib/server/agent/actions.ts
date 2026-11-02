@@ -1,5 +1,5 @@
 import { authStateForAccount, getAccount, type MailAccountRow } from '$lib/server/auth/accounts';
-import { sendComposed, type ComposedMessage } from './compose';
+import { saveComposedDraft, sendComposed, type ComposedMessage } from './compose';
 import { createDraftedEvent, deleteConfirmedEvent, describeWhen, type EventDraft } from './calendar-tools';
 import { describeSchedule, parseSchedule } from '$lib/server/jobs/schedule';
 import { describeSpec, parseSpec } from '$lib/server/jobs/specs';
@@ -75,6 +75,17 @@ const EXECUTORS: Record<string, Executor> = {
 		return result.success
 			? { success: true, message: `Sent to ${message.to.join(', ')}` }
 			: { success: false, message: result.error ?? 'The message could not be sent' };
+	},
+
+	// A draft to someone other than the user: saved, not sent.
+	async save_draft(action) {
+		const message = asMessage(action.payload);
+		const account = ownAccount(action);
+		if (!message || !account) return { success: false, message: 'That draft can no longer be saved' };
+		const result = await saveComposedDraft(authStateForAccount(account), account.email, message);
+		return result.success
+			? { success: true, message: `Saved a draft to ${message.to.join(', ')}` }
+			: { success: false, message: result.error ?? 'The draft could not be saved' };
 	},
 
 	// Stalwart sends the invitations once an event with attendees is saved.
@@ -169,16 +180,20 @@ export function pendingView(action: PendingAction): PendingView {
 	const p = action.payload;
 	const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 	const base = { id: action.id, kind: action.kind, body: null, danger: false };
+	// A message as the card shows it: who gets it, and exactly what it says.
+	const message = (label: string, confirmLabel: string): PendingView => ({
+		...base,
+		label,
+		title: String(p.subject ?? ''),
+		lines: [`To ${list(p.to).join(', ')}`, ...(list(p.cc).length ? [`Cc ${list(p.cc).join(', ')}`] : [])],
+		body: String(p.text ?? ''),
+		confirmLabel
+	});
 	switch (action.kind) {
 		case 'send_email':
-			return {
-				...base,
-				label: 'Send email',
-				title: String(p.subject ?? ''),
-				lines: [`To ${list(p.to).join(', ')}`, ...(list(p.cc).length ? [`Cc ${list(p.cc).join(', ')}`] : [])],
-				body: String(p.text ?? ''),
-				confirmLabel: 'Send'
-			};
+			return message('Send email', 'Send');
+		case 'save_draft':
+			return message('Save draft', 'Save draft');
 		case 'create_event': {
 			const draft = asEventDraft(p);
 			const attendees = list(p.attendees);

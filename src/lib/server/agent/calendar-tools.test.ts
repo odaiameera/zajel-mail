@@ -8,13 +8,14 @@ process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'ameera-cal-tools-')
 const mocks = vi.hoisted(() => ({
 	createEvent: vi.fn(async () => ({ id: 'ev-new' })),
 	deleteEvent: vi.fn(),
-	getEventSummary: vi.fn()
+	getEventSummary: vi.fn(),
+	getEventsInRange: vi.fn()
 }));
 vi.mock('$lib/server/calendar/service', () => ({
 	createEvent: mocks.createEvent,
 	deleteEvent: mocks.deleteEvent,
 	getEventSummary: mocks.getEventSummary,
-	getEventsInRange: vi.fn(),
+	getEventsInRange: mocks.getEventsInRange,
 	listCalendarsWithMeta: async () => [
 		{ id: 'work', name: 'Work', isDefault: false },
 		{ id: 'default', name: 'Personal', isDefault: true }
@@ -30,6 +31,7 @@ vi.mock('./compose', () => ({ sendComposed: vi.fn() }));
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
 import { CALENDAR_TOOLS } from './calendar-tools';
+import { newTurnBudget } from './budget';
 import { decidePendingAction, pendingView } from './actions';
 import type { ToolContext } from './tools';
 import type { AuthState } from '$lib/jmap/types';
@@ -44,6 +46,7 @@ const ctx = (source: ToolContext['source'] = 'chat'): ToolContext => ({
 	conversationId: null,
 	source,
 	timeZone: 'Asia/Amman',
+	budget: newTurnBudget(),
 	mailboxes: async () => []
 });
 const event = (extra: Record<string, unknown> = {}) => ({
@@ -143,6 +146,22 @@ describe('create_event', () => {
 		// A leap day is real.
 		expect((await tool('create_event').run(ctx(), event({ all_day: true, start: '2028-02-29', end: '2028-03-01' }))).pending).toBeDefined();
 		expect(mocks.createEvent).not.toHaveBeenCalled();
+	});
+});
+
+describe('search_calendar', () => {
+	it('shows times on the user’s own clock, never UTC', async () => {
+		mocks.getEventsInRange.mockResolvedValue({
+			events: [
+				{ id: 'ev1', title: 'Standup', start: '2026-11-03T07:00:00.000Z', end: '2026-11-03T07:30:00.000Z', allDay: false, recurring: false },
+				{ id: 'ev2', title: 'Offsite', start: '2026-11-04T21:00:00.000Z', end: '2026-11-05T21:00:00.000Z', allDay: true, recurring: false }
+			],
+			partial: false
+		});
+		const result = await tool('search_calendar').run(ctx(), { after: '2026-11-03', before: '2026-11-06' });
+		expect(result.content).toContain('Standup | 2026-11-03 10:00 – 10:30');
+		expect(result.content).toContain('Offsite | 2026-11-05 all day');
+		expect(result.content).not.toContain('Z');
 	});
 });
 

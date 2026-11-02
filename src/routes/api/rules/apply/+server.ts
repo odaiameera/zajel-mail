@@ -9,7 +9,13 @@ import {
 	updatesForEmails,
 	type RuleActionCtx
 } from '$lib/server/rules-engine';
-import { effectiveActions, hasJevCondition, type Rule } from '$lib/types/rules';
+import {
+	effectiveActions,
+	hasJevCondition,
+	JEV_OFF_LIMITS_ROLES,
+	withoutOffLimitsTargets,
+	type Rule
+} from '$lib/types/rules';
 import type { Email } from '$lib/jmap/types';
 
 const PAGE = 200;
@@ -26,9 +32,17 @@ interface SetResult {
  * format comes from the shared engine — full `mailboxIds` objects, never
  * id pointer patches (see outcomeToUpdate for the Stalwart digit-id story).
  */
-function buildUpdates(email: Email, rule: Rule, ctx: RuleActionCtx): Record<string, unknown> {
+function buildUpdates(
+	email: Email,
+	rule: Rule,
+	ctx: RuleActionCtx,
+	offLimits: ReadonlySet<string>
+): Record<string, unknown> {
 	const outcome = emptyOutcome();
-	applyActionsToOutcome(email, effectiveActions(rule), ctx, outcome);
+	// A rule Jev judges never deletes and never moves mail to Trash or Junk,
+	// here as in the worker: a judgement can be wrong, and those are the
+	// places mail is lost from.
+	applyActionsToOutcome(email, effectiveActions(withoutOffLimitsTargets(rule, offLimits)), ctx, outcome);
 	return outcomeToUpdate(email, outcome);
 }
 
@@ -105,6 +119,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					trashId: mailboxes.find((m) => m.role === 'trash')?.id,
 					validMailboxIds: validIds
 				};
+				const offLimits = new Set(
+					mailboxes.filter((m) => m.role && JEV_OFF_LIMITS_ROLES.has(m.role)).map((m) => m.id)
+				);
 
 				// Preflight: a rule whose label/folder target was deleted would
 				// "apply" as a stream of server-side rejections. Name the broken
@@ -148,7 +165,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					const emails = (response.methodResponses[0][1] as { list?: Email[] }).list ?? [];
 					const patches = Object.fromEntries(
 						emails
-							.map((email) => [email.id, buildUpdates(email, rule, ctx)] as const)
+							.map((email) => [email.id, buildUpdates(email, rule, ctx, offLimits)] as const)
 							.filter(([, p]) => Object.keys(p).length > 0)
 					);
 					scanned = matched = emails.length;

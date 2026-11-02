@@ -48,18 +48,17 @@
 		}
 	}
 
-	// Mirrors PREF_COOKIE_KEYS from src/lib/server/prefs.ts (minus undo_send,
-	// which is removed this phase). Kept inline so the disclosure list stays
-	// honest if a key is added/removed server-side — bumping it here is a
-	// one-line edit with no server import.
+	// Mirrors PREF_KEYS in src/lib/server/preferences.ts (a server module, so
+	// the list is repeated here rather than imported). Rules, signatures and
+	// label colours live in their own tables and are not part of the export.
 	const exportedKeys: Array<{ key: string; description: string }> = [
-		{ key: 'display_name',          description: 'Display name shown on outgoing mail' },
 		{ key: 'theme',                 description: 'Light / dark theme' },
 		{ key: 'density',               description: 'Comfortable / compact row density' },
 		{ key: 'reading_pane',          description: 'Reading pane on / off' },
 		{ key: 'composer_font',         description: 'Default composer font' },
 		{ key: 'composer_font_size',    description: 'Default composer font size' },
 		{ key: 'autosave_interval',     description: 'Draft auto-save interval, seconds' },
+		{ key: 'undo_send_seconds',     description: 'Undo send delay, seconds' },
 		{ key: 'conversation_view',     description: 'Group messages by thread' },
 		{ key: 'mark_read_delay',       description: 'Mark-as-read delay, milliseconds' },
 		{ key: 'auto_load_images',      description: 'Remote-image policy' },
@@ -69,13 +68,15 @@
 		{ key: 'keyboard_shortcuts',    description: 'Keyboard shortcuts on / off' },
 		{ key: 'notifications',         description: 'Browser notifications on / off' },
 		{ key: 'notification_folders',  description: 'Folders that fire notifications' },
+		{ key: 'notify_calendar_events', description: 'Notify for new and changed events' },
+		{ key: 'notify_event_reminders', description: 'Fire event reminders' },
+		{ key: 'calendar_week_start',   description: 'First day of the calendar week' },
+		{ key: 'calendar_view',         description: 'Last calendar view' },
 		{ key: 'auto_reply_enabled',    description: 'Vacation auto-reply on / off' },
 		{ key: 'auto_reply_subject',    description: 'Vacation auto-reply subject' },
 		{ key: 'auto_reply_body',       description: 'Vacation auto-reply body' },
-		{ key: 'mail_labels_migrated',  description: 'One-time migration flag (legacy)' },
-		{ key: 'label_meta',            description: 'Legacy label colors (now SQLite — usually empty)' },
-		{ key: 'mail_rules',            description: 'Filter / rule definitions' },
-		{ key: 'folder_expanded',       description: 'Sidebar folder expand / collapse state' }
+		{ key: 'folder_expanded',       description: 'Sidebar folder expand / collapse state' },
+		{ key: 'defaultPageSize',       description: 'Messages per page' }
 	];
 </script>
 
@@ -84,8 +85,7 @@
 <header class="mb-6">
 	<h1 class="text-xl font-semibold text-text">Import / Export</h1>
 	<p class="text-sm text-text-tertiary mt-1 max-w-prose">
-		Back up the device-scoped preferences this app stores in cookies, or restore them on another
-		browser.
+		Back up the preferences stored for your login, or restore them on another install.
 	</p>
 </header>
 
@@ -94,12 +94,12 @@
 		<div class="flex-1">
 			<p class="text-sm font-medium text-text">Export preferences</p>
 			<p class="text-xs text-text-tertiary mt-1 leading-relaxed">
-				Downloads a JSON file containing the cookie-backed preferences for this browser — theme,
-				density, reading-pane state, composer font and size, mail display options, notification
-				toggles, auto-reply text, and folder-expand state.
+				Downloads a JSON file with your preferences — theme, density, reading-pane state, composer
+				font and size, mail display options, messages per page, notification toggles, calendar
+				settings, auto-reply text, and folder-expand state.
 				<br /><br />
-				Server-side data (signatures, label colors, custom folder colors, your signed-in identity)
-				lives in your account on the mail server and is <strong>not</strong> part of this export.
+				Rules, signatures, label and folder colours, linked accounts and your sign-in are stored
+				separately and are <strong>not</strong> part of this export.
 			</p>
 			<details class="mt-3 text-xs text-text-tertiary">
 				<summary class="cursor-pointer hover:text-text transition-colors select-none">

@@ -1,13 +1,15 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { userEmailFromAuth } from '$lib/server/user';
-import { deleteCalendar, renameCalendar, CalDAVError } from '$lib/server/calendar/caldav';
+import { deleteCalendar, isCollectionId, renameCalendar, CalDAVError } from '$lib/server/calendar/caldav';
 import { deleteCalendarMeta, upsertCalendarMeta } from '$lib/server/db/queries/calendar-meta';
 
 export const PATCH: RequestHandler = async ({ locals, params, request }) => {
 	if (!locals.auth) return json({ error: 'Unauthorized' }, { status: 401 });
 	const userEmail = userEmailFromAuth(locals.auth);
 	const calendarId = params.id;
+	// The id becomes a path segment under the calendar home; `..` would not stay there.
+	if (!isCollectionId(calendarId)) return json({ error: 'Unknown calendar' }, { status: 404 });
 
 	const body = (await request.json().catch(() => null)) as {
 		name?: string;
@@ -18,8 +20,9 @@ export const PATCH: RequestHandler = async ({ locals, params, request }) => {
 
 	try {
 		if (body.name !== undefined) {
-			const name = body.name.trim();
+			const name = typeof body.name === 'string' ? body.name.trim() : '';
 			if (!name) return json({ error: 'Name is required' }, { status: 400 });
+			if (name.length > 100) return json({ error: 'Name too long' }, { status: 400 });
 			await renameCalendar(locals.auth, userEmail, calendarId, name);
 		}
 		if (body.color !== undefined || body.hidden !== undefined) {
@@ -39,6 +42,7 @@ export const DELETE: RequestHandler = async ({ locals, params }) => {
 	if (!locals.auth) return json({ error: 'Unauthorized' }, { status: 401 });
 	const userEmail = userEmailFromAuth(locals.auth);
 	const calendarId = params.id;
+	if (!isCollectionId(calendarId)) return json({ error: 'Unknown calendar' }, { status: 404 });
 
 	if (calendarId === 'default') {
 		return json({ error: 'The default calendar cannot be deleted' }, { status: 400 });

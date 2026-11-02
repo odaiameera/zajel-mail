@@ -24,6 +24,7 @@ vi.mock('$lib/server/telegram/store', () => ({ getLink: () => mocks.link }));
 
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
+import { appendMessage, conversationExists, createConversation } from '$lib/server/db/queries/ai-conversations';
 import { MailAssistantError } from '$lib/server/ai/mail-assistant';
 import { claimNextDueJob, createJob, deleteJob, getJob, LEASE_MS, setJobEnabled, setJobsPaused, type AgentJob } from './store';
 import type { JobSchedule } from './schedule';
@@ -124,7 +125,7 @@ describe('the job worker', () => {
 		);
 	});
 
-	it('records a run cut short by a restart, and runs the job again', async () => {
+	it('records a run cut short by a restart without blaming the job, and runs it again', async () => {
 		const job = makeJob('Bank check');
 		const claimedAt = MONDAY_8AM_AMMAN + 30_000;
 		vi.setSystemTime(claimedAt);
@@ -134,10 +135,12 @@ describe('the job worker', () => {
 		vi.setSystemTime(back);
 		await runDueJobs();
 		expect(mocks.runJob).not.toHaveBeenCalled();
+		// A restart is the server's doing: it doesn't count toward the five failures that switch a job off.
 		expect(fresh(job)).toMatchObject({
 			lastResult: 'Interrupted before it finished',
 			lastRunAt: new Date(claimedAt).toISOString(),
-			failures: 1,
+			failures: 0,
+			retries: 1,
 			runningSince: null,
 			nextRunAt: new Date(back + 5 * MIN).toISOString()
 		});
@@ -146,5 +149,16 @@ describe('the job worker', () => {
 		await runDueJobs();
 		expect(mocks.runJob).toHaveBeenCalledTimes(1);
 		expect(fresh(job)).toMatchObject({ failures: 0, lastResult: 'Done', nextRunAt: '2026-11-03T05:00:00.000Z' });
+	});
+
+	it('prunes chat history past its retention on every tick, so an idle account keeps none', async () => {
+		const old = SUNDAY_9AM_UTC - 8 * 86_400_000;
+		const stale = createConversation('me@example.test', old);
+		appendMessage(stale, 'me@example.test', 'user', 'About that invoice', old);
+		const recent = createConversation('me@example.test', SUNDAY_9AM_UTC - 3_600_000);
+		vi.setSystemTime(SUNDAY_9AM_UTC);
+		await runDueJobs();
+		expect(conversationExists(stale, 'me@example.test')).toBe(false);
+		expect(conversationExists(recent, 'me@example.test')).toBe(true);
 	});
 });
