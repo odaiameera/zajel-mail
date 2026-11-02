@@ -230,8 +230,8 @@ Jev is **off until you turn it on, account by account.** For a demo or developme
 - **Your CalDAV calendars**, discovered automatically (RFC 6764). Calendars on the same Stalwart server work out of the box.
 - **Five views**: month, week, work week, 3-day and day. The app remembers the one you last used. There's a mini-month for jumping around, and a line marking the current time.
 - **Several calendars**, each with its own colour, that you can show or hide. Create, rename and delete calendars from the sidebar.
-- **Events**: create, edit and delete, recurring series included. Changes to a series ask whether you mean this event or all of them.
-- **Invitations.** Invites that arrive by email show as an RSVP card in the message, parsed straight from the attached calendar file.
+- **Events**: create, edit and delete, recurring series included. Changes to a series ask whether you mean this event or all of them, and either way the series keeps the occurrences you skipped or moved.
+- **Invitations.** Invites that arrive by email show as an RSVP card in the message, parsed straight from the attached calendar file. A change or cancellation of one meeting in a series updates just that meeting.
 - **Reminders and notifications** for upcoming events, and for events that are new or changed.
 - **Keyboard shortcuts**:
 
