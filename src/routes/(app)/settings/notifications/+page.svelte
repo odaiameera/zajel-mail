@@ -8,9 +8,17 @@
 	import { onMount } from 'svelte';
 	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import type { LayoutData } from '../$types';
+	import { fixFor, urgentState, type AccountReach } from '$lib/telegram/urgent-state';
 
 	// --- Telegram (the agent's own bot) ---
-	type TelegramStatus = { configured: boolean; linked: boolean; username: string | null; urgent: boolean; paused: boolean };
+	type TelegramStatus = {
+		configured: boolean;
+		linked: boolean;
+		username: string | null;
+		urgent: boolean;
+		paused: boolean;
+		accounts: AccountReach[];
+	};
 	let telegram = $state<TelegramStatus | null>(null);
 	let telegramLink = $state<string | null>(null);
 	let telegramError = $state<string | null>(null);
@@ -245,11 +253,30 @@
 						class="px-2.5 py-1.5 text-xs text-text-tertiary hover:text-danger transition-colors cursor-pointer">Unlink</button>
 				{/snippet}
 			</SettingRow>
+			<!-- Jev decides what is urgent, so the switch is off while it reads no
+			     account; with several accounts, the ones it skips are listed. -->
+			{@const urgent = urgentState(telegram.accounts, telegram.urgent)}
+			{@const only = telegram.accounts.length === 1 ? urgent.skipped[0] : undefined}
 			<SettingRow title="Urgent mail">
 				{#snippet control()}
-					<Toggle checked={telegram!.urgent} onChange={(next) => setTelegram({ urgent: next })} />
+					{#if only?.blocked}
+						<a href={fixFor(only.blocked).href} class="btn btn-secondary btn-sm">{fixFor(only.blocked).label}</a>
+					{/if}
+					<Toggle checked={urgent.checked} disabled={urgent.disabled} onChange={(next) => setTelegram({ urgent: next })} />
 				{/snippet}
 			</SettingRow>
+			{#if telegram.accounts.length > 1}
+				{#each urgent.skipped as account (account.email)}
+					<SettingRow title={account.email}>
+						{#snippet control()}
+							{#if account.blocked}
+								<a href={fixFor(account.blocked).href} class="btn btn-secondary btn-sm">{fixFor(account.blocked).label}</a>
+							{/if}
+							<Toggle checked={false} disabled />
+						{/snippet}
+					</SettingRow>
+				{/each}
+			{/if}
 			<SettingRow title="Paused">
 				{#snippet control()}
 					<Toggle checked={telegram!.paused} onChange={(next) => setTelegram({ paused: next })} />
