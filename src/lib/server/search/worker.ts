@@ -45,6 +45,8 @@ const EMBED_BATCH = 8;
 const EMBED_TIMEOUT_MS = 120_000;
 /** Share of the time the backfill keeps Ollama busy. */
 const DUTY = 0.5;
+/** How long an account whose turn failed sits out before the loop tries it again. */
+const RETRY_MS = 60_000;
 
 interface ListedEmail {
 	id: string;
@@ -209,7 +211,13 @@ function markReadyIfDone(accountRowId: string): void {
 	if (!state || state.ready || !state.listed) return;
 	const progress = indexProgress(accountRowId);
 	if (progress.pending > 0) return;
-	updateIndexState(accountRowId, { ready: true });
+	if (progress.total > 0 && progress.done === 0) {
+		// Every message was refused: an index with no vectors answers nothing.
+		noteFailure(accountRowId, 'The endpoint refused every message', { model: embedSettings()?.model });
+		return;
+	}
+	// Whatever went wrong on the way here is over.
+	updateIndexState(accountRowId, { ready: true, lastError: null });
 	logEvent('info', 'search', 'index_ready', { messages: progress.total, failed: progress.failed });
 }
 
@@ -239,9 +247,44 @@ function noteFailure(accountRowId: string, message: string, fields: Record<strin
 	updateIndexState(accountRowId, { lastError: message });
 }
 
+/** A message's chunk vectors, or the refusal the endpoint answered its text with. */
+type Embedded = Float32Array[] | EmbedError;
+
+/**
+ * Embed each message's prompted chunks, all in one request when the endpoint
+ * takes them. A 400 means it refused the request, not that it is down, and
+ * one message's text can be the reason: the messages are then sent one at a
+ * time, and the refused ones come back as their error. When it refuses every
+ * one of several, the fault is its own (a model that doesn't embed, say), so
+ * that error is thrown and nothing is blamed on the mail.
+ */
+async function embedDocuments(perMessage: string[][]): Promise<Embedded[]> {
+	const regroup = (vectors: Float32Array[]) => {
+		let next = 0;
+		return perMessage.map((inputs) => vectors.slice(next, (next += inputs.length)));
+	};
+	try {
+		return regroup(await embed(perMessage.flat(), EMBED_TIMEOUT_MS));
+	} catch (err) {
+		if (!(err instanceof EmbedError && err.status === 400)) throw err;
+		if (perMessage.length === 1) return [err];
+		const each: Embedded[] = [];
+		for (const inputs of perMessage) {
+			try {
+				each.push(await embed(inputs, EMBED_TIMEOUT_MS));
+			} catch (one) {
+				if (!(one instanceof EmbedError && one.status === 400)) throw one;
+				each.push(one);
+			}
+		}
+		if (each.every((e) => e instanceof EmbedError)) throw err;
+		return each;
+	}
+}
+
 /**
  * Embed one batch of an account's queue. False when the endpoint or the mail
- * server failed, which ends the loop until the next minute.
+ * server failed, which ends the account's turn until the next minute.
  */
 export async function embedBatch(accountRowId: string, auth: AuthState): Promise<boolean> {
 	const settings = embedSettings();
@@ -259,47 +302,54 @@ export async function embedBatch(accountRowId: string, auth: AuthState): Promise
 
 	const style = promptStyle(settings.model);
 	const docs = list.map(emailDocument);
-	const inputs = docs.flatMap((doc) => doc.chunks.map((chunk) => style.document(doc.title, chunk)));
-
-	let vectors: Float32Array[];
+	let embedded: Embedded[];
 	try {
-		vectors = await embed(inputs, EMBED_TIMEOUT_MS);
+		embedded = await embedDocuments(docs.map((doc) => doc.chunks.map((chunk) => style.document(doc.title, chunk))));
 	} catch (err) {
-		if (err instanceof EmbedError && err.status === 400) {
-			// The endpoint refused this input, not the work: count it against
-			// these messages, which are skipped after a few tries.
-			for (const email of list) recordAttempt(accountRowId, email.id);
-			noteFailure(accountRowId, err.message, { ...errorFields(err), model: settings.model });
-			return true;
-		}
 		noteFailure(accountRowId, err instanceof Error ? err.message : String(err), { ...errorFields(err), model: settings.model });
 		return false;
 	}
 
-	const dims = vectors[0].length;
-	if (state.dimensions === null) updateIndexState(accountRowId, { dimensions: dims });
-	else if (state.dimensions !== dims) {
-		// Same name, different model behind it: start over.
-		logEvent('info', 'search', 'model_changed', { from: `${state.model}/${state.dimensions}`, to: `${settings.model}/${dims}` });
-		restartWithModel(accountRowId, settings.model);
-		forgetVectors(accountRowId);
-		return true;
-	}
+	// Switched off, or started over for another model, while the endpoint
+	// worked: these vectors belong to neither.
+	const fresh = getIndexState(accountRowId);
+	if (!fresh?.enabled || fresh.model !== settings.model) return true;
 
-	const loaded = loadedVectors(accountRowId);
-	let next = 0;
 	list.forEach((email, i) => {
-		const chunks = vectors.slice(next, next + docs[i].chunks.length).map(quantize);
-		next += docs[i].chunks.length;
-		// Deleted while this batch was being embedded: nothing to store.
-		if (!storeVectors(accountRowId, email.id, chunks)) return;
-		const meta = toIndexed(email);
-		loaded?.add({ id: meta.id, receivedAt: Date.parse(meta.receivedAt), mailboxIds: meta.mailboxIds }, chunks);
+		const refusal = embedded[i];
+		if (!(refusal instanceof EmbedError)) return;
+		// Skipped for good after a few tries; the rest of the batch is unaffected.
+		recordAttempt(accountRowId, email.id);
+		logEvent('warn', 'search', 'embed_refused', { ...errorFields(refusal), email: email.id, model: settings.model });
 	});
 
-	if (state.lastError) {
-		updateIndexState(accountRowId, { lastError: null });
-		logEvent('info', 'search', 'embed_recovered', { model: settings.model });
+	const sample = embedded.find((e): e is Float32Array[] => !(e instanceof EmbedError));
+	if (sample) {
+		const dims = sample[0].length;
+		if (fresh.dimensions === null) updateIndexState(accountRowId, { dimensions: dims });
+		else if (fresh.dimensions !== dims) {
+			// Same name, different model behind it: start over.
+			logEvent('info', 'search', 'model_changed', { from: `${fresh.model}/${fresh.dimensions}`, to: `${settings.model}/${dims}` });
+			restartWithModel(accountRowId, settings.model);
+			forgetVectors(accountRowId);
+			return true;
+		}
+
+		const loaded = loadedVectors(accountRowId);
+		list.forEach((email, i) => {
+			const vectors = embedded[i];
+			if (vectors instanceof EmbedError) return;
+			const chunks = vectors.map(quantize);
+			// Deleted while this batch was being embedded: nothing to store.
+			if (!storeVectors(accountRowId, email.id, chunks)) return;
+			const meta = toIndexed(email);
+			loaded?.add({ id: meta.id, receivedAt: Date.parse(meta.receivedAt), mailboxIds: meta.mailboxIds }, chunks);
+		});
+
+		if (fresh.lastError) {
+			updateIndexState(accountRowId, { lastError: null });
+			logEvent('info', 'search', 'embed_recovered', { model: settings.model });
+		}
 	}
 	markReadyIfDone(accountRowId);
 	return true;
@@ -325,29 +375,36 @@ function recovered(accountRowId: string, step: 'sync' | 'index'): void {
 	if (failing.delete(`${accountRowId}:${step}`)) logEvent('info', 'search', `${step}_recovered`, {});
 }
 
-/** Embed queued mail until there's none left, or something fails. */
-async function pump(auths: Map<string, AuthState>): Promise<void> {
+/**
+ * Embed queued mail, a batch per account in turn, until there's none left.
+ * The accounts are looked up again every round, so one switched on while
+ * another's backlog is being embedded joins in; one whose turn fails (its
+ * mail server, say) sits out RETRY_MS while the others go on.
+ */
+async function pump(): Promise<void> {
 	if (pumping) return;
 	pumping = true;
+	const stoppedAt = new Map<string, number>();
 	try {
 		for (;;) {
-			const busy = [...auths.keys()].filter((id) => {
-				const state = getIndexState(id);
-				return state?.enabled && pendingEmailIds(id, 1).length > 0;
+			const now = Date.now();
+			const busy = listSchedulableAuths().filter(({ account }) => {
+				if ((stoppedAt.get(account.id) ?? -Infinity) > now - RETRY_MS) return false;
+				return getIndexState(account.id)?.enabled && pendingEmailIds(account.id, 1).length > 0;
 			});
 			if (busy.length === 0) return;
-			for (const accountRowId of busy) {
+			for (const { account, auth } of busy) {
 				const begun = Date.now();
 				let ok: boolean;
 				try {
-					ok = await embedBatch(accountRowId, auths.get(accountRowId)!);
-					recovered(accountRowId, 'index');
+					ok = await embedBatch(account.id, auth);
+					recovered(account.id, 'index');
 				} catch (err) {
-					if (err instanceof JMAPAuthError) markNeedsReauth(accountRowId);
-					else failed(accountRowId, 'index', err);
+					if (err instanceof JMAPAuthError) markNeedsReauth(account.id);
+					else failed(account.id, 'index', err);
 					ok = false;
 				}
-				if (!ok) return;
+				if (!ok) stoppedAt.set(account.id, Date.now());
 				await sleep(((Date.now() - begun) * (1 - DUTY)) / DUTY);
 			}
 		}
@@ -363,19 +420,17 @@ export async function runIndexer(): Promise<void> {
 	try {
 		const enabled = new Set(enabledIndexes().map((s) => s.accountId));
 		if (enabled.size === 0) return;
-		const auths = new Map<string, AuthState>();
 		for (const { account, auth } of listSchedulableAuths()) {
 			if (!enabled.has(account.id)) continue;
 			try {
 				await syncAccount(account.id, auth);
-				auths.set(account.id, auth);
 				recovered(account.id, 'sync');
 			} catch (err) {
 				if (err instanceof JMAPAuthError) markNeedsReauth(account.id);
 				else failed(account.id, 'sync', err);
 			}
 		}
-		void pump(auths).catch((err) => logEvent('warn', 'search', 'index_failed', errorFields(err)));
+		void pump().catch((err) => logEvent('warn', 'search', 'index_failed', errorFields(err)));
 	} finally {
 		ticking = false;
 	}

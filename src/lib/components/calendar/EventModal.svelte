@@ -85,6 +85,11 @@
 	let customEnds = $state<'never' | 'until' | 'count'>('never');
 	let customUntil = $state('');
 	let customCount = $state(10);
+	// Whether the user changed any recurrence control since the dialog opened.
+	// The presets can't express every rule a series may carry (yearly by
+	// month and weekday, daily on weekdays, BYSETPOS…), so an untouched
+	// recurrence is sent as "keep what is stored", not rebuilt from them.
+	let recurrenceTouched = false;
 
 	function minutesToTime(d: Date): string {
 		return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -95,6 +100,7 @@
 			error = null;
 			saving = false;
 			attendeeInput = '';
+			recurrenceTouched = false;
 			if (editing) {
 				const s = instanceDate(editing.start, editing.allDay);
 				const e = instanceDate(editing.end, editing.allDay);
@@ -301,6 +307,7 @@
 		payload.description = description.trim();
 		payload.location = location.trim();
 		payload.rrule = buildRule();
+		if (editing && !recurrenceTouched) payload.keepRecurrence = true;
 		payload.alarms = [...alarms].sort((a, b) => a - b);
 		payload.attendees = attendees.map((email) => ({ email }));
 
@@ -410,7 +417,10 @@
 										{ value: 'yearly', label: 'Annually' },
 										{ value: 'custom', label: 'Custom…' }
 									]}
-									onChange={(v) => (recurrence = v)}
+									onChange={(v) => {
+										recurrence = v;
+										recurrenceTouched = true;
+									}}
 									ariaLabel="Repeats"
 								/>
 							</div>
@@ -424,6 +434,7 @@
 											min="1"
 											max="99"
 											bind:value={customInterval}
+											oninput={() => (recurrenceTouched = true)}
 											class="cal-input w-16 text-center"
 											aria-label="Interval"
 										/>
@@ -435,7 +446,10 @@
 												{ value: 'MONTHLY', label: customInterval > 1 ? 'months' : 'month' },
 												{ value: 'YEARLY', label: customInterval > 1 ? 'years' : 'year' }
 											]}
-											onChange={(v) => (customFreq = v as typeof customFreq)}
+											onChange={(v) => {
+												customFreq = v as typeof customFreq;
+												recurrenceTouched = true;
+											}}
 											ariaLabel="Frequency"
 										/>
 									</div>
@@ -454,6 +468,7 @@
 														customByDay = customByDay.includes(wd.code)
 															? customByDay.filter((c) => c !== wd.code)
 															: [...customByDay, wd.code];
+														recurrenceTouched = true;
 													}}
 												>
 													{wd.label}
@@ -471,17 +486,27 @@
 												{ value: 'until', label: 'on date' },
 												{ value: 'count', label: 'after' }
 											]}
-											onChange={(v) => (customEnds = v as typeof customEnds)}
+											onChange={(v) => {
+												customEnds = v as typeof customEnds;
+												recurrenceTouched = true;
+											}}
 											ariaLabel="Ends"
 										/>
 										{#if customEnds === 'until'}
-											<input type="date" bind:value={customUntil} class="cal-input" aria-label="End by date" />
+											<input
+												type="date"
+												bind:value={customUntil}
+												oninput={() => (recurrenceTouched = true)}
+												class="cal-input"
+												aria-label="End by date"
+											/>
 										{:else if customEnds === 'count'}
 											<input
 												type="number"
 												min="1"
 												max="999"
 												bind:value={customCount}
+												oninput={() => (recurrenceTouched = true)}
 												class="cal-input w-16 text-center"
 												aria-label="Occurrence count"
 											/>

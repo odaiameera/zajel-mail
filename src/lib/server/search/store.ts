@@ -126,6 +126,9 @@ function prepareStmts() {
 		),
 		dropVectors: db.prepare('DELETE FROM search_vectors WHERE account_id = ?'),
 		requeueAll: db.prepare(`UPDATE search_emails SET status = 'pending', attempts = 0 WHERE account_id = ?`),
+		requeueFailed: db.prepare(
+			`UPDATE search_emails SET status = 'pending', attempts = 0 WHERE account_id = ? AND status = 'failed'`
+		),
 		dropEmails: db.prepare('DELETE FROM search_emails WHERE account_id = ?'),
 		vectors: db.prepare(
 			`SELECT v.email_id, v.scale, v.vector, e.received_at, e.mailbox_ids
@@ -232,6 +235,14 @@ export function storeVectors(accountId: string, emailId: string, vectors: Stored
 /** Count a failed attempt; the last one marks the message failed. */
 export function recordAttempt(accountId: string, emailId: string): void {
 	stmts().markAttempt.run(MAX_ATTEMPTS, accountId, emailId);
+}
+
+/** Give the messages the endpoint refused another chance, as when the endpoint changes. */
+export function requeueFailed(accountId: string, now = Date.now()): void {
+	getDb().transaction(() => {
+		if (stmts().requeueFailed.run(accountId).changes === 0) return;
+		updateIndexState(accountId, { ready: false, lastError: null }, now);
+	})();
 }
 
 export function indexProgress(accountId: string): IndexProgress {

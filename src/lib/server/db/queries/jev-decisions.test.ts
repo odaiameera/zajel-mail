@@ -125,9 +125,28 @@ describe('jev decisions', () => {
 		expect(listPendingEmailIds(ACCT, 10, true)).toEqual([]);
 	});
 
-	it('tells which emails Jev already knows, judged or not', () => {
-		expect([...knownEmailIds(ACCT, ['e1', 'b-old', 'never-seen'])].sort()).toEqual(['b-old', 'e1']);
+	it('knows judged and queued mail, but offers skipped and failed mail again', () => {
+		// b-old was cancelled above; it is still unsorted, so it is not "known".
+		expect([...knownEmailIds(ACCT, ['e1', 'b-new', 'b-old', 'never-seen'])].sort()).toEqual(['b-new', 'e1']);
 		expect(knownEmailIds(ACCT, []).size).toBe(0);
+
+		// A message that failed for good is offered again too, with a fresh start.
+		enqueueEmails(ACCT, ['b-dead'], 6000, true);
+		for (let i = 0; i < MAX_JEV_ATTEMPTS; i++) recordFailure(ACCT, 'b-dead', 'boom');
+		expect(getDecision(ACCT, 'b-dead')?.status).toBe('failed');
+		expect(knownEmailIds(ACCT, ['b-dead']).size).toBe(0);
+
+		// Starting a run again queues the skipped and failed rows, not the judged one.
+		const requeued = enqueueEmails(ACCT, ['b-new', 'b-mid', 'b-old', 'b-dead'], 7000, true);
+		expect(requeued).toBe(3);
+		expect(listPendingEmailIds(ACCT, 10, true)).toEqual(['b-mid', 'b-old', 'b-dead']);
+		expect(getDecision(ACCT, 'b-dead')).toMatchObject({ status: 'pending', attempts: 0, lastError: null });
+		expect(getDecision(ACCT, 'b-new')?.status).toBe('done');
+
+		// New arrivals never revive a row: that queue is driven by the cursor.
+		cancelBackfill(ACCT);
+		expect(enqueueEmails(ACCT, ['b-old'], 8000)).toBe(0);
+		expect(getDecision(ACCT, 'b-old')?.status).toBe('skipped');
 	});
 
 	it('keeps spam verdicts, and your Spam / Not spam clicks against them', () => {

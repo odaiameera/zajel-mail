@@ -96,12 +96,12 @@ The inbox is built for getting through mail, not just reading it.
 - drag a message onto a tab, or
 - use **Move to tab**.
 
-**Folders and labels.** Folders are real JMAP mailboxes and can nest. Labels are mailboxes too, grouped under a `Labels` parent, so they show up cleanly in any other client. Both can have a colour and an icon.
+**Folders and labels.** Folders are real JMAP mailboxes and can nest. Labels are mailboxes too, grouped under a `Labels` parent, so they show up cleanly in any other client. Both can have a colour and an icon. Drag a folder or label in the sidebar to reorder it or nest it under another; the order is stored on the server, so other clients that honour it see the same arrangement. Settings → Folders and Labels have Move up and Move down for keyboards and touch screens.
 
 **Search** sits at the top of every page (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>, or <kbd>/</kbd>). It looks across every folder, and active filters show as chips you can clear.
 
 With **semantic search** switched on in Settings → Search, it also finds mail by meaning. For example, *"the plumber's quote from spring"* finds the estimate for the leaking pipe, in Arabic or English.
-- Keyword and meaning results are merged, so a message both find comes first.
+- Keyword and meaning results are merged, so a message both find comes first. A match has to stand out from the rest of the mailbox, so a mailbox with fewer than ten messages, or a folder where nothing does, gets keyword results alone.
 - The embedding model runs on **your own Ollama**. Mail text never goes to the chat AI's endpoint.
 - Each account is indexed in the background, newest mail first. Until its index is complete, search is keyword-only.
 
@@ -170,15 +170,15 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
 
   It stops as soon as it can answer.
 - **Draft replies** for you to review and send.
-- **Calendar proposals.** Zajel proposes events, and even deletions, as cards that name the event and date. Nothing changes until you confirm.
+- **Calendar proposals.** Zajel proposes events, and even deletions, as cards that name the event and date. Nothing changes until you confirm. The card shows the calendar, the time, every invitee and the description that goes out.
 - **Task proposals** go to **Todoist**, **Linear**, **Notion**, a generic **webhook**, or an **MCP-to-HTTP bridge**, again only after you confirm.
 - **Persistent conversations** with history. Answers are rendered in Markdown.
 
 **On Claude, Zajel acts.** With `ANTHROPIC_API_KEY` set, Zajel runs on **Claude Opus 5.5** for the agent and **Claude Haiku 5.5** for writing, with native tool use.
-- **Your own mailbox:** it marks, stars, archives, moves, labels, snoozes and drafts. These changes are reversible, happen straight away and are logged.
-- **Anything that leaves your account** (sending, invitations, deleting an event) becomes a card you confirm.
+- **Your own mailbox:** it marks, stars, archives, moves, labels, snoozes, drafts and sets Telegram reminders. These changes are reversible, happen straight away and are logged.
+- **Anything that leaves your account or changes your calendar** (sending, adding or deleting an event, invitations, scheduling a job) becomes a card you confirm.
 - **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), with **Mark read**, **Snooze 1h** and **Archive** buttons, and sends reminders. It doesn't take typed messages.
-- **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools only. They run once, hourly, daily, on weekdays or weekly.
+- **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools only. They run once, hourly, daily, on weekdays, on chosen days of the week, or weekly.
 - **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from what each provider offers. **Check** sends a real request.
 
 Without an Anthropic key, Zajel answers and proposes but doesn't act. It runs on **OpenAI's GPT-5.6** when `OPENAI_API_KEY` is set:
@@ -230,8 +230,8 @@ Jev is **off until you turn it on, account by account.** For a demo or developme
 - **Your CalDAV calendars**, discovered automatically (RFC 6764). Calendars on the same Stalwart server work out of the box.
 - **Five views**: month, week, work week, 3-day and day. The app remembers the one you last used. There's a mini-month for jumping around, and a line marking the current time.
 - **Several calendars**, each with its own colour, that you can show or hide. Create, rename and delete calendars from the sidebar.
-- **Events**: create, edit and delete, recurring series included. Changes to a series ask whether you mean this event or all of them.
-- **Invitations.** Invites that arrive by email show as an RSVP card in the message, parsed straight from the attached calendar file.
+- **Events**: create, edit and delete, recurring series included. Changes to a series ask whether you mean this event or all of them, and either way the series keeps the occurrences you skipped or moved.
+- **Invitations.** Invites that arrive by email show as an RSVP card in the message, parsed straight from the attached calendar file. A change or cancellation of one meeting in a series updates just that meeting.
 - **Reminders and notifications** for upcoming events, and for events that are new or changed.
 - **Keyboard shortcuts**:
 
@@ -329,7 +329,7 @@ Zajel Mail holds the keys to your mail, so security comes first.
 - **Spam and authentication signals** are visible: the spam score, authentication results and sender trust are shown, not hidden.
 
 **AI that asks first**
-- **Anything that leaves your account waits for your click.** Sending, invitations, event deletions and tasks are cards that name exactly what will happen.
+- **Anything that leaves your account waits for your click.** Sending, calendar changes, invitations and scheduled jobs are cards that name exactly what will happen.
 - **What Zajel does on its own stays in your mailbox and can be undone.** Marking, filing, labelling, snoozing and drafts are logged in Settings → Agent.
 
 ### Where your data goes

@@ -44,8 +44,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		const result = await importInvitation(locals.auth, userEmail, ics, body.calendarId, partStat);
 		return json({ success: true, eventId: result.eventId, uid: result.uid });
 	} catch (err) {
+		if (err instanceof CalDAVError && err.status === 412) {
+			return json({ error: 'Event changed on the server — reload and try again' }, { status: 409 });
+		}
 		const status = err instanceof CalDAVError ? err.status : 502;
-		const message = err instanceof CalDAVError && err.status === 422 ? err.message : 'Failed to add to calendar';
+		const message =
+			err instanceof CalDAVError && (err.status === 422 || err.status === 404) ? err.message : 'Failed to add to calendar';
 		return json({ error: message }, { status });
 	}
 };

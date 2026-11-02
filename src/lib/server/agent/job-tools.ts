@@ -1,6 +1,7 @@
 import { describeSchedule, nextRun, parseSchedule } from '$lib/server/jobs/schedule';
 import { describeSpec, parseSpec } from '$lib/server/jobs/specs';
 import { listJobs, setJobEnabled } from '$lib/server/jobs/store';
+import { parseLocalTime } from './local-time';
 import { createPendingAction } from './store';
 import type { AgentTool } from './tools';
 
@@ -58,6 +59,10 @@ For working days, use "days" with the days the user works, e.g. [0,1,2,3,4] for 
 		const schedule = parseSchedule(input.when);
 		const title = typeof input.title === 'string' ? input.title.trim().slice(0, 120) : '';
 		if (!spec || !schedule || !title) return { content: 'That job isn’t complete: check what, when and title', isError: true };
+		// parseSchedule checks the shape of a one-off's time; a date that doesn't exist would roll over.
+		if (schedule.kind === 'once' && !parseLocalTime(schedule.at)) {
+			return { content: `when.at “${schedule.at}” is not a real local time; use YYYY-MM-DDTHH:mm`, isError: true };
+		}
 		if (nextRun(schedule, ctx.timeZone, Date.now()) === null) return { content: 'That time has already passed', isError: true };
 		const pending = createPendingAction({
 			userId: ctx.userId,

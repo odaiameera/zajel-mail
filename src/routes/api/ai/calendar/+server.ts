@@ -9,6 +9,7 @@ import {
 import {
 	createEvent,
 	deleteEvent,
+	getEventSummary,
 	listCalendarsWithMeta
 } from '$lib/server/calendar/service';
 
@@ -47,13 +48,33 @@ export const POST: RequestHandler = async ({ cookies, locals, request }) => {
 
 	try {
 		if (proposal.action === 'delete') {
-			// Scope 'all' with no recurrenceId removes the whole object, which
-			// is what "delete this event" means. Per-occurrence deletes stay in
-			// the calendar UI, where the scope can actually be chosen.
-			await deleteEvent(locals.auth, userEmail, proposal.target!.id, 'all', null);
+			const target = proposal.target!;
+			// The event as the server has it, not as the proposal describes it:
+			// a repeating event shares one id across every occurrence, so
+			// deleting "the event" the model picked would delete the series.
+			const stored = await getEventSummary(locals.auth, userEmail, target.id);
+			if (!stored) {
+				return json({ error: 'That event is no longer on your calendar' }, { status: 404 });
+			}
+			if (stored.recurring && !target.recurrenceId) {
+				return json(
+					{
+						error:
+							'This is a repeating event. Open it in the calendar to choose whether to delete one occurrence or the whole series.'
+					},
+					{ status: 409 }
+				);
+			}
+			await deleteEvent(
+				locals.auth,
+				userEmail,
+				target.id,
+				target.recurrenceId ? 'instance' : 'all',
+				target.recurrenceId
+			);
 			return json({
 				success: true,
-				message: `Deleted “${proposal.target!.title}” from your calendar.`
+				message: `Deleted “${stored.title}”${target.recurrenceId ? ' (that occurrence only)' : ''} from your calendar.`
 			});
 		}
 

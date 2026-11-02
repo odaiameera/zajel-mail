@@ -131,6 +131,17 @@ function prepareStmts() {
 			 VALUES (?, ?, 'pending', ?, ?)
 			 ON CONFLICT (account_id, email_id) DO NOTHING`
 		),
+		// Sorting existing mail offers skipped and failed mail again: it is
+		// still sitting in the Inbox unsorted. Its row starts over, so a
+		// message that failed for good once gets its full share of attempts.
+		enqueueBackfill: db.prepare(
+			`INSERT INTO jev_decisions (account_id, email_id, status, backfill, created_at)
+			 VALUES (?, ?, 'pending', 1, ?)
+			 ON CONFLICT (account_id, email_id) DO UPDATE SET
+			   status = 'pending', backfill = 1, created_at = excluded.created_at,
+			   attempts = 0, last_error = NULL, decided_at = NULL
+			 WHERE jev_decisions.status IN ('skipped', 'failed')`
+		),
 		pending: db.prepare(
 			`SELECT email_id FROM jev_decisions
 			 WHERE account_id = ? AND status = 'pending' AND backfill = ?
@@ -223,7 +234,9 @@ export function enqueueEmails(
 	let added = 0;
 	getDb().transaction(() => {
 		emailIds.forEach((id, i) => {
-			added += s.enqueue.run(accountId, id, backfill ? 1 : 0, backfill ? now + i : now).changes;
+			added += backfill
+				? s.enqueueBackfill.run(accountId, id, now + i).changes
+				: s.enqueue.run(accountId, id, 0, now).changes;
 		});
 	})();
 	return added;
@@ -252,7 +265,12 @@ export function backfillProgress(accountId: string): BackfillProgress {
 	return out;
 }
 
-/** Which of these emails Jev already has a row for — judged, queued or skipped. */
+/**
+ * Which of these emails Jev has judged or has queued. Skipped and failed
+ * mail is not known: it was never sorted, so sorting existing mail offers it
+ * again. (Before this, cancelling a run or switching Jev off and on marked
+ * the queue skipped, and those emails could never be queued again.)
+ */
 export function knownEmailIds(accountId: string, emailIds: string[]): Set<string> {
 	const known = new Set<string>();
 	const db = getDb();
@@ -260,7 +278,9 @@ export function knownEmailIds(accountId: string, emailIds: string[]): Set<string
 		const chunk = emailIds.slice(i, i + 500);
 		const rows = db
 			.prepare(
-				`SELECT email_id FROM jev_decisions WHERE account_id = ? AND email_id IN (${chunk.map(() => '?').join(',')})`
+				`SELECT email_id FROM jev_decisions
+				 WHERE account_id = ? AND status IN ('pending', 'done')
+				   AND email_id IN (${chunk.map(() => '?').join(',')})`
 			)
 			.all(accountId, ...chunk) as { email_id: string }[];
 		for (const r of rows) known.add(r.email_id);

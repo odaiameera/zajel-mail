@@ -13,7 +13,7 @@
 	import { getContext, setContext, untrack } from 'svelte';
 	import { get } from 'svelte/store';
 	import type { Email, Mailbox } from '$lib/jmap/types';
-	import type { Label } from '$lib/types/labels';
+	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
 	import { bucketFor, type DateBucket } from '$lib/utils/date-buckets';
 	import { now } from '$lib/stores/now';
 	import { browser } from '$app/environment';
@@ -57,7 +57,8 @@
 	}
 
 	const mailboxes = $derived<Mailbox[]>(page.data.mailboxes ?? []);
-	const allLabels = getContext<Label[]>('labels') ?? [];
+	const labelsContext = getContext<LabelsContext | undefined>(LABELS_CONTEXT);
+	const allLabels: Label[] = $derived(labelsContext?.current ?? []);
 
 	// Expose the current list's mailbox + reminded-id set to nested
 	// EmailListItems so they can render per-row hover actions without a

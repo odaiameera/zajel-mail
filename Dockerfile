@@ -18,6 +18,11 @@ COPY --from=builder /app/node_modules node_modules/
 COPY package.json .
 EXPOSE 3001
 ENV PORT=3001
+# The runtime reads NODE_ENV to pick its defaults; without it the SQLite
+# database landed inside the container (./local-data) whenever DATABASE_PATH
+# was not set, and vanished on the next rebuild. Set only here, after the
+# build: in the builder it would make npm skip the devDependencies.
+ENV NODE_ENV=production
 # Attachments go up to 25 MB (api/upload), plus multipart overhead.
 # Signed-out requests are still held to 1 MB in hooks.server.ts.
 ENV BODY_SIZE_LIMIT=30M

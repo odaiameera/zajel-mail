@@ -104,7 +104,11 @@ export async function listLabels(
 		};
 	});
 
-	return labels.sort((a, b) => a.name.localeCompare(b.name));
+	// In the order the user put them (sidebar drags set sortOrder), then by name.
+	const position = new Map(mailboxes.map((m) => [m.id, m.sortOrder]));
+	return labels.sort(
+		(a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0) || a.name.localeCompare(b.name)
+	);
 }
 
 /**

@@ -22,6 +22,8 @@
 		found: boolean;
 		uid: string;
 		method: string | null;
+		/** Set when the file is about one occurrence of a series. */
+		recurrenceId: string | null;
 		event: {
 			title: string;
 			allDay: boolean;
@@ -43,6 +45,7 @@
 	let loading = $state(true);
 	let busy = $state<string | null>(null);
 	let selectedCalendar = $state('');
+	let occurrenceRemoved = $state(false);
 
 	onMount(async () => {
 		try {
@@ -81,33 +84,42 @@
 	const isInvite = $derived(!isCancellation && invitation?.myStatus !== null);
 	const currentStatus = $derived(invitation?.existing?.myStatus ?? invitation?.myStatus ?? null);
 	const onCalendar = $derived(!!invitation?.existing);
+	const occurrenceOnly = $derived(!!invitation?.recurrenceId);
 	const monthShort = $derived(startDate.toLocaleDateString(undefined, { month: 'short' }));
+
+	/** Send the invitation to the server, which stores it or folds it into the series it belongs to. */
+	async function postInvitation(partStat: string | null): Promise<{ ok: boolean; error?: string; eventId?: string }> {
+		if (!invitation) return { ok: false };
+		const res = await fetch('/api/calendar/invitation', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				blobId,
+				calendarId: invitation.existing?.calendarId ?? selectedCalendar,
+				partStat
+			})
+		});
+		const data = (await res.json().catch(() => ({}))) as { error?: string; eventId?: string };
+		if (!res.ok) return { ok: false, error: data.error };
+		if (data.eventId) markTouched(data.eventId);
+		return { ok: true, eventId: data.eventId };
+	}
 
 	async function importWith(partStat: string | null, busyKey: string) {
 		if (!invitation || busy) return;
 		busy = busyKey;
 		try {
-			const res = await fetch('/api/calendar/invitation', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					blobId,
-					calendarId: invitation.existing?.calendarId ?? selectedCalendar,
-					partStat
-				})
-			});
-			const data = (await res.json().catch(() => ({}))) as { error?: string; eventId?: string };
+			const res = await postInvitation(partStat);
 			if (!res.ok) {
-				showToast({ message: data.error ?? 'Failed to add to calendar' });
+				showToast({ message: res.error ?? 'Failed to add to calendar' });
 				return;
 			}
-			if (data.eventId) markTouched(data.eventId);
 			invitation = {
 				...invitation,
 				myStatus: partStat ?? invitation.myStatus,
 				existing: {
 					calendarId: invitation.existing?.calendarId ?? selectedCalendar,
-					eventId: data.eventId ?? invitation.existing?.eventId ?? '',
+					eventId: res.eventId ?? invitation.existing?.eventId ?? '',
 					myStatus: partStat ?? invitation.existing?.myStatus ?? null
 				}
 			};
@@ -124,6 +136,19 @@
 		if (!invitation?.existing || busy) return;
 		busy = 'remove';
 		try {
+			if (occurrenceOnly) {
+				// The organizer cancelled one meeting of a series. The server
+				// folds the cancellation into the stored series as an EXDATE;
+				// deleting the object would take every other occurrence with it.
+				const res = await postInvitation(null);
+				if (!res.ok) {
+					showToast({ message: res.error ?? 'Failed to remove event' });
+					return;
+				}
+				occurrenceRemoved = true;
+				showToast({ message: 'Removed this occurrence from your calendar' });
+				return;
+			}
 			const res = await apiDeleteEvent(invitation.existing.eventId, 'all', null);
 			if (!res.ok) {
 				showToast({ message: res.error ?? 'Failed to remove event' });
@@ -163,7 +188,13 @@
 			<div class="min-w-0 flex-1">
 				<div class="flex items-center gap-2 flex-wrap">
 					<span class="text-2xs font-medium uppercase tracking-wide {isCancellation ? 'text-danger' : 'text-accent-fg'}">
-						{isCancellation ? 'Event cancelled' : isInvite ? 'Invitation' : 'Event attached'}
+						{isCancellation
+							? occurrenceOnly
+								? 'Occurrence cancelled'
+								: 'Event cancelled'
+							: isInvite
+								? 'Invitation'
+								: 'Event attached'}
 					</span>
 					{#if onCalendar && !isCancellation}
 						<span class="inline-flex items-center gap-1 text-2xs text-success">
@@ -177,7 +208,11 @@
 					{invitation.event.title || '(untitled event)'}
 				</h3>
 				<p class="text-xs text-text-secondary mt-0.5">
-					{rangeText}{invitation.event.recurring ? ` · ${describeRRule(invitation.event.rrule)}` : ''}
+					{rangeText}{invitation.event.recurring
+						? ` · ${describeRRule(invitation.event.rrule)}`
+						: occurrenceOnly
+							? ' · one occurrence of a repeating event'
+							: ''}
 				</p>
 				{#if invitation.event.location}
 					<p class="text-xs text-text-tertiary mt-0.5 truncate">📍 {invitation.event.location}</p>
@@ -194,15 +229,17 @@
 				<!-- Actions -->
 				<div class="flex items-center gap-2 mt-2.5 flex-wrap">
 					{#if isCancellation}
-						{#if onCalendar}
+						{#if onCalendar && !occurrenceRemoved}
 							<button
 								type="button"
 								class="btn btn-danger btn-sm"
 								disabled={busy !== null}
 								onclick={removeFromCalendar}
 							>
-								{busy === 'remove' ? 'Removing…' : 'Remove from calendar'}
+								{busy === 'remove' ? 'Removing…' : occurrenceOnly ? 'Remove this occurrence' : 'Remove from calendar'}
 							</button>
+						{:else if occurrenceRemoved}
+							<span class="text-xs text-text-tertiary">Removed from your calendar.</span>
 						{:else}
 							<span class="text-xs text-text-tertiary">This event isn't on your calendar.</span>
 						{/if}

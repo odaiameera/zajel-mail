@@ -8,6 +8,7 @@
 	import { colorByHex, type LabelColor } from '$lib/constants/colors';
 	import CreateMailboxModal from '$lib/components/modals/CreateMailboxModal.svelte';
 	import MailboxIcon from '$lib/components/MailboxIcon.svelte';
+	import { moveStep } from '$lib/utils/folder-tree';
 
 	type EditingMailbox = {
 		id: string;
@@ -40,6 +41,24 @@
 		modalOpen = true;
 	}
 
+	// One place up or down: what a drag in the sidebar does, for keyboards
+	// and touch screens. Labels are mailboxes too, so the folders API orders them.
+	async function step(label: Label, direction: 'up' | 'down') {
+		const request = moveStep(data.mailboxes, label.id, direction);
+		if (!request) return;
+		const res = await fetch('/api/folders', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ action: 'reorder', ...request })
+		});
+		const payload = await res.json().catch(() => ({}));
+		if (!res.ok || payload?.success === false) {
+			alert(payload?.error ?? 'Failed to move label');
+			return;
+		}
+		await invalidateAll();
+	}
+
 	async function deleteLabel(label: Label) {
 		const msg = `Delete "${label.name}"? Emails tagged with this label will not be deleted.`;
 		if (!confirm(msg)) return;
@@ -67,7 +86,8 @@
 		<h1 class="text-xl font-semibold text-text">Labels</h1>
 		<p class="text-sm text-text-tertiary mt-1 max-w-prose">
 			Labels sync to Apple Mail and Thunderbird as folders under <code class="text-xs bg-surface-hover rounded-md px-1 py-0.5">Labels/</code>.
-			Apply them to emails from anywhere in the app; create, rename, recolor, and delete them here.
+			Apply them to emails from anywhere in the app; create, rename, recolor, reorder and delete them here, or
+			drag them in the sidebar.
 		</p>
 	</div>
 	<button
@@ -93,6 +113,22 @@
 						href={`/folder/${label.id}`}
 						class="text-xs text-text-tertiary hover:text-text transition-colors"
 					>View →</a>
+					<button
+						type="button"
+						onclick={() => step(label, 'up')}
+						disabled={!moveStep(data.mailboxes, label.id, 'up')}
+						title="Move up"
+						aria-label="Move {label.name} up"
+						class="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-surface transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default"
+					><Icon name="move-up" size={14} /></button>
+					<button
+						type="button"
+						onclick={() => step(label, 'down')}
+						disabled={!moveStep(data.mailboxes, label.id, 'down')}
+						title="Move down"
+						aria-label="Move {label.name} down"
+						class="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-surface transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default"
+					><Icon name="move-down" size={14} /></button>
 					<button
 						type="button"
 						onclick={() => openEdit(label)}

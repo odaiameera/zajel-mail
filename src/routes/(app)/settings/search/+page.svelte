@@ -132,7 +132,8 @@
 				errorMessage={errors[account.id] ?? account.lastError ?? undefined}
 			>
 				{#snippet control()}
-					<span class="text-xs text-text-tertiary tabular-nums">{account.lastError && account.enabled ? 'Paused' : progress(account)}</span>
+					<!-- An error doesn't stop the indexer: it tries again every minute. -->
+					<span class="text-xs text-text-tertiary tabular-nums">{progress(account)}{account.lastError ? ' · retrying' : ''}</span>
 					<Toggle
 						checked={account.enabled}
 						disabled={!account.configured || states[account.id] === 'saving'}

@@ -88,21 +88,33 @@ export class AccountVectors {
 	/**
 	 * The `k` messages nearest `query`, each scored by its best chunk.
 	 * `allow` filters on what the index knows (mailboxes, date) before scoring.
-	 * With `minZ`, only messages that stand out from the rest are returned;
-	 * see `outlierFloor`.
+	 * With `minZ`, only messages that stand out from the rest of the mailbox
+	 * are returned; see `outlierFloor`.
 	 */
 	search(query: Float32Array, k: number, allow: (meta: EmailMeta) => boolean = () => true, minZ = 0): Neighbour[] {
 		if (query.length !== this.dims || k <= 0) return [];
 		const q = quantize(query);
 		const allowed = new Uint8Array(this.emails.length);
-		this.emails.forEach((e, i) => (allowed[i] = !e.removed && allow(e) ? 1 : 0));
+		let candidates = 0;
+		this.emails.forEach((e, i) => {
+			if (e.removed || !allow(e)) return;
+			allowed[i] = 1;
+			candidates++;
+		});
+		if (candidates === 0) return [];
+		// The floor is how far a match stands above the bulk of the mailbox,
+		// which a folder or date doesn't change. With too few candidates to
+		// measure that among themselves, every message is scored and the
+		// candidates are judged against the whole mailbox; judged against each
+		// other, a small folder would be all matches or none.
+		const scoreAll = minZ > 0 && candidates < MIN_SCORES_FOR_FLOOR;
 
 		const best = new Float32Array(this.emails.length).fill(-Infinity);
-		const { data, scales, owner, dims } = this;
+		const { data, scales, owner, dims, emails } = this;
 		const qd = q.data;
 		for (let r = 0; r < this.rows; r++) {
 			const o = owner[r];
-			if (!allowed[o]) continue;
+			if (scoreAll ? emails[o].removed : !allowed[o]) continue;
 			let acc = 0;
 			const base = r * dims;
 			for (let i = 0; i < dims; i++) acc += data[base + i] * qd[i];
@@ -112,7 +124,7 @@ export class AccountVectors {
 
 		const floor = minZ > 0 ? outlierFloor(best, minZ) : -Infinity;
 		const top = new MinHeap(k);
-		for (let i = 0; i < best.length; i++) if (best[i] > -Infinity && best[i] >= floor) top.offer(i, best[i]);
+		for (let i = 0; i < best.length; i++) if (allowed[i] && best[i] > -Infinity && best[i] >= floor) top.offer(i, best[i]);
 		return top.sorted().map(([i, score]) => ({ id: this.emails[i].id, score }));
 	}
 
@@ -170,7 +182,8 @@ const MIN_SCORES_FOR_FLOOR = 10;
  */
 export function outlierFloor(scores: Float32Array, minZ: number): number {
 	const finite = scores.filter((s) => s > -Infinity);
-	if (finite.length < MIN_SCORES_FOR_FLOOR) return -Infinity;
+	// Nothing to compare with: nothing can be said to stand out.
+	if (finite.length < MIN_SCORES_FOR_FLOOR) return Infinity;
 	finite.sort();
 	const median = finite[finite.length >> 1];
 	const deviations = finite.map((s) => Math.abs(s - median)).sort();

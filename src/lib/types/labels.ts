@@ -22,6 +22,18 @@ export interface Label {
  */
 export const LABELS_PARENT_NAME = 'Labels';
 
+/**
+ * The account's labels, shared with every component through Svelte context.
+ * It is an accessor rather than the array itself so that a label created in
+ * Settings, or a switch to another account, reaches the open list and
+ * reading pane: the layout that sets the context never remounts, and a
+ * plain array would hold the first page load's labels for good.
+ */
+export const LABELS_CONTEXT = 'labels';
+export interface LabelsContext {
+	readonly current: Label[];
+}
+
 /** Default color for labels that have no meta entry. */
 export const DEFAULT_LABEL_COLOR = '#0969da';
 

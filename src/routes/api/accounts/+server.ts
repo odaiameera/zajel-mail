@@ -10,6 +10,7 @@ import {
 	toPublic
 } from '$lib/server/auth/accounts';
 import { DEFAULT_LABEL_COLOR } from '$lib/constants/colors';
+import { stepUpRequired } from '$lib/server/auth/step-up';
 
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) error(401, 'Not signed in');
@@ -19,8 +20,12 @@ export const GET: RequestHandler = async ({ locals }) => {
 /** Link a new mail account: verify against the mail server, store encrypted. */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.user) error(401, 'Not signed in');
+	// Linking is a risky change like unlinking: it can point an existing
+	// account's credentials at another server. Same re-check.
+	const refused = stepUpRequired(locals);
+	if (refused) return refused;
 
-	const body = (await request.json()) as {
+	const body = (await request.json().catch(() => ({}))) as {
 		email?: string;
 		password?: string;
 		serverUrl?: string;

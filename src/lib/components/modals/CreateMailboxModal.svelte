@@ -2,7 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { getContext } from 'svelte';
-	import type { Label } from '$lib/types/labels';
+	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
 	import type { Mailbox } from '$lib/jmap/types';
 	import {
 		DEFAULT_LABEL_COLOR,
@@ -38,7 +38,8 @@
 		onClose: () => void;
 	} = $props();
 
-	const existingLabels = getContext<Label[]>('labels') ?? [];
+	const labelsContext = getContext<LabelsContext | undefined>(LABELS_CONTEXT);
+	const existingLabels: Label[] = $derived(labelsContext?.current ?? []);
 
 	let name = $state('');
 	let color = $state<LabelColor>(DEFAULT_LABEL_COLOR);

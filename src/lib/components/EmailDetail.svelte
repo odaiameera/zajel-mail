@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import type { Email, Mailbox } from '$lib/jmap/types';
-	import type { Label } from '$lib/types/labels';
+	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
 	import { openCompose } from '$lib/stores/compose';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
@@ -34,7 +34,8 @@
 		threadHeaders
 	} from '$lib/utils/reply';
 
-	const allLabels = getContext<Label[]>('labels') ?? [];
+	const labelsContext = getContext<LabelsContext | undefined>(LABELS_CONTEXT);
+	const allLabels: Label[] = $derived(labelsContext?.current ?? []);
 	const aiAssistant = getContext<AIAssistantContext>(AI_ASSISTANT_CONTEXT);
 
 	let {

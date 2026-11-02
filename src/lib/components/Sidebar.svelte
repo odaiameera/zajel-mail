@@ -14,9 +14,18 @@
 	} from '$lib/stores/folderExpanded';
 	import type { Mailbox } from '$lib/jmap/types';
 	import type { Label } from '$lib/types/labels';
-	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
+	import { findLabelsParentId } from '$lib/types/labels';
 	import { userState } from '$lib/stores/userState';
+	import { showToast } from '$lib/stores/toast';
 	import { REMIND_ME_LATER_NAME, isScheduledMailbox } from '$lib/jmap/mailbox';
+	import {
+		buildFolderTree,
+		descendantIds,
+		filterUserFolders,
+		orderedSiblings,
+		type FolderTreeNode,
+		type ReorderRequest
+	} from '$lib/utils/folder-tree';
 
 	let {
 		mailboxes,
@@ -74,36 +83,10 @@
 
 	const labelsParentId = $derived(findLabelsParentId(mailboxes));
 
-	const userFolders = $derived(
-		mailboxes.filter(
-			(m) =>
-				m.role === null &&
-				!isLabelMailbox(m, labelsParentId) &&
-				!isLabelsParent(m, labelsParentId) &&
-				!(m.name === REMIND_ME_LATER_NAME && m.parentId === null) &&
-				!isScheduledMailbox(m)
-		)
-	);
-
-	type FolderNode = Mailbox & { children: FolderNode[] };
-
-	const userFolderTree = $derived.by<FolderNode[]>(() => {
-		const byId = new Map<string, FolderNode>(
-			userFolders.map((m) => [m.id, { ...m, children: [] }])
-		);
-		const roots: FolderNode[] = [];
-		for (const node of byId.values()) {
-			const parent = node.parentId ? byId.get(node.parentId) : undefined;
-			if (parent) parent.children.push(node);
-			else roots.push(node);
-		}
-		function sortLevel(nodes: FolderNode[]) {
-			nodes.sort((a, b) => a.name.localeCompare(b.name));
-			for (const n of nodes) sortLevel(n.children);
-		}
-		sortLevel(roots);
-		return roots;
-	});
+	// The same tree Settings and the folder pickers show, in the order the
+	// user gave it (sortOrder, then name).
+	const userFolders = $derived(filterUserFolders(mailboxes));
+	const userFolderTree = $derived(buildFolderTree(mailboxes));
 
 	function isExpanded(id: string): boolean {
 		return isExpandedDefault(id, $expanded);
@@ -206,6 +189,137 @@
 			body: JSON.stringify(body)
 		});
 		await invalidateAll();
+	}
+
+	// --- Rearranging folders and labels by dragging their rows ---
+	//
+	// A row dragged onto another row lands before it (top quarter), after it
+	// (bottom quarter) or inside it (the middle; folders only). Labels move
+	// among labels and folders among folders; the server renumbers the level
+	// and keeps the order in every client that honours JMAP sortOrder. The
+	// Move up / Move down buttons in Settings do the same without a pointer.
+
+	const MAILBOX_DRAG_TYPE = 'application/x-mailbox-id';
+	type DropWhere = 'before' | 'after' | 'into';
+	/** The row being dragged; dataTransfer can't be read during dragover. */
+	let mailboxDrag = $state<{ id: string; label: boolean } | null>(null);
+	/** The row under the pointer and where relative to it the drop would land. */
+	let mailboxDrop = $state<{ id: string; where: DropWhere } | null>(null);
+
+	function hasMailboxPayload(e: DragEvent): boolean {
+		return !!e.dataTransfer?.types?.includes(MAILBOX_DRAG_TYPE);
+	}
+
+	function onMailboxDragStart(e: DragEvent, id: string, label: boolean) {
+		if (!e.dataTransfer) return;
+		e.dataTransfer.setData(MAILBOX_DRAG_TYPE, JSON.stringify({ id, label }));
+		e.dataTransfer.effectAllowed = 'move';
+		mailboxDrag = { id, label };
+	}
+
+	function onMailboxDragEnd() {
+		mailboxDrag = null;
+		mailboxDrop = null;
+	}
+
+	/** Can what is being dragged land on this row at all? */
+	function canPlace(targetId: string, targetIsLabel: boolean): boolean {
+		if (!mailboxDrag) return false;
+		if (mailboxDrag.label !== targetIsLabel) return false;
+		if (mailboxDrag.id === targetId) return false;
+		// A folder can't go inside itself or one of its own children.
+		if (!targetIsLabel && descendantIds(mailboxes, mailboxDrag.id).has(targetId)) return false;
+		return true;
+	}
+
+	function dropZone(e: DragEvent, allowInto: boolean): DropWhere {
+		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		const y = (e.clientY - rect.top) / Math.max(rect.height, 1);
+		if (!allowInto) return y < 0.5 ? 'before' : 'after';
+		if (y < 0.25) return 'before';
+		if (y > 0.75) return 'after';
+		return 'into';
+	}
+
+	function rowDragOver(e: DragEvent, target: { id: string }, isLabel: boolean) {
+		if (hasEmailPayload(e)) return onRowDragOver(e);
+		if (!hasMailboxPayload(e) || !canPlace(target.id, isLabel)) return;
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		mailboxDrop = { id: target.id, where: dropZone(e, !isLabel) };
+	}
+
+	function rowDragLeave(e: DragEvent, id: string) {
+		onRowDragLeave(e, id);
+		const related = e.relatedTarget as Node | null;
+		if (related && (e.currentTarget as Node).contains(related)) return;
+		if (mailboxDrop?.id === id) mailboxDrop = null;
+	}
+
+	async function rowDrop(e: DragEvent, target: { id: string; parentId: string | null }, isLabel: boolean) {
+		if (hasEmailPayload(e)) return onRowDrop(e, target.id, isLabel);
+		if (!hasMailboxPayload(e)) return;
+		e.preventDefault();
+		const drag = mailboxDrag;
+		const drop = mailboxDrop;
+		const allowed = canPlace(target.id, isLabel);
+		onMailboxDragEnd();
+		if (!drag || !drop || drop.id !== target.id || !allowed) return;
+
+		let request: ReorderRequest;
+		if (drop.where === 'into') {
+			request = { id: drag.id, parentId: target.id, beforeId: null };
+		} else {
+			const parentId = isLabel ? labelsParentId : target.parentId;
+			const siblings = orderedSiblings(mailboxes, parentId, isLabel)
+				.map((m) => m.id)
+				.filter((id) => id !== drag.id);
+			const at = siblings.indexOf(target.id);
+			const beforeId = drop.where === 'before' ? target.id : (siblings[at + 1] ?? null);
+			request = { id: drag.id, parentId, beforeId };
+		}
+		await reorder(request);
+	}
+
+	// The "Folders" heading takes a folder too: to the top level, last.
+	function headerDragOver(e: DragEvent) {
+		if (!hasMailboxPayload(e) || !mailboxDrag || mailboxDrag.label) return;
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		mailboxDrop = { id: SECTION_FOLDERS, where: 'into' };
+	}
+
+	async function headerDrop(e: DragEvent) {
+		if (!hasMailboxPayload(e)) return;
+		e.preventDefault();
+		const drag = mailboxDrag;
+		onMailboxDragEnd();
+		if (!drag || drag.label) return;
+		await reorder({ id: drag.id, parentId: null, beforeId: null });
+	}
+
+	async function reorder(request: ReorderRequest) {
+		const res = await fetch('/api/folders', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ action: 'reorder', ...request })
+		});
+		const data = await res.json().catch(() => ({}));
+		if (!res.ok || data?.success === false) {
+			showToast({ message: data?.error ?? 'Could not move it' });
+			return;
+		}
+		await invalidateAll();
+	}
+
+	/** The row's state classes: a drop about to land, or the usual active/hover look. */
+	function rowLook(id: string, active: boolean): string {
+		if (dragOverId === id || (mailboxDrop?.id === id && mailboxDrop.where === 'into')) {
+			return 'bg-accent/20 text-accent-fg ring-1 ring-accent/40';
+		}
+		const base = active ? 'bg-accent/10 text-accent-fg' : 'text-text/85 hover:bg-surface-hover hover:text-text';
+		if (mailboxDrop?.id === id) return `${base} ${mailboxDrop.where === 'before' ? 'drop-before' : 'drop-after'}`;
+		return base;
 	}
 
 	/** The mailbox the user is currently viewing, so folder drops can
@@ -332,7 +446,11 @@
 			<div class="mt-4 mb-1 pl-3 pr-1">
 				<button
 					onclick={() => expanded.toggle(SECTION_FOLDERS)}
-					class="w-full flex items-center gap-1.5 py-1 text-3xs font-semibold uppercase tracking-wider text-text-tertiary hover:text-text-secondary cursor-pointer"
+					ondragover={headerDragOver}
+					ondragleave={(e) => rowDragLeave(e, SECTION_FOLDERS)}
+					ondrop={headerDrop}
+					class="w-full flex items-center gap-1.5 py-1 rounded-md text-3xs font-semibold uppercase tracking-wider text-text-tertiary hover:text-text-secondary cursor-pointer
+						{mailboxDrop?.id === SECTION_FOLDERS ? 'bg-accent/20 text-accent-fg ring-1 ring-accent/40' : ''}"
 				>
 					<span class="chevron {isExpanded(SECTION_FOLDERS) ? 'expanded' : ''}">
 						<Icon name="expand" size={12} />
@@ -372,16 +490,14 @@
 						{#each labels as label (label.id)}
 							<a
 								href={`/folder/${label.id}`}
-								ondragover={onRowDragOver}
+								draggable="true"
+								ondragstart={(e) => onMailboxDragStart(e, label.id, true)}
+								ondragend={onMailboxDragEnd}
+								ondragover={(e) => rowDragOver(e, label, true)}
 								ondragenter={(e) => onRowDragEnter(e, label.id)}
-								ondragleave={(e) => onRowDragLeave(e, label.id)}
-								ondrop={(e) => onRowDrop(e, label.id, true)}
-								class="flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm transition-colors
-									{dragOverId === label.id
-										? 'bg-accent/20 text-accent-fg ring-1 ring-accent/40'
-										: isLabelActive(label)
-											? 'bg-accent/10 text-accent-fg'
-											: 'text-text/85 hover:bg-surface-hover hover:text-text'}"
+								ondragleave={(e) => rowDragLeave(e, label.id)}
+								ondrop={(e) => rowDrop(e, { id: label.id, parentId: labelsParentId }, true)}
+								class="flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm transition-colors {rowLook(label.id, isLabelActive(label))}"
 							>
 								<MailboxIcon node={label.iconNode} fallback="dot" color={label.color} />
 								<span class="flex-1 truncate">{label.name}</span>
@@ -399,26 +515,18 @@
 	<CollapseBar {collapsed} onToggle={() => onToggleCollapse?.()} />
 </aside>
 
-<!--
-	TODO (future phase): wire drag-to-reparent. Each folder row becomes a
-	drop target; on drop, POST { action: 'move', id, newParentId } to
-	/api/folders. Moves under labels are already blocked server-side.
--->
-
-{#snippet folderTree(nodes: FolderNode[], depth: number)}
+{#snippet folderTree(nodes: FolderTreeNode[], depth: number)}
 	{#each nodes as node (node.id)}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
-			ondragover={onRowDragOver}
+			draggable="true"
+			ondragstart={(e) => onMailboxDragStart(e, node.id, false)}
+			ondragend={onMailboxDragEnd}
+			ondragover={(e) => rowDragOver(e, node, false)}
 			ondragenter={(e) => onRowDragEnter(e, node.id)}
-			ondragleave={(e) => onRowDragLeave(e, node.id)}
-			ondrop={(e) => onRowDrop(e, node.id, false)}
-			class="relative flex items-center gap-2.5 pr-1 py-1.5 rounded-lg text-sm transition-colors
-				{dragOverId === node.id
-					? 'bg-accent/20 text-accent-fg ring-1 ring-accent/40'
-					: isMailboxActive(node)
-						? 'bg-accent/10 text-accent-fg'
-						: 'text-text/85 hover:bg-surface-hover hover:text-text'}"
+			ondragleave={(e) => rowDragLeave(e, node.id)}
+			ondrop={(e) => rowDrop(e, node, false)}
+			class="relative flex items-center gap-2.5 pr-1 py-1.5 rounded-lg text-sm transition-colors {rowLook(node.id, isMailboxActive(node))}"
 			style="padding-left: {0.75 * (depth + 1)}rem"
 		>
 			<!--
@@ -481,5 +589,13 @@
 	}
 	.chevron.expanded {
 		transform: rotate(90deg);
+	}
+	/* Where a dragged folder or label is about to land: a line along the
+	   edge it goes next to. Landing inside uses the same ring as a mail drop. */
+	.drop-before {
+		box-shadow: inset 0 2px 0 0 var(--color-accent);
+	}
+	.drop-after {
+		box-shadow: inset 0 -2px 0 0 var(--color-accent);
 	}
 </style>

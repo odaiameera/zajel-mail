@@ -27,7 +27,7 @@ services:
       # with: openssl rand -base64 32 — and back it up: rotating it means
       # re-entering every linked account's mail password.
       - WEBMAIL_SECRET=<openssl rand -base64 32>
-      # AI mail assistant (Raven) and event extraction; leave unset to hide it.
+      # Zajel, the AI mail agent, and event extraction; leave unset to hide it.
       # Claude, when its key is set: the agent that acts on your mailbox runs
       # on Claude Opus 5.5, and summaries, drafts and extraction on Claude
       # Haiku 5.5. It takes over from the providers below unless AI_PROVIDER
