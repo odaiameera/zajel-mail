@@ -261,7 +261,14 @@
 				pending?: PendingCard[];
 			} | null;
 			if (!response.ok || !data?.message) {
-				throw new Error(data?.error ?? 'The mail agent could not answer');
+				// No JSON at all means something in front of the app answered
+				// (a proxy timeout, a refused request), so name the status.
+				throw new Error(
+					data?.error ??
+						(response.status === 504 || response.status === 524
+							? 'The assistant took too long to respond'
+							: `The mail agent could not answer (HTTP ${response.status})`)
+				);
 			}
 			const providers = data.taskProviders ?? [];
 			const preferred = data.taskProposal?.destination ?? undefined;

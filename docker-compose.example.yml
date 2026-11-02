@@ -19,6 +19,10 @@ services:
       # Default mail server new accounts link against (your Stalwart base URL).
       - JMAP_BASE_URL=https://mail.example.com
       - DATABASE_PATH=/data/ameera.db
+      # Event log for a watcher on the host (a monitoring agent, tail -f):
+      # one JSON object per line, no mail content. It lands in ./logs on
+      # the host through the volume below.
+      - LOG_FILE=/logs/zajel.log
       # REQUIRED. Encrypts linked mail-account passwords at rest. Generate
       # with: openssl rand -base64 32 — and back it up: rotating it means
       # re-entering every linked account's mail password.
@@ -61,6 +65,7 @@ services:
       # Persistent SQLite store for per-user state (avatar, label/folder
       # metadata, signatures). Survives `docker compose up -d --build`.
       - webmail_data:/data
+      - ./logs:/logs
 
 volumes:
   webmail_data:

@@ -9,7 +9,7 @@ import {
 import { claudeConfigured } from '$lib/server/ai/claude';
 import { runAgentTurn } from '$lib/server/agent/runtime';
 import { pendingView } from '$lib/server/agent/actions';
-import { MailAssistantError, type AIChatMessage } from '$lib/server/ai/mail-assistant';
+import { aiProvider, MailAssistantError, type AIChatMessage } from '$lib/server/ai/mail-assistant';
 import { taskAdapterProviders } from '$lib/server/ai/task-adapter';
 import { renderAgentMarkdown } from '$lib/server/ai/markdown';
 import {
@@ -18,6 +18,8 @@ import {
 	createConversation,
 	listMessages
 } from '$lib/server/db/queries/ai-conversations';
+import { errorFields, logEvent } from '$lib/server/log';
+import { heldOpen } from '$lib/server/held-open';
 
 const ACTIONS = new Set<MailAgentAction>([
 	'chat',
@@ -27,6 +29,17 @@ const ACTIONS = new Set<MailAgentAction>([
 	'propose_task'
 ]);
 const DAY_MS = 86_400_000;
+
+/** What the panel is told when a turn fails, with the cause in the event log. */
+function failure(error: unknown, provider: string, started: number): Record<string, unknown> {
+	if (error instanceof MailAssistantError) {
+		logEvent('warn', 'agent', 'request_failed', { provider, status: error.status, error: error.message, ms: Date.now() - started });
+		return { error: error.message };
+	}
+	console.error('[ai-agent] request failed', error);
+	logEvent('error', 'agent', 'request_failed', { provider, ...errorFields(error), ms: Date.now() - started });
+	return { error: 'The mail agent could not load your account context' };
+}
 
 function safeTimeZone(value: unknown): string {
 	if (typeof value !== 'string' || value.length > 100) return 'UTC';
@@ -88,69 +101,74 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const currentEmailId =
 		typeof body?.currentEmailId === 'string' && body.currentEmailId.length <= 300 ? body.currentEmailId : null;
 
+	const started = Date.now();
+	const auth = locals.auth;
+
 	// With Claude: the tool-using agent, which can act on the mailbox.
 	if (claudeConfigured() && locals.user && locals.activeAccountId) {
-		try {
-			const result = await runAgentTurn({
-				auth: locals.auth,
-				userId: locals.user.id,
-				userEmail,
-				accountRowId: locals.activeAccountId,
-				conversationId,
-				source: 'chat',
-				message,
-				history: conversation,
-				timeZone,
-				today: localDate(todayStartMs, timeZone),
-				currentEmailId
-			});
-			appendMessage(conversationId, userEmail, 'user', message);
-			appendMessage(conversationId, userEmail, 'assistant', result.message);
-			return json({
-				message: result.message,
-				html: renderAgentMarkdown(result.message),
-				done: result.done,
-				pending: result.pending.map(pendingView),
-				conversationId,
-				taskProviders: taskAdapterProviders()
-			});
-		} catch (error) {
-			if (error instanceof MailAssistantError) {
-				return json({ error: error.message }, { status: error.status });
+		const userId = locals.user.id;
+		const accountRowId = locals.activeAccountId;
+		return heldOpen(
+			(async () => {
+				try {
+					const result = await runAgentTurn({
+						auth,
+						userId,
+						userEmail,
+						accountRowId,
+						conversationId,
+						source: 'chat',
+						message,
+						history: conversation,
+						timeZone,
+						today: localDate(todayStartMs, timeZone),
+						currentEmailId
+					});
+					appendMessage(conversationId, userEmail, 'user', message);
+					appendMessage(conversationId, userEmail, 'assistant', result.message);
+					return {
+						message: result.message,
+						html: renderAgentMarkdown(result.message),
+						done: result.done,
+						pending: result.pending.map(pendingView),
+						conversationId,
+						taskProviders: taskAdapterProviders()
+					};
+				} catch (error) {
+					return failure(error, 'anthropic', started);
+				}
+			})()
+		);
+	}
+
+	return heldOpen(
+		(async () => {
+			try {
+				const result = await runMailAgent(auth, userEmail, {
+					action: action as MailAgentAction,
+					message,
+					conversation,
+					currentEmailId,
+					timeZone,
+					todayStartMs,
+					todayEndMs,
+					tomorrowStartMs,
+					tomorrowEndMs
+				});
+				// Persisted only once the model has answered: a failed turn should not
+				// leave a question in the transcript that was never addressed.
+				appendMessage(conversationId, userEmail, 'user', message);
+				appendMessage(conversationId, userEmail, 'assistant', result.message);
+
+				return {
+					...result,
+					html: renderAgentMarkdown(result.message),
+					conversationId,
+					taskProviders: taskAdapterProviders()
+				};
+			} catch (error) {
+				return failure(error, aiProvider() ?? 'none', started);
 			}
-			console.error('[ai-agent] request failed', error);
-			return json({ error: 'The mail agent could not load your account context' }, { status: 502 });
-		}
-	}
-
-	try {
-		const result = await runMailAgent(locals.auth, userEmail, {
-			action: action as MailAgentAction,
-			message,
-			conversation,
-			currentEmailId,
-			timeZone,
-			todayStartMs,
-			todayEndMs,
-			tomorrowStartMs,
-			tomorrowEndMs
-		});
-		// Persisted only once the model has answered: a failed turn should not
-		// leave a question in the transcript that was never addressed.
-		appendMessage(conversationId, userEmail, 'user', message);
-		appendMessage(conversationId, userEmail, 'assistant', result.message);
-
-		return json({
-			...result,
-			html: renderAgentMarkdown(result.message),
-			conversationId,
-			taskProviders: taskAdapterProviders()
-		});
-	} catch (error) {
-		if (error instanceof MailAssistantError) {
-			return json({ error: error.message }, { status: error.status });
-		}
-		console.error('[ai-agent] request failed', error);
-		return json({ error: 'The mail agent could not load your account context' }, { status: 502 });
-	}
+		})()
+	);
 };

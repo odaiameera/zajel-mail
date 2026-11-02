@@ -9,6 +9,7 @@ import {
 	FALLBACK_BETA,
 	supportsFallbacks
 } from '$lib/server/ai/claude';
+import { logEvent } from '$lib/server/log';
 import { recordAudit, type AgentSource, type PendingAction } from './store';
 import { mailboxCache, toolsFor, type AgentTool, type ToolContext } from './tools';
 
@@ -149,12 +150,30 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 
 	const done: string[] = [];
 	const pending: PendingAction[] = [];
-	const deadline = Date.now() + TURN_BUDGET_MS;
+	const started = Date.now();
+	const deadline = started + TURN_BUDGET_MS;
 	let toolCalls = 0;
+	let rounds = 0;
+
+	// One line per turn in the event log: how it ended and what it cost.
+	const finish = (outcome: 'answered' | 'refused' | 'stopped', message: string): AgentTurnResult => {
+		logEvent(outcome === 'answered' ? 'info' : 'warn', 'agent', 'turn', {
+			source: input.source,
+			model,
+			outcome,
+			rounds,
+			toolCalls,
+			done: done.length,
+			pending: pending.length,
+			ms: Date.now() - started
+		});
+		return { message, done, pending };
+	};
 
 	for (let round = 0; round < MAX_ROUNDS; round += 1) {
 		const remaining = deadline - Date.now();
 		if (remaining < 5_000) break;
+		rounds = round + 1;
 
 		let response: Anthropic.Beta.BetaMessage;
 		try {
@@ -171,18 +190,27 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 				{ timeout: remaining }
 			);
 		} catch (err) {
-			throw claudeError(err);
+			const failure = claudeError(err);
+			logEvent('error', 'agent', 'turn_failed', {
+				source: input.source,
+				model,
+				rounds,
+				toolCalls,
+				error: failure.message,
+				ms: Date.now() - started
+			});
+			throw failure;
 		}
 
 		if (response.stop_reason === 'refusal') {
-			return { message: 'I can’t help with that request.', done, pending };
+			return finish('refused', 'I can’t help with that request.');
 		}
 		// Thinking blocks go back exactly as they came, so the whole content is kept.
 		messages.push({ role: 'assistant', content: response.content });
 
 		if (response.stop_reason !== 'tool_use') {
 			const text = textOf(response.content);
-			if (text) return { message: text, done, pending };
+			if (text) return finish('answered', text);
 			break;
 		}
 
@@ -220,6 +248,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 				});
 			} catch (err) {
 				const reason = err instanceof Error ? err.message.slice(0, 200) : 'failed';
+				logEvent('warn', 'agent', 'tool_failed', { source: input.source, tool: tool.name, error: reason });
 				recordAudit({
 					userId: input.userId,
 					accountId: input.accountRowId,
@@ -236,5 +265,5 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 	}
 
 	const changes = done.length ? ` So far: ${done.join('; ')}.` : '';
-	return { message: `I stopped before finishing.${changes}`, done, pending };
+	return finish('stopped', `I stopped before finishing.${changes}`);
 }

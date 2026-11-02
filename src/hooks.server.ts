@@ -1,4 +1,4 @@
-import { redirect, type Handle } from '@sveltejs/kit';
+import { redirect, type Handle, type HandleServerError } from '@sveltejs/kit';
 import { runMigrations } from '$lib/server/db/migrate';
 import {
 	startReminderScheduler,
@@ -15,6 +15,13 @@ import { getAppSession, verifiedAtMs } from '$lib/server/auth/app-session';
 import { getUserById, hasAppUser } from '$lib/server/auth/user';
 import { authStateForAccount, listAccounts, toPublic } from '$lib/server/auth/accounts';
 import { assertCryptoReady } from '$lib/server/auth/crypto';
+import { errorFields, logEvent } from '$lib/server/log';
+
+// A crash still ends the process as before; this only records why, since
+// the container restarts and the console line scrolls away.
+process.on('uncaughtExceptionMonitor', (err, origin) => {
+	logEvent('error', 'app', 'crash', { origin, ...errorFields(err) });
+});
 
 // Run pending DB migrations once per process lifetime — better-sqlite3 is
 // synchronous so no promise-caching is required. Silent by design (the
@@ -93,11 +100,18 @@ export const handle: Handle = async ({ event, resolve }) => {
 		startTelegramWorker();
 		startJobWorker();
 		migrated = true;
+		logEvent('info', 'app', 'started', { node: process.version });
 	}
 
 	const { pathname } = event.url;
 
 	if (crossSiteWrite(event.request, event.url)) {
+		logEvent('warn', 'http', 'cross_site_refused', {
+			method: event.request.method,
+			path: pathname,
+			origin: event.request.headers.get('origin'),
+			expected: event.url.origin
+		});
 		return new Response('Cross-site request refused', { status: 403 });
 	}
 
@@ -174,4 +188,22 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	if (!event.locals.user && tooLargeForSignedOut(event.request)) return PAYLOAD_TOO_LARGE();
 	return resolve(event);
+};
+
+// SvelteKit's own handler only prints to the console; this keeps that and
+// adds the event to the log file. Unknown paths (404s) stay out of it, since
+// scanners produce them all day.
+export const handleError: HandleServerError = ({ error, event, status, message }) => {
+	if (status === 404) {
+		console.error((error as Error | undefined)?.message ?? error);
+		return { message };
+	}
+	console.error(error);
+	logEvent('error', 'http', 'unhandled', {
+		method: event.request.method,
+		path: event.url.pathname,
+		status,
+		...errorFields(error)
+	});
+	return { message };
 };
