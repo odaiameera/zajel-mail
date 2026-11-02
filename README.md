@@ -169,7 +169,6 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
   It stops as soon as it can answer.
 - **Draft replies** for you to review and send.
 - **Calendar proposals.** Zajel proposes events, and even deletions, as cards that name the event and date. Nothing changes until you confirm. The card shows the calendar, the time, every invitee and the description that goes out.
-- **Task proposals** go to **Todoist**, **Linear**, **Notion**, a generic **webhook**, or an **MCP-to-HTTP bridge**, again only after you confirm.
 - **Persistent conversations** with history. Answers are rendered in Markdown.
 
 **On Claude, Zajel acts.** With `ANTHROPIC_API_KEY` set, Zajel runs on **Claude Opus 5.5** for the agent and **Claude Haiku 5.5** for writing, with native tool use.
@@ -177,7 +176,11 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
 - **Anything that leaves your account or changes your calendar** (sending, a draft to someone else, adding or deleting an event, invitations, scheduling a job) becomes a card you confirm.
 - **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), with **Mark read**, **Snooze 1h** and **Archive** buttons, and sends reminders. A reminder more than a week late is dropped rather than sent. It doesn't take typed messages.
 - **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools only. They run once, hourly, daily, on weekdays, on chosen days of the week, or weekly.
-- **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from what each provider offers. **Check** sends a real request to the provider in use, and checks the fallback model when `ANTHROPIC_FALLBACK_MODEL` is set.
+- **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from the models each provider offers your key. **Check** sends a real request to the provider in use, and checks the fallback model when `ANTHROPIC_FALLBACK_MODEL` is set.
+
+**Only on Claude:** acting on your mailbox, Telegram reminders, and scheduled jobs, which only Zajel can set up (`schedule_job`). Telegram alerts for urgent mail come from Jev and work with any provider.
+
+**Only on OpenAI and Ollama:** task proposals. Zajel prepares a task for **Todoist**, **Linear**, **Notion**, a generic **webhook** or an **MCP-to-HTTP bridge**, and creates it only after you confirm. The Claude agent has no task tool yet.
 
 Without an Anthropic key, Zajel answers and proposes but doesn't act. It runs on **OpenAI's GPT-5.6** when `OPENAI_API_KEY` is set:
 - `gpt-5.6-terra` by default, the balanced tier
@@ -447,7 +450,7 @@ environment:
 
 ### Setting up Zajel
 
-Zajel is optional too, and hidden until an AI service is configured. Pick one of these. When several keys are set, Settings → Agent chooses between them.
+Zajel is optional too, and hidden until an AI service is configured. Pick one of these. When several keys are set, Claude wins, then OpenAI, then Ollama, unless `AI_PROVIDER` names one (`claude` or `anthropic`, `openai`, `ollama`). A provider chosen in Settings → Agent wins over both.
 
 **Claude (the agent that acts):**
 
@@ -477,19 +480,11 @@ environment:
   - OLLAMA_MODEL=<a tag your endpoint serves>
 ```
 
-When both are set, OpenAI wins.
-
-`OLLAMA_MODEL` has to name a tag your endpoint actually serves. Ollama Cloud uses `-cloud` tags; a bare library tag resolves only on a self-hosted endpoint that has pulled it. To list what your endpoint offers:
-
-```sh
-npm run ai:models
-```
-
-It prints every tag, marks the one `OLLAMA_MODEL` is set to, and exits non-zero when that tag is missing, so it can also run as a deployment preflight.
+`OLLAMA_MODEL` has to name a tag your endpoint actually serves. Ollama Cloud uses `-cloud` tags; a bare library tag resolves only on a self-hosted endpoint that has pulled it. Settings → Agent lists the models your endpoint or key offers, and **Check** sends the model a real request.
 
 If a model request fails, the server log has an `[ai]` line with the provider's own explanation. That detail is kept out of the browser on purpose.
 
-To let Zajel create tasks, configure any combination of Todoist, Linear, Notion or a generic task adapter (see [Configuration](#configuration)). When more than one is connected, the confirmation card lets you choose.
+To let Zajel propose tasks (OpenAI and Ollama), configure any combination of Todoist, Linear, Notion or a generic task adapter (see [Configuration](#configuration)). When more than one is connected, the confirmation card lets you choose.
 
 ---
 
@@ -501,16 +496,18 @@ To let Zajel create tasks, configure any combination of Todoist, Linear, Notion 
 | `JMAP_BASE_URL` | Recommended | Default mail-server URL offered when linking an account. |
 | `ORIGIN` | Production | Public URL used by SvelteKit's request-origin checks. |
 | `ADDRESS_HEADER`, `XFF_DEPTH` | Behind a proxy | `X-Forwarded-For` and `1`, so sign-in limits count each client on its own instead of all of them as the proxy. The log warns (`ip_lockout_behind_proxy`) when a private address trips the limit without them. |
-| `DATABASE_PATH` | No | SQLite path. Defaults to a local development database, or `/data/ameera.db` in production. |
+| `PORT`, `BODY_SIZE_LIMIT` | No | Read by SvelteKit's Node server. The Docker image sets `3001` and `30M`, so large attachments upload. |
+| `DATABASE_PATH` | No | SQLite path. Defaults to `local-data/ameera.db`, or `/data/ameera.db` when `NODE_ENV` is `production`. |
+| `NODE_ENV` | No | `production` picks the production database path. The Docker image sets it. |
 | `ANTHROPIC_API_KEY` | AI only | Runs Zajel on Claude, as an agent that acts on your mailbox. |
 | `ANTHROPIC_MODEL`, `ANTHROPIC_FAST_MODEL` | No | The agent and writing models. Default to Claude Opus 5.5 and Claude Haiku 5.5; Settings → Agent can override them. |
 | `ANTHROPIC_FALLBACK_MODEL` | No | Takes a turn when the agent model is rate-limited. Defaults to Claude Sonnet 5.5. Settings → Agent → Check tests it when set. |
-| `AI_PROVIDER` | No | `anthropic`, `openai` or `ollama`, when more than one key is set. Settings → Agent overrides it. |
+| `AI_PROVIDER` | No | `claude` (or `anthropic`), `openai` or `ollama`, when more than one key is set. Otherwise Claude wins, then OpenAI. Settings → Agent overrides it. |
 | `OPENAI_API_KEY` | AI only | Runs Zajel and event extraction on OpenAI. |
 | `OPENAI_MODEL` | No | OpenAI model. Defaults to `gpt-5.6-terra`; `gpt-5.6-luna` is faster and cheaper. |
 | `OLLAMA_URL` | AI only | Ollama-compatible endpoint. |
 | `OLLAMA_API_KEY` | AI only | Bearer token, when the endpoint requires one. |
-| `OLLAMA_MODEL` | AI only | Model tag the endpoint serves. Verify with `npm run ai:models`. |
+| `OLLAMA_MODEL` | AI only | Model tag the endpoint serves. Settings → Agent lists them. |
 | `EMBED_URL` | Semantic search only | Ollama on your own server that embeds mail for search, such as `http://host.docker.internal:11434`. Settings → Search can set or override it. Never falls back to `OLLAMA_URL`. |
 | `EMBED_MODEL` | No | Embedding model. Defaults to `embeddinggemma-2:270m`; Settings → Search can override it. Changing it rebuilds the index. |
 | `EMBED_QUERY_PREFIX`, `EMBED_DOCUMENT_PREFIX` | No | Retrieval prompts for a model Zajel has none built in for. |
