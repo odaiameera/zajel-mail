@@ -6,7 +6,9 @@ export type MailAssistantAction = 'summarize' | 'answer' | 'draft';
 export class MailAssistantError extends Error {
 	constructor(
 		message: string,
-		public status: number
+		public status: number,
+		/** Likely to clear on its own (a rate limit, an overload, the network): scheduled jobs retry it without counting it. */
+		public transient = false
 	) {
 		super(message);
 		this.name = 'MailAssistantError';
@@ -217,7 +219,8 @@ export async function runAIChat(input: AIChatInput): Promise<string> {
 		const timeout = err instanceof Error && err.name === 'TimeoutError';
 		throw new MailAssistantError(
 			timeout ? 'The assistant took too long to respond' : 'Could not reach the assistant',
-			502
+			502,
+			true
 		);
 	}
 
@@ -225,7 +228,7 @@ export async function runAIChat(input: AIChatInput): Promise<string> {
 		// The provider's explanation goes to the server log; the browser gets
 		// only the configuration-derived message.
 		await logUpstreamFailure(response.status, await response.text().catch(() => ''));
-		throw new MailAssistantError(upstreamErrorMessage(response.status), 502);
+		throw new MailAssistantError(upstreamErrorMessage(response.status), 502, response.status === 429 || response.status >= 500);
 	}
 
 	const result = chatText(await response.json().catch(() => null)).trim();

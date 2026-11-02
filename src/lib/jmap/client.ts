@@ -27,7 +27,7 @@ export class JMAPClient {
 		}
 
 		if (!response.ok) {
-			throw new JMAPError(`JMAP request failed: ${response.status} ${response.statusText}`);
+			throw new JMAPError(`JMAP request failed: ${response.status} ${response.statusText}`, response.status);
 		}
 
 		const data: JMAPResponse = await response.json();
@@ -44,7 +44,11 @@ export class JMAPClient {
 }
 
 export class JMAPError extends Error {
-	constructor(message: string) {
+	constructor(
+		message: string,
+		/** The HTTP status, when the request itself was refused. */
+		readonly status?: number
+	) {
 		super(message);
 		this.name = 'JMAPError';
 	}

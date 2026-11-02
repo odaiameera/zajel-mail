@@ -129,6 +129,22 @@ describe('runMailAssistant', () => {
 			})
 		).rejects.toThrow(/rate limiting/);
 	});
+
+	it('marks rate limits, server errors and the network as transient, and a missing model as not', async () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const failWith = async (fetchImpl: () => Promise<Response>) => {
+			vi.stubGlobal('fetch', vi.fn(fetchImpl));
+			const err = await runMailAssistant({ action: 'summarize', subject: '', from: '', receivedAt: '', bodyText: 'Hello' }).catch((e) => e);
+			expect(err).toBeInstanceOf(MailAssistantError);
+			return (err as MailAssistantError).transient;
+		};
+		expect(await failWith(async () => new Response('slow down', { status: 429 }))).toBe(true);
+		expect(await failWith(async () => new Response('overloaded', { status: 503 }))).toBe(true);
+		expect(await failWith(async () => Promise.reject(new TypeError('fetch failed')))).toBe(true);
+		expect(await failWith(async () => new Response('bad key', { status: 401 }))).toBe(false);
+		expect(await failWith(async () => new Response('', { status: 404 }))).toBe(false);
+	});
 });
 
 describe('listAvailableModels', () => {
