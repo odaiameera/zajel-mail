@@ -182,6 +182,7 @@ export function htmlToText(html: string): string {
 			return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
 		})
 		// Invisible preheader padding (zero-width and soft-hyphen runs).
+		// eslint-disable-next-line no-misleading-character-class -- U+034F is stripped on its own, on purpose
 		.replace(/[\u200b-\u200d\u2060\ufeff\u00ad\u034f]/g, '')
 		.replace(/[ \t\u00a0]*\n[ \t\u00a0\n]*/g, '\n')
 		.replace(/[ \u00a0]{2,}/g, ' ')

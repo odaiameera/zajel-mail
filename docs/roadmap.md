@@ -83,18 +83,18 @@ Not started: the first attempt was stopped part way, and its partial work was se
 
 Settings that store values nothing reads, copy that promises features that do not exist, and documentation that drifted.
 
-- Settings → Messages: implement conversation view, default sort, mark-read delay and single-key shortcuts, or remove the four controls and the README lines (111, 274-277) and the Keyboard shortcuts placeholder page.
-- README: print a clean copy (prints the app page today); composer font (fixed in Phase 1); which agent abilities are Claude-only (jobs, reminders, scheduled jobs, task proposals); the `days` schedule kind; `AI_PROVIDER=claude`; `NODE_ENV`.
-- `.env.example`: add `ANTHROPIC_*`, `AI_PROVIDER`, `TELEGRAM_BOT_TOKEN`, `EMBED_*`, `VAPID_SUBJECT`, `ADDRESS_HEADER`, `XFF_DEPTH`; fix the AI paragraph; drop "Raven" here and in the compose example.
-- Import/Export and Reset pages: say what is really exported and reset (rules are neither; page size is exported and dropped on import).
-- Settings → Search: "Paused" only when paused (fixed in Phase 1); the search help should mention search by meaning and relevance order.
-- Jev: pins act only while Jev is on; say so or apply them without Jev.
-- "Check" in Settings → Agent sends a real request only on Claude; check the fallback model too.
-- `scripts/ai-models.mjs` ignores the Anthropic and OpenAI keys.
-- Add a request-level smoke test per form page (a real POST through the built server, expecting anything but a 500). Unit tests call action functions directly and never go through SvelteKit's own checks, which is how a `default` action beside named ones broke password sign-in from PR 51 to PR 74 unnoticed.
-- Move `tests/ics-qa.mjs` and `tests/caldav-discovery.mjs` under vitest (the `npx esbuild` they shell out to is no longer a dependency, and the mock server is not in the repo).
-- CI: add a linter, pin actions by SHA, add a `permissions` block; `.dockerignore` should exclude `local-data/`.
-- Move `JEV_PLAN.md` to `docs/` and trim it to what is not built.
+- [x] Settings → Messages: implement conversation view, default sort, mark-read delay and single-key shortcuts, or remove the four controls and the README lines (111, 274-277) and the Keyboard shortcuts placeholder page. Default sort orders the Inbox, folders and Starred; conversation view and shortcuts are gone. Left: the reading view still waits a fixed second; it should read `markReadDelay` from the app layout's data (`page.data.markReadDelay`).
+- [x] README: print a clean copy (prints the app page today); composer font (fixed in Phase 1); which agent abilities are Claude-only (jobs, reminders, scheduled jobs, task proposals); the `days` schedule kind; `AI_PROVIDER=claude`; `NODE_ENV`. The print claim is dropped. Task proposals turned out to be OpenAI and Ollama only, and the README says so. Left: a real print view (subject, sender, date and the whole body), which needs the reading view's Print button to open it.
+- [x] `.env.example`: add `ANTHROPIC_*`, `AI_PROVIDER`, `TELEGRAM_BOT_TOKEN`, `EMBED_*`, `VAPID_SUBJECT`, `ADDRESS_HEADER`, `XFF_DEPTH`; fix the AI paragraph; drop "Raven" here and in the compose example. A test keeps the code, the README table and `.env.example` naming the same variables.
+- [x] Import/Export and Reset pages: say what is really exported and reset (rules are neither; page size is exported and dropped on import). Left: neither re-deploys auto-reply to the mail server; the pages say so.
+- [x] Settings → Search: "Paused" only when paused (fixed in Phase 1); the search help should mention search by meaning and relevance order.
+- [x] Jev: pins act only while Jev is on; say so or apply them without Jev.
+- [x] "Check" in Settings → Agent sends a real request only on Claude; check the fallback model too.
+- [x] `scripts/ai-models.mjs` ignores the Anthropic and OpenAI keys. Retired: Settings → Agent lists every provider's models and Check tries them.
+- [x] Add a request-level smoke test per form page (a real POST through the built server, expecting anything but a 500). Unit tests call action functions directly and never go through SvelteKit's own checks, which is how a `default` action beside named ones broke password sign-in from PR 51 to PR 74 unnoticed. It boots a Vite dev server rather than the built one, so it runs with `npm test`.
+- [x] Move `tests/ics-qa.mjs` and `tests/caldav-discovery.mjs` under vitest (the `npx esbuild` they shell out to is no longer a dependency, and the mock server is not in the repo).
+- [x] CI: add a linter, pin actions by SHA, add a `permissions` block; `.dockerignore` should exclude `local-data/`.
+- [x] Move `JEV_PLAN.md` to `docs/` and trim it to what is not built.
 
 ## Phase 4: simplify
 

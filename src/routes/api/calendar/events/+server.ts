@@ -29,7 +29,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	}
 };
 
-export const POST: RequestHandler = async ({ locals, request, cookies }) => {
+export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!locals.auth) return json({ error: 'Unauthorized' }, { status: 401 });
 	const userEmail = userEmailFromAuth(locals.auth);
 

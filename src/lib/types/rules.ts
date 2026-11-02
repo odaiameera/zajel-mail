@@ -47,7 +47,7 @@ export interface Rule {
 
 /**
  * The probability Jev must give a statement for a `jev` condition to hold.
- * See JEV_PLAN.md, decision 6.
+ * Bigger moves need more: Junk takes 0.9 (docs/jev-plan.md).
  */
 export const JEV_STRICTNESS: Record<JevStrictness, { label: string; threshold: number }> = {
 	loose: { label: 'Loose', threshold: 0.6 },

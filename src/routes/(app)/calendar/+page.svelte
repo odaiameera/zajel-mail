@@ -361,7 +361,6 @@
 					<Icon name="dropdown" size={14} class="text-text-tertiary" />
 				</button>
 				{#if viewMenuOpen}
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<!-- svelte-ignore a11y_click_events_have_key_events -->
 					<div
 						class="absolute right-0 top-9 z-40 w-44 bg-surface border border-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.4)] py-1"

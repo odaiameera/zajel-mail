@@ -1,4 +1,4 @@
--- Jev sorting new Inbox mail into tabs (JEV_PLAN.md, Phase 1).
+-- Jev sorting new Inbox mail into tabs.
 
 -- The opt-in: whether this account's new mail may be sent to TypeSafe and
 -- sorted. Off by default, and only acted on while inbox_tabs is on too.

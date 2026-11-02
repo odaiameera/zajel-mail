@@ -24,7 +24,7 @@ import {
  * The proposal is re-validated here rather than trusted, because it made a
  * round trip through the client after the server built it.
  */
-export const POST: RequestHandler = async ({ cookies, locals, request }) => {
+export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!locals.auth) return json({ error: 'Unauthorized' }, { status: 401 });
 
 	const body = (await request.json().catch(() => null)) as {

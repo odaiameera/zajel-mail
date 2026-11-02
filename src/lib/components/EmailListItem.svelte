@@ -158,7 +158,6 @@
 		<!-- Checkbox layer (on top so it catches the click when visible).
 		     Revealed on hover OR keyboard focus so it's never an invisible
 		     focus stop. -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="absolute inset-0 flex items-center justify-center transition-opacity
 				{selected ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'}"

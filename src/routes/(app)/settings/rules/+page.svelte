@@ -507,7 +507,6 @@
 			{:else}
 				<ul class="flex flex-col gap-0.5">
 					{#each localRules as rule (rule.id)}
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<li
 							class="group relative flex items-center gap-2 pl-3 pr-1 py-2 rounded-lg cursor-pointer transition-all
 								{selectedId === rule.id

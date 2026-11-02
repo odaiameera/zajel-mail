@@ -11,7 +11,7 @@ function parseScope(value: unknown): EditScope {
 	return value === 'instance' || value === 'following' ? value : 'all';
 }
 
-export const PATCH: RequestHandler = async ({ locals, params, request, cookies }) => {
+export const PATCH: RequestHandler = async ({ locals, params, request }) => {
 	if (!locals.auth) return json({ error: 'Unauthorized' }, { status: 401 });
 	const userEmail = userEmailFromAuth(locals.auth);
 

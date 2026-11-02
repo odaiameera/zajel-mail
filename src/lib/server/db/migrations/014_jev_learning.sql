@@ -1,4 +1,4 @@
--- Jev learning from you (JEV_PLAN.md, Phase 3). None of these hold email
+-- Jev learning from you. None of these hold email
 -- text: senders, tabs, counts and ids only.
 
 -- "Always put mail from X in this tab." A pin decides the tab before Jev is

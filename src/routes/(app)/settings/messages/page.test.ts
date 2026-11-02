@@ -15,11 +15,9 @@ import Page from './+page.svelte';
 afterEach(cleanup);
 
 const data = {
-	conversationView: true,
 	markReadDelay: 1000,
 	autoLoadImages: 'contacts_only',
 	defaultSort: 'date_desc',
-	keyboardShortcuts: true,
 	trashRetentionDays: 0,
 	otpTrashAfterCopy: true
 };

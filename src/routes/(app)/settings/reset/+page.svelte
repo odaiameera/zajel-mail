@@ -5,7 +5,7 @@
 	let resetting = $state(false);
 
 	async function resetAll() {
-		if (!confirm('Reset every preference to its default? Your mail is untouched but every device-scoped setting will be cleared.')) return;
+		if (!confirm('Reset these settings to their defaults on every browser?')) return;
 		resetting = true;
 		try {
 			await fetch('/api/preferences/reset', { method: 'POST' });
@@ -22,8 +22,7 @@
 <header class="mb-6">
 	<h1 class="text-xl font-semibold text-text">Reset</h1>
 	<p class="text-sm text-text-tertiary mt-1 max-w-prose">
-		Put every preference back to its default, on every browser you use. Your mail, rules, signatures,
-		label colours, linked accounts and sign-in are <strong>not</strong> affected.
+		Put the settings that Import / Export covers back to their defaults, on every browser.
 	</p>
 </header>
 
@@ -32,9 +31,10 @@
 		<div class="flex-1">
 			<p class="text-sm font-medium text-danger">Reset all preferences</p>
 			<p class="text-xs text-text-tertiary mt-1">
-				Clears theme, density, reading-pane, composer defaults, mail display options, messages per
-				page, notification toggles, calendar settings, auto-reply text and folder-expand state back to
-				their defaults. You'll be returned to the Account page.
+				Appearance, Messages, Composer, Notifications, Calendar and Auto-reply text, messages per page
+				and which folders are expanded. Your mail, name and photo, linked accounts, sign-in, signatures,
+				rules, folder and label colours, and Jev, Search, Agent and Telegram settings stay. Auto-reply on the mail
+				server stays on until you save Settings → Auto-reply.
 			</p>
 		</div>
 		<button

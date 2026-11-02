@@ -3,7 +3,7 @@ import type { PageServerLoad } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { countUnreadByCategory, queryAndFetchEmails } from '$lib/jmap/email';
 import { userEmailFromAuth } from '$lib/server/user';
-import { getDefaultPageSize } from '$lib/server/db/queries/app-prefs';
+import { getDefaultPageSize, getDefaultSort } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
 import { listMarkedIds } from '$lib/server/db/queries/reminders';
 import { allOf, parseListFilter, listFilterCondition } from '$lib/email-filters';
@@ -60,6 +60,7 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 		queryAndFetchEmails(client, locals.auth.accountId, inbox.id, {
 			position: (page - 1) * pageSize,
 			limit: pageSize,
+			sort: getDefaultSort(locals.user?.id ?? ''),
 			extraFilter: allOf(listFilterCondition(filter), category ? categoryCondition(category) : null)
 		}),
 		tabsOn ? countUnreadByCategory(client, locals.auth.accountId, inbox.id) : null

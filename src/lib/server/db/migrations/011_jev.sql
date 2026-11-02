@@ -1,4 +1,4 @@
--- Jev settings, one row per linked mail account (see JEV_PLAN.md).
+-- Jev settings, one row per linked mail account.
 --
 -- Per account rather than per login: each mailbox decides on its own
 -- whether its Inbox is split into tabs, and — once Jev reads mail — whether

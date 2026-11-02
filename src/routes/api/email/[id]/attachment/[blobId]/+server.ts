@@ -52,6 +52,7 @@ const JMAP_ID = /^[A-Za-z0-9_-]{1,255}$/;
  * with an ASCII-only `filename` for clients that ignore that.
  */
 function contentDisposition(disposition: string, filename: string): string {
+	// eslint-disable-next-line no-control-regex -- control characters are exactly what it strips
 	const name = filename.replace(/[\u0000-\u001f\u007f"\\]/g, '');
 	const fallback = name.replace(/[^\x20-\x7e]/g, '_') || 'attachment';
 	const encoded = encodeURIComponent(name).replace(

@@ -138,7 +138,7 @@ function parseMultistatus(xml: string): { responses: ParsedResponse[]; syncToken
 	for (const r of (ms.response ?? []) as Array<Record<string, unknown>>) {
 		const href = typeof r.href === 'string' ? r.href : String(r.href ?? '');
 		const props: PropstatProps = {};
-		let status: string | null = typeof r.status === 'string' ? r.status : null;
+		const status: string | null = typeof r.status === 'string' ? r.status : null;
 		for (const ps of (r.propstat ?? []) as Array<Record<string, unknown>>) {
 			const psStatus = typeof ps.status === 'string' ? ps.status : '';
 			if (psStatus && !psStatus.includes('200')) continue;
@@ -517,6 +517,7 @@ export function hrefToId(href: string): string {
  * route sees them) would send the request to the calendar home's parent.
  */
 export function isCollectionId(id: string): boolean {
+	// eslint-disable-next-line no-control-regex -- control characters are exactly what it refuses
 	return id.length > 0 && id.length <= 255 && id !== '.' && id !== '..' && !/[/\\\u0000-\u001f]/.test(id);
 }
 

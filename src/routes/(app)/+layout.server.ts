@@ -13,6 +13,7 @@ import { loadRules } from '$lib/server/rules-store';
 import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
+import { parseMarkReadDelay } from '$lib/mail-prefs';
 
 export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 	if (!locals.user) {
@@ -146,6 +147,9 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			// Settings → Messages → "Auto-load remote images": the reading view
 			// proxies or blocks a message's remote images by it.
 			autoLoadImages: prefs.auto_load_images ?? 'contacts_only',
+			// Settings → Messages → "Mark as read after", in milliseconds: how
+			// long an open message waits before the reading view marks it read.
+			markReadDelay: parseMarkReadDelay(prefs.mark_read_delay),
 			// Whether Jev reads this account's mail — the message view then
 			// offers its "Why is this here?" chip.
 			jevReads: activeAccount ? getJevSettings(activeAccount.id).jevEnabled : false,
