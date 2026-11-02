@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { createClient } from '$lib/jmap/auth';
-import { queryAndFetchEmailsWithFilter } from '$lib/jmap/email';
+import { searchMail } from '$lib/server/search/hybrid';
 import { userEmailFromAuth } from '$lib/server/user';
 import { getDefaultPageSize } from '$lib/server/db/queries/app-prefs';
 import { parseSearch } from '$lib/search/parse';
@@ -29,7 +29,7 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	const tokens = parseSearch(raw);
 
 	if (!raw) {
-		return { raw, tokens, emails: [], total: 0, page, pageSize, totalPages: 1 };
+		return { raw, tokens, emails: [], total: 0, page, pageSize, totalPages: 1, ranked: false };
 	}
 
 	const { mailboxes } = await parent();
@@ -52,11 +52,15 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 
 	const filter = buildJmapFilter(tokens, ctx);
 	if (!filter) {
-		return { raw, tokens, emails: [], total: 0, page, pageSize, totalPages: 1 };
+		return { raw, tokens, emails: [], total: 0, page, pageSize, totalPages: 1, ranked: false };
 	}
 
 	const client = createClient(locals.auth);
-	const result = await queryAndFetchEmailsWithFilter(client, locals.auth.accountId, filter, {
+	const result = await searchMail({
+		client,
+		accountId: locals.auth.accountId,
+		accountRowId: locals.activeAccountId ?? null,
+		filter,
 		position: (page - 1) * pageSize,
 		limit: pageSize
 	});
@@ -75,6 +79,7 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 		total: result.total,
 		page,
 		pageSize,
-		totalPages
+		totalPages,
+		ranked: result.ranked
 	};
 };

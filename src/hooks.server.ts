@@ -11,6 +11,7 @@ import { startScheduledSendWorker } from '$lib/server/scheduled-send';
 import { startPushWorker } from '$lib/server/push/worker';
 import { startTelegramWorker } from '$lib/server/telegram/worker';
 import { startJobWorker } from '$lib/server/jobs/worker';
+import { startSearchIndexer } from '$lib/server/search/worker';
 import { getAppSession, verifiedAtMs } from '$lib/server/auth/app-session';
 import { getUserById, hasAppUser } from '$lib/server/auth/user';
 import { authStateForAccount, listAccounts, toPublic } from '$lib/server/auth/accounts';
@@ -99,6 +100,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 		startPushWorker();
 		startTelegramWorker();
 		startJobWorker();
+		startSearchIndexer();
 		migrated = true;
 		logEvent('info', 'app', 'started', { node: process.version });
 	}

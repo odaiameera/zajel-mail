@@ -866,3 +866,38 @@ export async function searchEmails(
 		total: queryResult.total
 	};
 }
+
+/** Just the matching ids, newest first, and how many match in all. */
+export async function queryEmailIds(
+	client: JMAPClient,
+	accountId: string,
+	filter: Record<string, unknown>,
+	options: { position?: number; limit?: number } = {}
+): Promise<{ ids: string[]; total: number }> {
+	const { position = 0, limit = 50 } = options;
+	const response = await client.request([
+		[
+			'Email/query',
+			{
+				accountId,
+				filter,
+				sort: [{ property: 'receivedAt', isAscending: false }],
+				position,
+				limit,
+				calculateTotal: true
+			},
+			'q'
+		]
+	]);
+	const result = response.methodResponses[0][1] as { ids?: string[]; total?: number };
+	return { ids: result.ids ?? [], total: result.total ?? 0 };
+}
+
+/** List-row properties for known ids, in the order given; ids the server no longer has are left out. */
+export async function getListEmails(client: JMAPClient, accountId: string, ids: string[]): Promise<Email[]> {
+	if (ids.length === 0) return [];
+	const response = await client.request([['Email/get', { accountId, ids, properties: LIST_PROPERTIES }, 'g']]);
+	const list = (response.methodResponses[0][1] as { list?: Email[] }).list ?? [];
+	const byId = new Map(list.map((email) => [email.id, email]));
+	return ids.map((id) => byId.get(id)).filter((email): email is Email => !!email);
+}

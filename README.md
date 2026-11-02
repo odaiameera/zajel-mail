@@ -470,6 +470,9 @@ To let Zajel create tasks, configure any combination of Todoist, Linear, Notion 
 | `OLLAMA_URL` | AI only | Ollama-compatible endpoint. |
 | `OLLAMA_API_KEY` | AI only | Bearer token, when the endpoint requires one. |
 | `OLLAMA_MODEL` | AI only | Model tag the endpoint serves. Verify with `npm run ai:models`. |
+| `EMBED_URL` | Semantic search only | Ollama on your own server that embeds mail for search, such as `http://host.docker.internal:11434`. Never falls back to `OLLAMA_URL`. |
+| `EMBED_MODEL` | No | Embedding model. Defaults to `embeddinggemma-2:270m`; changing it rebuilds the index. |
+| `EMBED_QUERY_PREFIX`, `EMBED_DOCUMENT_PREFIX` | No | Retrieval prompts for a model Zajel has none built in for. |
 | `TYPESAFE_API_KEY` | Jev only | TypeSafe API key. Jev stays unavailable without it. |
 | `JEV_MODEL` | No | Jev model version. Defaults to the pinned `jev-1.13.0`. |
 | `TYPESAFE_BASE_URL` | No | Override the TypeSafe endpoint, for example to route through LiteLLM. |

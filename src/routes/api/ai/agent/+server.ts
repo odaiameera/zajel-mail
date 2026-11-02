@@ -153,7 +153,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					todayStartMs,
 					todayEndMs,
 					tomorrowStartMs,
-					tomorrowEndMs
+					tomorrowEndMs,
+					accountRowId: locals.activeAccountId ?? null
 				});
 				// Persisted only once the model has answered: a failed turn should not
 				// leave a question in the transcript that was never addressed.
