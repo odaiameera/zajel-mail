@@ -9,7 +9,8 @@ const starts = vi.hoisted(() => ({
 	scheduledSend: vi.fn(),
 	push: vi.fn(),
 	telegram: vi.fn(),
-	jobs: vi.fn()
+	jobs: vi.fn(),
+	search: vi.fn()
 }));
 vi.mock('$app/environment', () => ({ building: false }));
 vi.mock('$lib/server/db/migrate', () => ({ runMigrations: starts.migrate }));
@@ -21,6 +22,7 @@ vi.mock('$lib/server/scheduled-send', () => ({ startScheduledSendWorker: starts.
 vi.mock('$lib/server/push/worker', () => ({ startPushWorker: starts.push }));
 vi.mock('$lib/server/telegram/worker', () => ({ startTelegramWorker: starts.telegram }));
 vi.mock('$lib/server/jobs/worker', () => ({ startJobWorker: starts.jobs }));
+vi.mock('$lib/server/search/worker', () => ({ startSearchIndexer: starts.search }));
 vi.mock('$lib/server/auth/crypto', () => ({ assertCryptoReady: () => {} }));
 vi.mock('$lib/server/auth/user', () => ({ getUserById: vi.fn(), hasAppUser: () => true }));
 vi.mock('$lib/server/auth/app-session', () => ({ getAppSession: vi.fn(), verifiedAtMs: vi.fn() }));

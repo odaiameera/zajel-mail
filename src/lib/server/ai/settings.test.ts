@@ -9,7 +9,7 @@ import { aiSettings, availableProviders, chosenProvider, forgetAiSettingsForTest
 import { agentEffort, agentModel, claudeConfigured, writerModel } from './claude';
 import { aiModel, aiProvider } from './mail-assistant';
 
-const NONE: AiSettings = { provider: null, agentModel: null, writerModel: null, agentEffort: null, openaiModel: null, ollamaModel: null };
+const NONE: AiSettings = { provider: null, agentModel: null, writerModel: null, agentEffort: null, openaiModel: null, ollamaModel: null, embedUrl: null, embedModel: null };
 
 beforeAll(() => runMigrations());
 

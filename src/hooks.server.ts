@@ -12,6 +12,7 @@ import { startScheduledSendWorker } from '$lib/server/scheduled-send';
 import { startPushWorker } from '$lib/server/push/worker';
 import { startTelegramWorker } from '$lib/server/telegram/worker';
 import { startJobWorker } from '$lib/server/jobs/worker';
+import { startSearchIndexer } from '$lib/server/search/worker';
 import { getAppSession, verifiedAtMs } from '$lib/server/auth/app-session';
 import { getUserById, hasAppUser } from '$lib/server/auth/user';
 import { authStateForAccount, listAccounts, toPublic } from '$lib/server/auth/accounts';
@@ -88,8 +89,9 @@ function checkSecret(): void {
 }
 
 // Migrations, then every background worker: Jev's urgent alerts, Telegram,
-// reminders, rules, jobs. Started from the first request, as they used to
-// be, they stayed off after a restart until someone opened the app.
+// reminders, rules, jobs, the search index. Started from the first request,
+// as they used to be, they stayed off after a restart until someone opened
+// the app.
 function startBackground(): void {
 	if (migrated) return;
 	migrated = true;
@@ -102,6 +104,7 @@ function startBackground(): void {
 	startPushWorker();
 	startTelegramWorker();
 	startJobWorker();
+	startSearchIndexer();
 	logEvent('info', 'app', 'started', { node: process.version });
 }
 

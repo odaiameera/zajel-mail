@@ -14,6 +14,7 @@ import { parseWallClock, wallClockToUtc } from '$lib/server/calendar/tz';
 import { scheduleReminder } from '$lib/server/db/queries/reminders';
 import { getDecision } from '$lib/server/db/queries/jev-decisions';
 import { htmlToPromptText } from '$lib/server/ai/extract-event';
+import { searchMail as searchMailbox } from '$lib/server/search/hybrid';
 import { createPendingAction, type AgentSource, type PendingAction, type ToolTier } from './store';
 import { composeReply, saveComposedDraft, type ComposeRequest } from './compose';
 import { CALENDAR_TOOLS } from './calendar-tools';
@@ -147,7 +148,7 @@ const searchMail: AgentTool = {
 	name: 'search_mail',
 	tier: 'read',
 	description:
-		'Search every folder, newest first. Give at least one of text, from, after or before. Dates are ISO (YYYY-MM-DD or a full timestamp). Results show id, sender, subject, folder, tab and a preview.',
+		'Search every folder. With text, the best matches come first, found by keyword and by meaning, so describing what a message was about works as well as quoting it; otherwise newest first. Give at least one of text, from, after or before. Dates are ISO (YYYY-MM-DD or a full timestamp). Results show id, sender, subject, folder, tab and a preview.',
 	input_schema: schema({
 		text: { type: ['string', 'null'] },
 		from: { type: ['string', 'null'] },
@@ -171,13 +172,13 @@ const searchMail: AgentTool = {
 		}
 		const filter = conditions.length === 1 ? conditions[0] : { operator: 'AND', conditions };
 		const limit = Math.min(Math.max(Number(input.limit) || 15, 1), MAX_RESULTS);
-		const [boxes, { emails, total }] = await Promise.all([
+		const [boxes, { emails, total, ranked }] = await Promise.all([
 			ctx.mailboxes(),
-			searchEmails(ctx.client, ctx.auth.accountId, filter, { limit })
+			searchMailbox({ client: ctx.client, accountId: ctx.auth.accountId, accountRowId: ctx.accountRowId, filter, limit })
 		]);
 		if (emails.length === 0) return { content: 'No messages matched.' };
 		return {
-			content: `${total} matched; showing ${emails.length}.\n${emails
+			content: `${total} matched; showing ${emails.length}${ranked ? ', best match first' : ''}.\n${emails
 				.map((e) => untrusted('email_summary', e.id, summaryLine(e, boxes)))
 				.join('\n')}`
 		};

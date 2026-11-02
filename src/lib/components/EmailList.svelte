@@ -29,7 +29,8 @@
 		pageSize = 50,
 		totalPages = 1,
 		showFilters = false,
-		inboxTabs = null
+		inboxTabs = null,
+		byDate = true
 	}: {
 		emails: Email[];
 		total: number;
@@ -41,6 +42,8 @@
 		showFilters?: boolean;
 		/** The Inbox's category tabs; null everywhere else, and when tabs are off. */
 		inboxTabs?: InboxTabsState | null;
+		/** Group rows under date headings; off for results ranked by relevance. */
+		byDate?: boolean;
 	} = $props();
 
 	const rangeStart = $derived(total === 0 ? 0 : (currentPage - 1) * pageSize + 1);
@@ -271,6 +274,7 @@
 	type EmailGroup = DateBucket & { emails: Email[] };
 
 	const groups = $derived.by<EmailGroup[]>(() => {
+		if (!byDate) return [{ key: 'all', label: '', sortKey: 0, emails }];
 		const byKey = new Map<string, EmailGroup>();
 		for (const email of emails) {
 			const b = bucketFor(email.receivedAt, $now);
@@ -508,23 +512,25 @@
 					wants, and what GitHub uses for the header of a box.
 				-->
 				{#each groups as group (group.key)}
-					{@const isCollapsed = collapsedGroups.has(group.key)}
-					<button
-						type="button"
-						onclick={() => toggleGroup(group.key)}
-						class="w-full sticky top-0 z-10 flex items-center gap-2 px-4 py-1.5 bg-surface-hover/95 backdrop-blur-sm border-b border-border text-left hover:bg-surface-hover transition-colors cursor-pointer"
-					>
-						<span
-							class="inline-flex items-center justify-center w-4 h-4 text-text-tertiary transition-transform"
-							style={isCollapsed ? '' : 'transform: rotate(90deg)'}
+					{@const isCollapsed = byDate && collapsedGroups.has(group.key)}
+					{#if byDate}
+						<button
+							type="button"
+							onclick={() => toggleGroup(group.key)}
+							class="w-full sticky top-0 z-10 flex items-center gap-2 px-4 py-1.5 bg-surface-hover/95 backdrop-blur-sm border-b border-border text-left hover:bg-surface-hover transition-colors cursor-pointer"
 						>
-							<Icon name="expand" size={12} />
-						</span>
-						<span class="text-2xs font-semibold uppercase tracking-wider text-text-secondary">
-							{group.label}
-						</span>
-						<span class="text-2xs text-text-tertiary">{group.emails.length}</span>
-					</button>
+							<span
+								class="inline-flex items-center justify-center w-4 h-4 text-text-tertiary transition-transform"
+								style={isCollapsed ? '' : 'transform: rotate(90deg)'}
+							>
+								<Icon name="expand" size={12} />
+							</span>
+							<span class="text-2xs font-semibold uppercase tracking-wider text-text-secondary">
+								{group.label}
+							</span>
+							<span class="text-2xs text-text-tertiary">{group.emails.length}</span>
+						</button>
+					{/if}
 					{#if !isCollapsed}
 						{#each group.emails as email (email.id)}
 							<EmailListItem

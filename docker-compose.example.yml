@@ -47,6 +47,18 @@ services:
       # - OLLAMA_URL=https://ollama.com
       # - OLLAMA_API_KEY=<your ollama cloud api key>
       # - OLLAMA_MODEL=deepseek-v3.1:671b
+      # Semantic search: embeddings from an Ollama on your own server, never
+      # the cloud endpoint above, since indexing sends it every message's
+      # text. Switch it on per account in Settings → Search, which can also
+      # set or override these two. Ollama on the host itself listens on
+      # 127.0.0.1, which this container can't reach: set
+      # OLLAMA_HOST=172.17.0.1 in its service (the Docker bridge, not the
+      # internet) and use the extra_hosts entry below. EMBED_MODEL defaults to
+      # embeddinggemma-2:270m (run `ollama pull embeddinggemma-2:270m`); a
+      # different model rebuilds the index. EMBED_QUERY_PREFIX and
+      # EMBED_DOCUMENT_PREFIX set the prompts for a model Zajel doesn't know.
+      # - EMBED_URL=http://host.docker.internal:11434
+      # - EMBED_MODEL=embeddinggemma-2:270m
       # Native task apps. Configure any combination; the confirmation card
       # lets the user choose a destination when more than one is connected.
       # - TODOIST_API_TOKEN=<todoist personal api token>
@@ -61,6 +73,9 @@ services:
       # agent shows a proposal and requires confirmation before calling it.
       # - TASK_ADAPTER_URL=https://tasks.example.com/api/tasks
       # - TASK_ADAPTER_API_KEY=<task adapter bearer token>
+    # Lets EMBED_URL reach an Ollama running on the host (semantic search).
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     volumes:
       # Persistent SQLite store for per-user state (avatar, label/folder
       # metadata, signatures). Survives `docker compose up -d --build`.

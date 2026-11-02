@@ -2,9 +2,10 @@ import type { AuthState, Email } from '$lib/jmap/types';
 import type { EventInstance } from '$lib/calendar/types';
 import type { JMAPClient } from '$lib/jmap/client';
 import { createClient } from '$lib/jmap/auth';
-import { getEmailDetail, searchEmails } from '$lib/jmap/email';
+import { getEmailDetail } from '$lib/jmap/email';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import { getEventsInRange } from '$lib/server/calendar/service';
+import { searchMail } from '$lib/server/search/hybrid';
 import { htmlToPromptText } from './extract-event';
 import {
 	buildDeleteProposal,
@@ -47,6 +48,8 @@ export interface MailAgentInput {
 	todayEndMs: number;
 	tomorrowStartMs: number;
 	tomorrowEndMs: number;
+	/** The linked account row, whose semantic index searches may use. */
+	accountRowId?: string | null;
 }
 
 export interface MailAgentResult {
@@ -275,6 +278,7 @@ async function gatherWithTools(
 	userEmail: string,
 	client: JMAPClient,
 	accountId: string,
+	accountRowId: string | null,
 	message: string,
 	conversation: AIChatMessage[],
 	timeZone: string,
@@ -338,7 +342,11 @@ enough. Return done as soon as you can answer; do not search for its own sake.`;
 				// An unconstrained search would return the whole mailbox
 				// newest-first; treat it as nothing to do rather than run it.
 				if (!filter) break;
-				const { emails, total } = await searchEmails(client, accountId, filter, {
+				const { emails, total } = await searchMail({
+					client,
+					accountId,
+					accountRowId,
+					filter,
 					limit: call.search.limit
 				});
 				transcript.push(formatSearchResults(call.search, emails, total));
@@ -463,6 +471,7 @@ export async function runMailAgent(
 			userEmail,
 			client,
 			auth.accountId,
+			input.accountRowId ?? null,
 			input.message,
 			safeConversation(input.conversation),
 			input.timeZone,
