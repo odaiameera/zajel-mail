@@ -108,14 +108,12 @@ With **semantic search** switched on in Settings → Search, it also finds mail 
 ![Search results for "Northpeak", with the matching contract email open](docs/screenshots/search.png)
 
 **Reading mail**
-- Conversations are threaded.
 - The reading pane can be toggled, and it stays put when a filter has no results.
 - Attachments show as cards. Inline `cid:` images render.
 - Remote images load through a **server-side proxy**, so the sender's image host sees your server's address, not yours. You choose whether they load: never, for contacts only (the default), or always. When they're held back, a bar above the message offers to load them for that one message.
 - **Sender trust** comes from your address book and the message's authentication results. Stalwart's spam score sits beside every message, and flagged mail says why it was flagged.
 - **One-click unsubscribe** appears for mailing lists that support it.
 - **Add to calendar** turns an email about a dinner or a meeting into an event.
-- **Print** a clean copy of any message.
 
 **Sign-in codes are found for you.** The code appears above the message with a **Copy code** button, which can also move the email to Trash once you've used it.
 
@@ -272,9 +270,8 @@ Jev is **off until you turn it on, account by account.** For a demo or developme
   ![The inbox in the light theme](docs/screenshots/inbox-light.png)
 
 - **Messages**:
-  - conversation view on or off
-  - default sort: newest, oldest, subject or sender
-  - a mark-as-read delay
+  - list order for the Inbox, folders and Starred: newest, oldest, subject or sender
+  - how long an open message waits before it's marked read
   - remote-image policy
   - automatic Trash emptying
 - **Composer**: default font and size, auto-save interval and Undo send window.
@@ -617,7 +614,7 @@ This started as a mail client and is growing into a full personal workspace: a s
 **Also planned**
 - **Contacts**: contact photos, vCard export, and merging duplicates already in the address book.
 - **Composer**: saved contacts and a server-side index of previous recipients in the autocomplete, with contacts ranked first.
-- **Keyboard shortcuts**: a full reference page, and more shortcuts in Mail.
+- **Keyboard shortcuts in Mail**, with a reference page.
 - **Packaging**: a published container image, so deploying is just `docker compose up`.
 
 Nothing here has a date on it. This is a personal project built in the open, and the roadmap describes intent, not a commitment.

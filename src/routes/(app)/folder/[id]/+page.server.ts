@@ -4,7 +4,7 @@ import { createClient } from '$lib/jmap/auth';
 import { queryAndFetchEmails } from '$lib/jmap/email';
 import { mailboxDisplayName } from '$lib/utils/mailbox-display';
 import { userEmailFromAuth } from '$lib/server/user';
-import { getDefaultPageSize } from '$lib/server/db/queries/app-prefs';
+import { getDefaultPageSize, getDefaultSort } from '$lib/server/db/queries/app-prefs';
 import { listMarkedIds, listReminders } from '$lib/server/db/queries/reminders';
 import { listScheduledSends } from '$lib/server/db/queries/scheduled-sends';
 import { isScheduledMailbox } from '$lib/jmap/mailbox';
@@ -54,6 +54,7 @@ export const load: PageServerLoad = async ({ locals, url, params, parent }) => {
 	const result = await queryAndFetchEmails(client, locals.auth.accountId, mailbox.id, {
 		position: (page - 1) * pageSize,
 		limit: pageSize,
+		sort: getDefaultSort(locals.user?.id ?? ''),
 		extraFilter: listFilterCondition(filter)
 	});
 

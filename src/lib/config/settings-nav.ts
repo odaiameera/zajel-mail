@@ -36,8 +36,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
 	{ slug: 'calendar',           group: 'Organization',       label: 'Calendar' },
 
 	{ slug: 'import-export',      group: 'Advanced',           label: 'Import / Export' },
-	{ slug: 'reset',              group: 'Advanced',           label: 'Reset' },
-	{ slug: 'keyboard-shortcuts', group: 'Advanced',           label: 'Keyboard shortcuts' }
+	{ slug: 'reset',              group: 'Advanced',           label: 'Reset' }
 ];
 
 export const SETTINGS_GROUP_ORDER: SettingsNavGroup[] = [

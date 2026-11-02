@@ -4,6 +4,7 @@ import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { parseTrashRetentionDays } from '$lib/constants/trash-retention';
 import { parseUndoSendSeconds } from '$lib/server/compose-input';
+import { parseMailSort, parseMarkReadDelay } from '$lib/mail-prefs';
 
 function num(value: string | undefined, fallback: number): number {
 	if (value === undefined) return fallback;
@@ -47,11 +48,9 @@ export const load: LayoutServerLoad = async ({ cookies, locals, parent }) => {
 		autoSaveInterval: num(prefs.autosave_interval, 10),
 		undoSendSeconds: parseUndoSendSeconds(prefs.undo_send_seconds),
 		// Mail
-		conversationView: prefs.conversation_view === 'on',
-		markReadDelay: num(prefs.mark_read_delay, 1000),
+		markReadDelay: parseMarkReadDelay(prefs.mark_read_delay),
 		autoLoadImages: prefs.auto_load_images ?? 'contacts_only',
-		defaultSort: prefs.default_sort ?? 'date_desc',
-		keyboardShortcuts: prefs.keyboard_shortcuts !== 'off',
+		defaultSort: parseMailSort(prefs.default_sort),
 		trashRetentionDays: parseTrashRetentionDays(prefs.trash_retention_days),
 		otpTrashAfterCopy: prefs.otp_trash_after_copy !== 'off',
 		// Notifications

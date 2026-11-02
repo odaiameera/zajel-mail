@@ -9,11 +9,9 @@
 
 	let { data }: { data: LayoutData } = $props();
 
-	let conversationView = $state(data.conversationView);
 	let markReadDelay = $state(String(data.markReadDelay));
 	let autoLoadImages = $state(data.autoLoadImages);
-	let defaultSort = $state(data.defaultSort);
-	let keyboardShortcuts = $state(data.keyboardShortcuts);
+	let defaultSort = $state<string>(data.defaultSort);
 	let trashRetentionDays = $state(String(data.trashRetentionDays));
 	let otpTrashAfterCopy = $state(data.otpTrashAfterCopy);
 
@@ -68,21 +66,8 @@
 
 <section>
 	<SettingRow
-		title="Conversation view"
-		description="Group related messages by thread. Switching off shows each message as its own row."
-		state={states.conversationView ?? 'idle'}
-	>
-		{#snippet control()}
-			<Toggle
-				checked={conversationView}
-				onChange={(v) => { conversationView = v; save({ conversationView: v }, 'conversationView'); }}
-			/>
-		{/snippet}
-	</SettingRow>
-
-	<SettingRow
 		title="Default sort"
-		description="Initial order for the inbox and folder views."
+		description="Order of the Inbox, folders and Starred."
 		state={states.defaultSort ?? 'idle'}
 	>
 		{#snippet control()}
@@ -186,19 +171,6 @@
 					{ value: '50', label: '50 per page' },
 					{ value: '100', label: '100 per page' }
 				]}
-			/>
-		{/snippet}
-	</SettingRow>
-
-	<SettingRow
-		title="Keyboard shortcuts"
-		description="Enable single-key shortcuts (j/k to navigate, e to archive, etc.)."
-		state={states.keyboardShortcuts ?? 'idle'}
-	>
-		{#snippet control()}
-			<Toggle
-				checked={keyboardShortcuts}
-				onChange={(v) => { keyboardShortcuts = v; save({ keyboardShortcuts: v }, 'keyboardShortcuts'); }}
 			/>
 		{/snippet}
 	</SettingRow>

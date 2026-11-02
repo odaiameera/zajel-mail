@@ -3,7 +3,7 @@ import type { PageServerLoad } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { queryAndFetchEmailsWithFilter } from '$lib/jmap/email';
 import { userEmailFromAuth } from '$lib/server/user';
-import { getDefaultPageSize } from '$lib/server/db/queries/app-prefs';
+import { getDefaultPageSize, getDefaultSort } from '$lib/server/db/queries/app-prefs';
 import { listMarkedIds, listReminders } from '$lib/server/db/queries/reminders';
 
 const ALLOWED_PAGE_SIZES = [10, 25, 50, 100];
@@ -38,7 +38,8 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	const client = createClient(locals.auth);
 	const result = await queryAndFetchEmailsWithFilter(client, locals.auth.accountId, filter, {
 		position: (page - 1) * pageSize,
-		limit: pageSize
+		limit: pageSize,
+		sort: getDefaultSort(locals.user?.id ?? '')
 	});
 
 	const totalPages = Math.max(1, Math.ceil(result.total / pageSize));

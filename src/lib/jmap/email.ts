@@ -16,6 +16,7 @@ import {
 	type InboxCategory
 } from '$lib/types/categories';
 import { htmlToText } from '$lib/utils/html-to-text';
+import { jmapSort, type MailSort } from '$lib/mail-prefs';
 
 const LIST_PROPERTIES = [
 	'id', 'blobId', 'threadId', 'mailboxIds',
@@ -28,9 +29,14 @@ export async function queryAndFetchEmails(
 	client: JMAPClient,
 	accountId: string,
 	mailboxId: string,
-	options: { position?: number; limit?: number; extraFilter?: Record<string, unknown> | null } = {}
+	options: {
+		position?: number;
+		limit?: number;
+		extraFilter?: Record<string, unknown> | null;
+		sort?: MailSort;
+	} = {}
 ): Promise<EmailQueryResult> {
-	const { position = 0, limit = 50, extraFilter = null } = options;
+	const { position = 0, limit = 50, extraFilter = null, sort = 'date_desc' } = options;
 
 	// AND the quick-filter condition (if any) with the mailbox constraint.
 	const filter = extraFilter
@@ -43,7 +49,7 @@ export async function queryAndFetchEmails(
 			{
 				accountId,
 				filter,
-				sort: [{ property: 'receivedAt', isAscending: false }],
+				sort: jmapSort(sort),
 				position,
 				limit,
 				calculateTotal: true
@@ -865,7 +871,7 @@ export async function queryAndFetchEmailsWithFilter(
 	client: JMAPClient,
 	accountId: string,
 	filter: Record<string, unknown>,
-	options: { position?: number; limit?: number } = {}
+	options: { position?: number; limit?: number; sort?: MailSort } = {}
 ): Promise<EmailQueryResult> {
 	return searchEmails(client, accountId, filter, options);
 }
@@ -874,9 +880,9 @@ export async function searchEmails(
 	client: JMAPClient,
 	accountId: string,
 	filter: Record<string, unknown>,
-	options: { position?: number; limit?: number } = {}
+	options: { position?: number; limit?: number; sort?: MailSort } = {}
 ): Promise<EmailQueryResult> {
-	const { position = 0, limit = 50 } = options;
+	const { position = 0, limit = 50, sort = 'date_desc' } = options;
 
 	const response = await client.request([
 		[
@@ -884,7 +890,7 @@ export async function searchEmails(
 			{
 				accountId,
 				filter,
-				sort: [{ property: 'receivedAt', isAscending: false }],
+				sort: jmapSort(sort),
 				position,
 				limit,
 				calculateTotal: true
