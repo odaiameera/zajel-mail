@@ -11,6 +11,7 @@ vi.mock('$lib/server/auth/accounts', () => ({ listAccounts: () => [{ id: 'acct-1
 import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import { aiSettings, forgetAiSettingsForTests } from '$lib/server/ai/settings';
+import { getIndexState, indexProgress, recordAttempt, updateIndexState, upsertEmails } from '$lib/server/search/store';
 import { GET, POST, PUT } from './+server';
 
 const user = { id: 'user-1', email: 'me@example.test' };
@@ -92,5 +93,33 @@ describe('GET and POST /api/search/index', () => {
 
 	it('refuses an account that isn’t this login’s', async () => {
 		expect((await send(POST, 'POST', { accountId: 'acct-9', enabled: true })).status).toBe(404);
+	});
+
+	it('gives refused messages another chance when the endpoint changes', async () => {
+		await send(PUT, 'PUT', { url: 'http://ollama:11434' });
+		await send(POST, 'POST', { accountId: 'acct-1', enabled: true });
+		upsertEmails('acct-1', [{ id: 'm1', receivedAt: '2026-01-01T00:00:00Z', mailboxIds: [] }], 0);
+		for (let i = 0; i < 3; i++) recordAttempt('acct-1', 'm1');
+		updateIndexState('acct-1', { listed: true, ready: true });
+		expect(indexProgress('acct-1')).toMatchObject({ failed: 1, pending: 0 });
+
+		// Another model starts over anyway; only another endpoint requeues.
+		await send(PUT, 'PUT', { model: 'bge-m3' });
+		expect(indexProgress('acct-1')).toMatchObject({ failed: 1, pending: 0 });
+		await send(PUT, 'PUT', { url: 'http://10.0.0.5:11434' });
+		expect(indexProgress('acct-1')).toMatchObject({ failed: 0, pending: 1 });
+		expect(getIndexState('acct-1')?.ready).toBe(false);
+		await send(POST, 'POST', { accountId: 'acct-1', enabled: false });
+	});
+
+	it('shows a finished index as ready, whatever went wrong on the way', async () => {
+		await send(PUT, 'PUT', { url: 'http://ollama:11434' });
+		await send(POST, 'POST', { accountId: 'acct-1', enabled: true });
+		updateIndexState('acct-1', {
+			model: 'embeddinggemma-2:270m', dimensions: 8, listed: true, ready: true, lastError: 'Unreachable: fetch failed'
+		});
+		const overview = await send(GET, 'GET');
+		expect(overview.body.accounts[0]).toMatchObject({ ready: true, lastError: null });
+		await send(POST, 'POST', { accountId: 'acct-1', enabled: false });
 	});
 });

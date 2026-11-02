@@ -116,6 +116,21 @@ describe('searchMail', () => {
 		expect(fromAbu.emails.map((e) => e.id)).toEqual(['p3']);
 	});
 
+	it('judges a small folder against the whole mailbox, so it isn’t all matches', async () => {
+		box.add(
+			{ id: 'q1', receivedAt: minute(60), subject: 'Estimate for the kitchen pipe', body: 'The leaking pipe will cost 300 to fix.', mailboxIds: ['small'] },
+			{ id: 'q2', receivedAt: minute(61), subject: 'School news', body: 'Homework for the class.', mailboxIds: ['small'] },
+			{ id: 'q3', receivedAt: minute(62), subject: 'Weekly digest', body: 'Your weekly newsletter.', mailboxIds: ['small'] }
+		);
+		await buildIndex();
+		// Nothing in the folder has both words, so this is the vectors alone.
+		const inSmall = await search({ operator: 'AND', conditions: [{ text: 'plumber quote' }, { inMailbox: 'small' }] });
+		expect(inSmall).toMatchObject({ ranked: true, total: 1 });
+		expect(inSmall.emails.map((e) => e.id)).toEqual(['q1']);
+		const nothing = await search({ operator: 'AND', conditions: [{ text: 'flight' }, { inMailbox: 'small' }] });
+		expect(nothing).toMatchObject({ ranked: false, total: 0 });
+	});
+
 	it('falls back to keyword results when Ollama is down, logs it, and stops asking for a while', async () => {
 		await buildIndex();
 		ollama.failure = 'down';

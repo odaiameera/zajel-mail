@@ -62,8 +62,8 @@ describe('outlierFloor', () => {
 		expect(nonsense.filter((s) => s >= floor(nonsense))).toEqual([]);
 	});
 
-	it('sets no floor with too few scores to judge', () => {
-		expect(floor([0.9, 0.2])).toBe(-Infinity);
+	it('lets nothing through with too few scores to judge', () => {
+		expect(floor([0.9, 0.2])).toBe(Infinity);
 	});
 });
 
@@ -90,6 +90,25 @@ describe('AccountVectors', () => {
 		index.remove('inbox');
 		expect(index.search(unit(1, 0), 5).map((h) => h.id)).toEqual(['archive']);
 		expect(index.size).toBe(1);
+	});
+
+	it('judges a small folder against the whole mailbox, not against itself', () => {
+		const index = new AccountVectors(3);
+		for (let i = 0; i < 30; i++) index.add(meta(`in${i}`, 0, ['IN']), [quantize(unit(1, (i % 5) / 10, 0))]);
+		index.add(meta('pipe', 0, ['X']), [quantize(unit(0, 0.2, 1))]);
+		index.add(meta('invoice', 0, ['X']), [quantize(unit(1, 0, 0))]);
+		index.add(meta('school', 0, ['X']), [quantize(unit(0, 1, 0))]);
+		const inX = (m: { mailboxIds: string[] }) => m.mailboxIds.includes('X');
+		expect(index.search(unit(0, 0, 1), 10, inX, 3.5).map((h) => h.id)).toEqual(['pipe']);
+		// Without a floor, the folder's three are all there, nearest first.
+		expect(index.search(unit(0, 0, 1), 10, inX).map((h) => h.id)).toEqual(['pipe', 'invoice', 'school']);
+	});
+
+	it('returns nothing with a floor when the whole index is too small to judge', () => {
+		const index = new AccountVectors(2);
+		for (let i = 0; i < 5; i++) index.add(meta(`m${i}`), [quantize(unit(1, i / 5))]);
+		expect(index.search(unit(1, 0), 5, () => true, 3.5)).toEqual([]);
+		expect(index.search(unit(1, 0), 5)).toHaveLength(5);
 	});
 
 	it('replaces a message added twice, and compacts after many removals', () => {

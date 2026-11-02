@@ -6,7 +6,7 @@ import { aiSettings, MODEL_ID, saveAiSettings } from '$lib/server/ai/settings';
 import { logEvent } from '$lib/server/log';
 import { cleanEmbedUrl, embedSettings } from '$lib/server/search/embed';
 import { indexStatus } from '$lib/server/search/status';
-import { setIndexEnabled } from '$lib/server/search/store';
+import { enabledIndexes, requeueFailed, setIndexEnabled } from '$lib/server/search/store';
 import { forgetVectors } from '$lib/server/search/vectors';
 import { kickIndexer } from '$lib/server/search/worker';
 
@@ -58,9 +58,12 @@ export const PUT: RequestHandler = async ({ locals, request }) => {
 		next.embedModel = model || null;
 	}
 
+	const before = embedSettings()?.url ?? null;
 	saveAiSettings(next);
 	logEvent('info', 'search', 'settings_changed', { changed: Object.keys(body).join(',') });
-	// A new model starts each index over; the indexer sees it on this pass.
+	// A new endpoint may take what the old one refused; a new model starts
+	// each index over. The indexer sees both on this pass.
+	if ((embedSettings()?.url ?? null) !== before) for (const index of enabledIndexes()) requeueFailed(index.accountId);
 	kickIndexer();
 	return json(overview(locals.user.id, locals.activeAccountId));
 };

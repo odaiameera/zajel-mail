@@ -175,10 +175,12 @@ export function fakeEmbedding(input: string): number[] {
 }
 
 export interface FakeOllama {
-	/** Inputs of every /api/embed call, in order. */
+	/** Inputs of every /api/embed call that reached the model, in order, refused ones included. */
 	requests: string[][];
 	/** Set to make calls fail: a status, or 'down' for a refused connection. */
 	failure: number | 'down' | null;
+	/** A request with an input matching this gets a 400, like text the model can't take. */
+	refuses: RegExp | null;
 	fetch: typeof fetch;
 }
 
@@ -187,12 +189,16 @@ export function fakeOllama(): FakeOllama {
 	const fake: FakeOllama = {
 		requests: [],
 		failure: null,
+		refuses: null,
 		fetch: (async (url: string | URL, init?: RequestInit) => {
 			if (!String(url).endsWith('/api/embed')) throw new Error(`unexpected fetch ${url}`);
 			if (fake.failure === 'down') throw new TypeError('fetch failed');
 			if (typeof fake.failure === 'number') return new Response('model not found', { status: fake.failure });
 			const body = JSON.parse(String(init?.body)) as { input: string[] };
 			fake.requests.push(body.input);
+			if (fake.refuses && body.input.some((text) => fake.refuses!.test(text))) {
+				return new Response('{"error":"invalid input"}', { status: 400 });
+			}
 			return Response.json({ model: 'fake', embeddings: body.input.map(fakeEmbedding) });
 		}) as typeof fetch
 	};
