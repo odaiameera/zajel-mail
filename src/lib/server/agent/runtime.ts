@@ -1,10 +1,12 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '$lib/jmap/auth';
 import type { AuthState } from '$lib/jmap/types';
-import type { AIChatMessage } from '$lib/server/ai/mail-assistant';
+import { MailAssistantError, type AIChatMessage } from '$lib/server/ai/mail-assistant';
 import {
+	agentEffort,
 	agentModel,
 	claudeClient,
+	claudeConfigured,
 	claudeError,
 	FALLBACK_BETA,
 	supportsFallbacks
@@ -191,6 +193,33 @@ export function forgetStrictRefusals(): void {
 	workingModes.clear();
 }
 
+/**
+ * Send a request with the tools as strict as the API will take them. If it
+ * refuses the schemas themselves, step down (outward tools only, then none)
+ * rather than not answering, and remember the step that worked. A refusal
+ * comes before Claude runs, so nothing depends on the tools as they were.
+ */
+export async function sendWithStrictFallback<T>(
+	tools: AgentTool[],
+	send: (apiTools: Anthropic.Beta.BetaTool[]) => Promise<T>,
+	logFields: Record<string, unknown>
+): Promise<T> {
+	const key = [...strictToolNames(tools)].sort().join(',');
+	let mode: StrictMode = workingModes.get(key) ?? 'full';
+	for (;;) {
+		try {
+			const result = await send(apiToolsFor(tools, mode));
+			if (mode !== 'full') workingModes.set(key, mode);
+			return result;
+		} catch (err) {
+			const next = schemasRefused(err) ? weakerMode(mode, tools) : null;
+			if (!next) throw err;
+			logEvent('error', 'agent', 'strict_refused', { ...logFields, mode, next, ...errorFields(err) });
+			mode = next;
+		}
+	}
+}
+
 type Schema = {
 	type?: string | string[];
 	anyOf?: Schema[];
@@ -267,6 +296,9 @@ function auditSummary(tool: AgentTool, input: Record<string, unknown>, done?: st
 }
 
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
+	// The provider chosen in Settings decides where mail content goes. A
+	// scheduled job doesn't check it, so the agent refuses here.
+	if (!claudeConfigured()) throw new MailAssistantError('The agent needs Claude as the provider', 503);
 	const tools = toolsFor(input.source);
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
 	const client = createClient(input.auth);
@@ -283,6 +315,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 	};
 
 	const model = agentModel();
+	const effort = agentEffort();
 	const system: Anthropic.Beta.BetaTextBlockParam[] = [
 		{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } },
 		{
@@ -292,9 +325,6 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 			}`
 		}
 	];
-	const strictKey = [...strictToolNames(tools)].sort().join(',');
-	let mode: StrictMode = workingModes.get(strictKey) ?? 'full';
-	let apiTools = apiToolsFor(tools, mode);
 	const messages: Anthropic.Beta.BetaMessageParam[] = [
 		...input.history.map((turn) => ({ role: turn.role, content: turn.content })),
 		{ role: 'user', content: input.message }
@@ -327,37 +357,25 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 		if (remaining < 5_000) break;
 		rounds = round + 1;
 
-		const ask = () =>
-			claudeClient().beta.messages.create(
-				{
-					model,
-					max_tokens: 16000,
-					output_config: { effort: 'medium' },
-					system,
-					tools: apiTools,
-					messages,
-					...(supportsFallbacks(model) ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {})
-				},
-				{ timeout: Math.max(deadline - Date.now(), 1_000) }
-			);
 		let response: Anthropic.Beta.BetaMessage;
 		try {
-			// The schemas themselves refused: step down to less strict decoding
-			// rather than not answering. A refusal comes before Claude runs, so
-			// nothing in this turn depends on the tools as they were.
-			for (;;) {
-				try {
-					response = await ask();
-					break;
-				} catch (err) {
-					const next = schemasRefused(err) ? weakerMode(mode, tools) : null;
-					if (!next) throw err;
-					logEvent('error', 'agent', 'strict_refused', { source: input.source, model, mode, next, ...errorFields(err) });
-					mode = next;
-					apiTools = apiToolsFor(tools, mode);
-				}
-			}
-			if (mode !== 'full') workingModes.set(strictKey, mode);
+			response = await sendWithStrictFallback(
+				tools,
+				(apiTools) =>
+					claudeClient().beta.messages.create(
+						{
+							model,
+							max_tokens: 16000,
+							output_config: { effort },
+							system,
+							tools: apiTools,
+							messages,
+							...(supportsFallbacks(model) ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {})
+						},
+						{ timeout: Math.max(deadline - Date.now(), 1_000) }
+					),
+				{ source: input.source, model }
+			);
 		} catch (err) {
 			const failure = claudeError(err);
 			logEvent('error', 'agent', 'turn_failed', {
