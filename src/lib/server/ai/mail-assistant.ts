@@ -27,7 +27,7 @@ const DEFAULT_AI_URL = 'https://ollama.com';
  * is how an operator picks a model, and it needs no code change. Any tag
  * hard-coded here can still be retired upstream, surfacing as a 404/410 from
  * `/api/chat`, which is why the failure path below reports what the endpoint
- * does serve. `npm run ai:models` prints the same list on demand. Treat this
+ * does serve, and Settings → Agent lists the same tags. Treat this
  * default as a starting point, not a guarantee.
  */
 const DEFAULT_AI_MODEL = 'deepseek-v4-flash:cloud';
