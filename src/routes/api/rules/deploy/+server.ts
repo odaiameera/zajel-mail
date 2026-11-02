@@ -3,35 +3,22 @@ import type { RequestHandler } from './$types';
 import { buildSieveContext, compileRulesToSieve } from '$lib/server/sieve';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
+import type { MethodCall } from '$lib/jmap/types';
 import type { Rule } from '$lib/types/rules';
 import { readPreferences } from '$lib/server/preferences';
 
 const JMAP_USING = ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:sieve'];
+const SCRIPT_NAME = 'mailrules';
 
 interface SieveScriptEntry {
 	id: string;
 	name: string;
+	isActive?: boolean;
 }
 
-interface JMAPMethodResponse {
-	methodResponses: [string, Record<string, unknown>, string][];
-}
-
-async function jmapRequest(
-	apiUrl: string,
-	authHeader: string,
-	methodCalls: unknown[]
-): Promise<JMAPMethodResponse> {
-	const res = await fetch(apiUrl, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Authorization': authHeader
-		},
-		body: JSON.stringify({ using: JMAP_USING, methodCalls })
-	});
-	if (!res.ok) throw new Error(`JMAP error: ${res.status}`);
-	return res.json();
+interface SetError {
+	type?: string;
+	description?: string;
 }
 
 export const POST: RequestHandler = async ({ request, locals, cookies }) => {
@@ -81,45 +68,44 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 
 		const { blobId } = await uploadRes.json() as { blobId: string };
 
-		// Step 2: Check if mailrules script already exists
-		const getRes = await jmapRequest(apiUrl, authHeader, [
-			['SieveScript/get', { accountId, ids: null }, '0']
-		]);
-
-		const scriptList = (getRes.methodResponses[0][1] as { list: SieveScriptEntry[] }).list;
-		const existingScript = scriptList.find((s) => s.name === 'mailrules');
+		// Step 2: Check if mailrules script already exists. The shared client
+		// turns a method-level `error` response into a JMAPMethodError with
+		// the server's reason, where reading `.list` off it used to throw a
+		// TypeError.
+		const getRes = await client.request([['SieveScript/get', { accountId, ids: null }, '0']], JMAP_USING);
+		const scriptList = (getRes.methodResponses[0][1] as { list?: SieveScriptEntry[] }).list ?? [];
+		const existingScript = scriptList.find((s) => s.name === SCRIPT_NAME);
+		// Only one script is active at a time, so activating ours switches off
+		// whatever was — a filter the user wrote in another client. Say so
+		// rather than letting it vanish without a word.
+		const deactivated = scriptList.find((s) => s.isActive && s.name !== SCRIPT_NAME)?.name ?? null;
 
 		// Step 3: Create or update
-		let methodCalls;
-		if (existingScript) {
-			methodCalls = [['SieveScript/set', {
+		const methodCalls: MethodCall[] = existingScript
+			? [['SieveScript/set', {
 				accountId,
 				update: { [existingScript.id]: { blobId } },
 				onSuccessActivateScript: existingScript.id
-			}, '0']];
-		} else {
-			methodCalls = [['SieveScript/set', {
+			}, '0']]
+			: [['SieveScript/set', {
 				accountId,
-				create: { script1: { name: 'mailrules', blobId } },
+				create: { script1: { name: SCRIPT_NAME, blobId } },
 				onSuccessActivateScript: '#script1'
 			}, '0']];
-		}
 
-		const setRes = await jmapRequest(apiUrl, authHeader, methodCalls);
+		const setRes = await client.request(methodCalls, JMAP_USING);
 		const result = setRes.methodResponses[0][1] as {
-			created?: Record<string, unknown>;
-			updated?: Record<string, unknown>;
-			notCreated?: Record<string, { description: string }>;
-			notUpdated?: Record<string, { description: string }>;
+			notCreated?: Record<string, SetError> | null;
+			notUpdated?: Record<string, SetError> | null;
 		};
 
-		if (result.notCreated || result.notUpdated) {
-			const errMap = result.notCreated ?? result.notUpdated ?? {};
-			const err = Object.values(errMap)[0];
-			return json({ error: err?.description ?? 'Sieve deploy failed', script }, { status: 500 });
+		// An empty `notCreated: {}` is not a refusal; only an entry is.
+		const refused = Object.values(result.notCreated ?? {})[0] ?? Object.values(result.notUpdated ?? {})[0];
+		if (refused) {
+			return json({ error: refused.description ?? refused.type ?? 'Sieve deploy failed', script }, { status: 500 });
 		}
 
-		return json({ success: true, script });
+		return json({ success: true, script, deactivated });
 	} catch (err) {
 		return json({
 			error: err instanceof Error ? err.message : 'Deploy failed',

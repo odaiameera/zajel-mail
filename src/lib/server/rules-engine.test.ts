@@ -157,3 +157,43 @@ describe('Move to trash in Sieve', () => {
 		expect(script).not.toMatch(/^\s*fileinto /m);
 	});
 });
+
+describe('buildJmapFilter negation', () => {
+	const cond = (over: Partial<RuleCondition>): RuleCondition => ({
+		id: 'c',
+		field: 'subject',
+		op: 'contains',
+		value: 'hello',
+		negate: false,
+		...over
+	});
+	const only = (c: RuleCondition): Rule => ({
+		id: 'r',
+		name: 'r',
+		enabled: true,
+		logic: 'allof',
+		conditions: [c],
+		actions: [],
+		createdAt: 0
+	});
+
+	it('reads NOT and "doesn\'t contain" as the engine does: together they cancel out', () => {
+		const not = { operator: 'NOT', conditions: [{ subject: 'hello' }] };
+		expect(buildJmapFilter(only(cond({ op: 'not_contains' })))).toEqual(not);
+		expect(buildJmapFilter(only(cond({ negate: true })))).toEqual(not);
+		expect(buildJmapFilter(only(cond({ op: 'not_contains', negate: true })))).toEqual({ subject: 'hello' });
+	});
+
+	it('ignores an operator left behind on Has attachment and Size, as the engine does', () => {
+		expect(buildJmapFilter(only(cond({ field: 'hasAttachment', op: 'not_contains', value: '' })))).toEqual({
+			hasAttachment: true
+		});
+		expect(buildJmapFilter(only(cond({ field: 'size', op: 'not_contains', value: '100' })))).toEqual({
+			minSize: 102400
+		});
+		expect(buildJmapFilter(only(cond({ field: 'hasAttachment', negate: true, value: '' })))).toEqual({
+			operator: 'NOT',
+			conditions: [{ hasAttachment: true }]
+		});
+	});
+});

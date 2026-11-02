@@ -225,6 +225,46 @@ export function evaluateRulesForEmail(
 }
 
 /**
+ * What the matcher reads from each message, with the body only when a rule
+ * looks at it. `fetchTextBodyValues` goes on the Email/get call.
+ */
+export function matcherProperties(rules: Rule[]): { properties: string[]; fetchTextBodyValues: boolean } {
+	const needBody = rulesNeedBody(rules);
+	return {
+		properties: [
+			'id', 'receivedAt', 'from', 'to', 'subject', 'size',
+			'hasAttachment', 'keywords', 'mailboxIds', 'preview',
+			...(needBody ? ['bodyValues', 'textBody'] : [])
+		],
+		fetchTextBodyValues: needBody
+	};
+}
+
+/**
+ * Run the enabled rules, in order, over fetched messages: how many a rule
+ * fired on, and the Email/set update for each one not already as the rules
+ * want it. The one matcher behind both delivery-time application and
+ * "apply now", so the two act on the same mail.
+ */
+export function updatesForEmails(
+	emails: Email[],
+	enabledRules: Rule[],
+	ctx: RuleActionCtx
+): { matched: number; update: Record<string, Record<string, unknown>> } {
+	const needBody = rulesNeedBody(enabledRules);
+	let matched = 0;
+	const update: Record<string, Record<string, unknown>> = {};
+	for (const email of emails) {
+		const outcome = evaluateRulesForEmail(email, enabledRules, ctx, needBody ? extractBodyText(email) : '');
+		if (outcome.firedRuleIds.length === 0) continue;
+		matched++;
+		const emailUpdate = outcomeToUpdate(email, outcome);
+		if (Object.keys(emailUpdate).length > 0) update[email.id] = emailUpdate;
+	}
+	return { matched, update };
+}
+
+/**
  * Turn an outcome into a JMAP Email/set update object.
  *
  * Mailbox membership is written as the **full `mailboxIds` object**, never
