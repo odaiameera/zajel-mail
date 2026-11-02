@@ -139,3 +139,16 @@ describe('Move to… from a folder or a label', () => {
 		expect(state.boxes.labelled).toEqual({ IN: true, PRJ: true });
 	});
 });
+
+describe('dropping on a label, which names no folder', () => {
+	it('adds the label and keeps the message where it is', async () => {
+		await bulk({ ids: ['inbox1', 'filed'], action: 'moveTo', targetMailboxId: 'WORK' });
+		expect(state.boxes.inbox1).toEqual({ IN: true, WORK: true });
+		expect(state.boxes.filed).toEqual({ PRJ: true, WORK: true });
+	});
+
+	it('still moves between folders when the drop names no source', async () => {
+		await bulk({ ids: ['inbox1'], action: 'moveTo', targetMailboxId: 'PRJ' });
+		expect(state.boxes.inbox1).toEqual({ PRJ: true });
+	});
+});

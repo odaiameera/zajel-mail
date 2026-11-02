@@ -677,7 +677,14 @@ function moveAway(
 	sourceMailboxId: string | undefined,
 	labelIds: ReadonlySet<string> | undefined
 ): Pick<EmailMailboxChange, 'remove' | 'leave'> {
-	if (labelIds) return { leave: { from: sourceMailboxId, labelIds } };
+	if (labelIds) {
+		// Dropping a message on a label from a view that names no folder
+		// (Starred, Search, the sidebar) only adds the label: the message
+		// keeps the folders it is in. Leaving "wherever it is" is for moves
+		// into a folder, where staying put would mean a copy.
+		if (!sourceMailboxId && labelIds.has(targetMailboxId)) return {};
+		return { leave: { from: sourceMailboxId, labelIds } };
+	}
 	return {
 		remove: sourceMailboxId && sourceMailboxId !== targetMailboxId ? [sourceMailboxId] : []
 	};
