@@ -5,6 +5,8 @@ import { botUsername, telegramConfigured, TelegramError } from '$lib/server/tele
 import { sendTestAlert } from '$lib/server/telegram/notifier';
 import { createLinkCode, getLink, setLinkFlags, unlink } from '$lib/server/telegram/store';
 import { errorFields, logEvent } from '$lib/server/log';
+import { listAccounts } from '$lib/server/auth/accounts';
+import { jevBlock } from '$lib/server/jev/reach';
 
 /** The agent's Telegram bot: link a chat, unlink it, switch alerts on or off, send a test. */
 
@@ -16,7 +18,10 @@ export const GET: RequestHandler = async ({ locals }) => {
 		linked: !!link,
 		username: link?.username ?? null,
 		urgent: link?.urgent ?? false,
-		paused: link?.paused ?? false
+		paused: link?.paused ?? false,
+		// Urgency is Jev's call, so an account Jev doesn't read never alerts,
+		// whatever the Urgent mail switch says.
+		accounts: listAccounts(locals.user.id).map((account) => ({ email: account.email, blocked: jevBlock(account) }))
 	});
 };
 
