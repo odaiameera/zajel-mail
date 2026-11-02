@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { aiSettings, chosenProvider } from './settings';
 
 export type MailAssistantAction = 'summarize' | 'answer' | 'draft';
 
@@ -39,11 +40,18 @@ const DEFAULT_OPENAI_MODEL = 'gpt-5.6-terra';
 
 export type AIProvider = 'openai' | 'ollama';
 
-/** OpenAI when its key is set, otherwise the Ollama endpoint, if any. */
+/**
+ * The provider chosen in Settings → Agent when it is OpenAI or Ollama, else
+ * the one AI_PROVIDER names, else OpenAI when its key is set, otherwise the
+ * Ollama endpoint, if any.
+ */
 export function aiProvider(): AIProvider | null {
+	const chosen = chosenProvider();
+	if (chosen === 'openai' || chosen === 'ollama') return chosen;
+	const ollama = !!(env.OLLAMA_API_KEY || env.OLLAMA_URL);
+	if (env.AI_PROVIDER?.trim().toLowerCase() === 'ollama' && ollama) return 'ollama';
 	if (env.OPENAI_API_KEY) return 'openai';
-	if (env.OLLAMA_API_KEY || env.OLLAMA_URL) return 'ollama';
-	return null;
+	return ollama ? 'ollama' : null;
 }
 
 export function mailAssistantConfigured(): boolean {
@@ -58,13 +66,9 @@ export function aiEndpoint(): string {
 
 /** Model sent with every chat and extraction request. */
 export function aiModel(): string {
-	if (aiProvider() === 'openai') return env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
-	return env.OLLAMA_MODEL || DEFAULT_AI_MODEL;
-}
-
-/** The variable that picks the model, for messages telling the operator to change it. */
-function modelVariable(): string {
-	return aiProvider() === 'openai' ? 'OPENAI_MODEL' : 'OLLAMA_MODEL';
+	const chosen = aiSettings();
+	if (aiProvider() === 'openai') return chosen.openaiModel || env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+	return chosen.ollamaModel || env.OLLAMA_MODEL || DEFAULT_AI_MODEL;
 }
 
 function chatPath(): string {
@@ -84,7 +88,7 @@ function authHeader(): Record<string, string> {
 export function upstreamErrorMessage(status: number): string {
 	if (status === 401 || status === 403) return 'The AI service rejected its API key';
 	if (status === 404 || status === 410) {
-		return `The AI service does not serve the model "${aiModel()}" (${status}) — set ${modelVariable()} to a model your endpoint currently provides`;
+		return `The AI service does not serve the model "${aiModel()}" (${status}) — choose another in Settings → Agent`;
 	}
 	if (status === 429) {
 		return 'The AI service is rate limiting this account — wait a moment and try again';
@@ -133,7 +137,7 @@ export async function logUpstreamFailure(status: number, detail: string): Promis
 	const available = await listAvailableModels();
 	console.warn(
 		available.length
-			? `[ai] ${aiEndpoint()} serves: ${available.join(', ')} — set OLLAMA_MODEL to one of these`
+			? `[ai] ${aiEndpoint()} serves: ${available.join(', ')} — choose one in Settings → Agent`
 			: `[ai] could not list models from ${aiEndpoint()}/api/tags — check OLLAMA_URL and OLLAMA_API_KEY`
 	);
 }

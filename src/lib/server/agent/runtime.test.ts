@@ -10,11 +10,14 @@ const mocks = vi.hoisted(() => ({
 	updateEmailMailboxes: vi.fn(),
 	sendEmail: vi.fn(),
 	getEmailDetail: vi.fn(),
-	runChat: vi.fn(async () => 'Thanks, Thursday works for me.')
+	runChat: vi.fn(async () => 'Thanks, Thursday works for me.'),
+	claudeConfigured: true
 }));
 
 vi.mock('$lib/server/ai/claude', () => ({
 	agentModel: () => 'claude-opus-5-5',
+	agentEffort: () => 'medium',
+	claudeConfigured: () => mocks.claudeConfigured,
 	claudeClient: () => ({ beta: { messages: { create: mocks.create } } }),
 	claudeError: (err: unknown) => err,
 	FALLBACK_BETA: 'server-side-fallback-2026-07-01',
@@ -266,6 +269,16 @@ describe('runAgentTurn', () => {
 		expect(inputProblem(schema, { ...ok, kind: 'c' })).toContain('input.kind must be one of');
 		expect(inputProblem(schema, { ...ok, ids: [1] })).toBe('input.ids[0] must be string, not integer');
 		expect(inputProblem(schema, { ...ok, occurrence: 3 })).toContain('input.occurrence must be');
+	});
+
+	it('won’t run while another provider is chosen, so a job can’t send mail to Claude', async () => {
+		mocks.claudeConfigured = false;
+		try {
+			await expect(runAgentTurn(turn({ source: 'job' }))).rejects.toThrow('The agent needs Claude as the provider');
+			expect(mocks.create).not.toHaveBeenCalled();
+		} finally {
+			mocks.claudeConfigured = true;
+		}
 	});
 
 	it('keeps the outward tools strict', async () => {

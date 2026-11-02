@@ -2,7 +2,9 @@
 	import { onMount } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import SettingRow from '$lib/components/settings/SettingRow.svelte';
+	import Select from '$lib/components/settings/Select.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
+	import { fetchWithStepUp } from '$lib/auth/step-up';
 
 	interface Job {
 		id: string;
@@ -14,11 +16,15 @@
 		lastRunAt: string | null;
 		lastResult: string | null;
 	}
+	type Provider = 'anthropic' | 'openai' | 'ollama';
 	interface Assistant {
-		provider: 'anthropic' | 'openai' | 'ollama' | null;
+		provider: Provider | null;
+		available: Provider[];
 		agentModel: string | null;
 		writerModel: string | null;
+		agentEffort: 'low' | 'medium' | 'high' | null;
 	}
+	type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 	interface Activity {
 		tool: string;
 		tier: string;
@@ -29,6 +35,13 @@
 	}
 
 	let assistant = $state<Assistant | null>(null);
+	let models = $state<{ id: string; name: string }[]>([]);
+	// Which setting is saving, so its own row shows it.
+	let saving = $state<{ key: string; state: SaveState; error?: string } | null>(null);
+	// Bumped when a save doesn't happen, so the pickers redraw with the saved
+	// values instead of keeping the one that was picked.
+	let pickers = $state(0);
+	let modelsFor: Provider | null = null;
 	let checking = $state(false);
 	let check = $state<{ ok: boolean; error?: string } | null>(null);
 	let paused = $state(false);
@@ -40,7 +53,9 @@
 		const res = await fetch('/api/agent');
 		if (!res.ok) return;
 		const data = await res.json();
+		const providerChanged = data.assistant?.provider !== assistant?.provider;
 		assistant = data.assistant;
+		if (providerChanged && assistant?.provider) void loadModels(assistant.provider);
 		paused = data.paused;
 		jobs = data.jobs;
 		activity = data.activity;
@@ -55,6 +70,59 @@
 		});
 		await load();
 	}
+
+	async function loadModels(provider: Provider) {
+		// The old provider's models must never be offered for the new one.
+		models = [];
+		modelsFor = provider;
+		const res = await fetch(`/api/agent/models?provider=${provider}`).catch(() => null);
+		const list = res?.ok ? (await res.json()).models : [];
+		if (modelsFor === provider) models = list;
+	}
+
+	async function save(key: string, value: string) {
+		saving = { key, state: 'saving' };
+		let res: Response;
+		let data: { stepUp?: boolean; message?: string; error?: string } & Assistant;
+		try {
+			res = await fetchWithStepUp('/api/agent/assistant', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ [key]: value })
+			});
+			data = await res.json().catch(() => null);
+		} catch {
+			saving = { key, state: 'error', error: 'That didn’t save' };
+			pickers += 1;
+			return;
+		}
+		if (!res.ok) {
+			// A cancelled re-check leaves things as they were.
+			saving = data?.stepUp ? null : { key, state: 'error', error: data?.message ?? data?.error ?? 'That didn’t save' };
+			pickers += 1;
+			return;
+		}
+		const providerChanged = data.provider !== assistant?.provider;
+		assistant = data;
+		check = null;
+		saving = { key, state: 'saved' };
+		if (providerChanged && data.provider) await loadModels(data.provider);
+	}
+
+	const rowState = (key: string): SaveState => (saving?.key === key ? saving.state : 'idle');
+
+	/** The listed models, with the one in use first if the list doesn't have it. */
+	function modelOptions(current: string | null): { value: string; label: string }[] {
+		const options = models.map((m) => ({ value: m.id, label: m.name }));
+		if (current && !options.some((o) => o.value === current)) options.unshift({ value: current, label: modelName(current) });
+		return options;
+	}
+
+	const EFFORTS = [
+		{ value: 'low', label: 'Low' },
+		{ value: 'medium', label: 'Medium' },
+		{ value: 'high', label: 'High' }
+	];
 
 	async function runCheck() {
 		checking = true;
@@ -101,24 +169,51 @@
 {#if assistant}
 	<section class="mb-8">
 		<h2 class="text-sm font-medium text-text mb-1">Assistant</h2>
-		<SettingRow title="Provider">
-			{#snippet control()}
-				<span class="text-sm text-text-secondary">{assistant?.provider ? PROVIDER[assistant.provider] : 'Off'}</span>
-			{/snippet}
-		</SettingRow>
-		{#if assistant.provider && assistant.agentModel}
-			<SettingRow title={assistant.writerModel === assistant.agentModel ? 'Model' : 'Agent model'}>
+		{#if !assistant.available.length}
+			<SettingRow title="Provider">
 				{#snippet control()}
-					<span class="text-sm text-text-secondary" title={assistant?.agentModel}>{modelName(assistant?.agentModel ?? '')}</span>
+					<span class="text-sm text-text-secondary">Off</span>
 				{/snippet}
 			</SettingRow>
-			{#if assistant.writerModel && assistant.writerModel !== assistant.agentModel}
-				<SettingRow title="Writing model">
+		{:else}
+		{#key pickers}
+			<SettingRow title="Provider" state={rowState('provider')} errorMessage={saving?.error}>
+				{#snippet control()}
+					<Select
+						ariaLabel="Provider"
+						value={assistant?.provider ?? ''}
+						options={[
+							...(assistant?.provider ? [] : [{ value: '', label: 'Off' }]),
+							...(assistant?.available ?? []).map((p) => ({ value: p, label: PROVIDER[p] }))
+						]}
+						onchange={(next) => save('provider', next)}
+					/>
+				{/snippet}
+			</SettingRow>
+			{#if assistant.provider === 'anthropic'}
+				<SettingRow title="Agent model" state={rowState('agentModel')} errorMessage={saving?.error}>
 					{#snippet control()}
-						<span class="text-sm text-text-secondary" title={assistant?.writerModel}>{modelName(assistant?.writerModel ?? '')}</span>
+						<Select ariaLabel="Agent model" value={assistant?.agentModel ?? ''} options={modelOptions(assistant?.agentModel ?? null)} onchange={(next) => save('agentModel', next)} />
+					{/snippet}
+				</SettingRow>
+				<SettingRow title="Writing model" state={rowState('writerModel')} errorMessage={saving?.error}>
+					{#snippet control()}
+						<Select ariaLabel="Writing model" value={assistant?.writerModel ?? ''} options={modelOptions(assistant?.writerModel ?? null)} onchange={(next) => save('writerModel', next)} />
+					{/snippet}
+				</SettingRow>
+				<SettingRow title="Agent effort" state={rowState('agentEffort')} errorMessage={saving?.error}>
+					{#snippet control()}
+						<Select ariaLabel="Agent effort" value={assistant?.agentEffort ?? 'medium'} options={EFFORTS} onchange={(next) => save('agentEffort', next)} />
+					{/snippet}
+				</SettingRow>
+			{:else if assistant.provider}
+				<SettingRow title="Model" state={rowState('model')} errorMessage={saving?.error}>
+					{#snippet control()}
+						<Select ariaLabel="Model" value={assistant?.agentModel ?? ''} options={modelOptions(assistant?.agentModel ?? null)} onchange={(next) => save('model', next)} />
 					{/snippet}
 				</SettingRow>
 			{/if}
+		{/key}
 			<SettingRow title="Connection" state={check && !check.ok ? 'error' : 'idle'} errorMessage={check?.error}>
 				{#snippet control()}
 					{#if check?.ok}
