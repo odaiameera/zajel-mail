@@ -129,7 +129,10 @@ function sentence(text: string): string {
 /**
  * What the browser is told when Claude fails. The provider's own message goes
  * to the server log only, as with the other providers; a limit's message is
- * the exception, since it names the limit and when access returns.
+ * the exception, since it names the limit and when access returns. Rate
+ * limits, overloads and network trouble are marked transient; a bad key or
+ * model, or a spend limit (which lasts until it is lifted), is not, so a
+ * scheduled job that hits one fails and says so.
  */
 export function claudeError(err: unknown): MailAssistantError {
 	logEvent('error', 'ai', 'claude_error', claudeErrorFields(err));
@@ -161,22 +164,23 @@ export function claudeError(err: unknown): MailAssistantError {
 			`The AI service is rate limiting this account${limit ? `: ${limit}` : ''} — ${
 				wait > 0 ? `try again in ${Math.ceil(wait)} s` : 'wait a moment and try again'
 			}`,
-			502
+			502,
+			true
 		);
 	}
 	// An abort is the turn's own deadline running out, retries included.
 	if (err instanceof Anthropic.APIConnectionTimeoutError || err instanceof Anthropic.APIUserAbortError) {
-		return new MailAssistantError('The assistant took too long to respond', 502);
+		return new MailAssistantError('The assistant took too long to respond', 502, true);
 	}
 	if (err instanceof Anthropic.APIConnectionError) {
-		return new MailAssistantError('Could not reach the assistant', 502);
+		return new MailAssistantError('Could not reach the assistant', 502, true);
 	}
 	if (err instanceof Anthropic.APIError && (err.status === 529 || err.type === 'overloaded_error')) {
-		return new MailAssistantError('Claude is overloaded right now — try again in a few minutes', 502);
+		return new MailAssistantError('Claude is overloaded right now — try again in a few minutes', 502, true);
 	}
 	if (err instanceof Anthropic.APIError) {
 		console.warn(`[ai] Claude ${err.status}: ${err.message.slice(0, 300)}`);
-		return new MailAssistantError(`The AI service returned an error (${err.status ?? 'unknown'})`, 502);
+		return new MailAssistantError(`The AI service returned an error (${err.status ?? 'unknown'})`, 502, (err.status ?? 0) >= 500);
 	}
 	return new MailAssistantError('The assistant failed', 502);
 }

@@ -22,7 +22,8 @@ what.kind:
 - "digest": a short Telegram summary of unread Inbox mail; scope "important_unread" (Jev's Important tab) or "unread".
 - "tidy": mark read or archive mail older than older_than_hours in the Updates, Newsletters or Promotions tabs (never starred mail).
 - "agent": an instruction you will carry out each time, with reversible tools only (no sending, no invitations).
-when.kind: "once" (at = local "YYYY-MM-DDTHH:mm"), "hourly", "daily" or "weekdays" (at = "HH:mm"), "weekly" (at = "HH:mm", day 0 = Sunday).`,
+when.kind: "once" (at = local "YYYY-MM-DDTHH:mm"), "hourly", "daily" or "weekdays" (at = "HH:mm"; weekdays is Monday to Friday), "days" (at = "HH:mm", days = the days it runs, 0 = Sunday), "weekly" (at = "HH:mm", day 0 = Sunday).
+For working days, use "days" with the days the user works, e.g. [0,1,2,3,4] for a Sunday-to-Thursday week; use "weekdays" only for Monday to Friday.`,
 	input_schema: schema({
 		title: { type: 'string' },
 		what: schema({
@@ -34,9 +35,12 @@ when.kind: "once" (at = local "YYYY-MM-DDTHH:mm"), "hourly", "daily" or "weekday
 			instructions: { type: ['string', 'null'] }
 		}),
 		when: schema({
-			kind: { type: 'string', enum: ['once', 'hourly', 'daily', 'weekdays', 'weekly'] },
+			kind: { type: 'string', enum: ['once', 'hourly', 'daily', 'weekdays', 'days', 'weekly'] },
 			at: { type: ['string', 'null'] },
-			day: { type: ['integer', 'null'] }
+			day: { type: ['integer', 'null'] },
+			// An empty list for the other kinds: a nullable list would add a
+			// union-typed parameter to the strict budget (see agent/runtime.ts).
+			days: { type: 'array', items: { type: 'integer' } }
 		})
 	}),
 	async run(ctx, input) {
