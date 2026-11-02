@@ -49,7 +49,7 @@ function cookieJar(initial: Record<string, string> = {}) {
 	};
 }
 
-async function run(action: 'default' | 'code', fields: Record<string, string>, cookies = cookieJar()) {
+async function run(action: 'password' | 'code', fields: Record<string, string>, cookies = cookieJar()) {
 	const body = new FormData();
 	for (const [key, value] of Object.entries(fields)) body.set(key, value);
 	try {
@@ -57,7 +57,7 @@ async function run(action: 'default' | 'code', fields: Record<string, string>, c
 			request: new Request('http://localhost/login', { method: 'POST', body }),
 			cookies,
 			getClientAddress: () => IP
-		} as unknown as Parameters<typeof actions.default>[0]);
+		} as unknown as Parameters<typeof actions.password>[0]);
 		return { result: result as Result, cookies };
 	} catch (thrown) {
 		if (isRedirect(thrown)) return { redirect: thrown.location, cookies };
@@ -75,14 +75,14 @@ beforeEach(() => {
 
 describe('password step', () => {
 	it('counts a wrong password against the email and IP, and against the IP alone', async () => {
-		const { result } = await run('default', { email: 'me@example.test', password: 'nope' });
+		const { result } = await run('password', { email: 'me@example.test', password: 'nope' });
 		expect(result?.status).toBe(401);
 		expect(mocks.recordFailure).toHaveBeenCalledWith('me@example.test', IP);
 		expect(mocks.recordIpFailure).toHaveBeenCalledWith(IP);
 	});
 
 	it('turns away an email longer than any address, before checking anything', async () => {
-		const { result } = await run('default', { email: 'x'.repeat(255), password: 'secret' });
+		const { result } = await run('password', { email: 'x'.repeat(255), password: 'secret' });
 		expect(result?.status).toBe(400);
 		expect(result?.data.email).toBe('');
 		expect(mocks.verifyUserPassword).not.toHaveBeenCalled();
@@ -91,14 +91,14 @@ describe('password step', () => {
 
 	it('stops while the address is locked out, whatever email it tries', async () => {
 		mocks.isIpLockedOut.mockReturnValue(true);
-		const { result } = await run('default', { email: 'other@example.test', password: 'x' });
+		const { result } = await run('password', { email: 'other@example.test', password: 'x' });
 		expect(result?.status).toBe(429);
 		expect(mocks.verifyUserPassword).not.toHaveBeenCalled();
 	});
 
 	it('signs straight in when no second factor is set up, unverified', async () => {
 		mocks.verifyUserPassword.mockResolvedValue({ id: 'u1', email: 'me@example.test' });
-		const { redirect, cookies } = await run('default', { email: 'me@example.test', password: 'right' });
+		const { redirect, cookies } = await run('password', { email: 'me@example.test', password: 'right' });
 		expect(redirect).toBe('/inbox');
 		expect(mocks.createAppSession).toHaveBeenCalledWith('u1', undefined, IP, false);
 		expect(cookies.jar.get('session')).toBe('session-1');
@@ -107,7 +107,7 @@ describe('password step', () => {
 	it('asks for the second step instead of signing in when one is set up', async () => {
 		mocks.verifyUserPassword.mockResolvedValue({ id: 'u1', email: 'me@example.test' });
 		mocks.hasSecondFactor.mockReturnValue(true);
-		const { result, cookies } = await run('default', { email: 'me@example.test', password: 'right' });
+		const { result, cookies } = await run('password', { email: 'me@example.test', password: 'right' });
 		expect(result).toMatchObject({ secondStep: true, totp: true });
 		expect(cookies.jar.get('mfa')).toBe('challenge-1');
 		expect(cookies.jar.has('session')).toBe(false);
