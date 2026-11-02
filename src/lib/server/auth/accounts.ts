@@ -48,7 +48,9 @@ function prepareStmts() {
 		),
 		listAll: db.prepare(`SELECT * FROM mail_accounts ORDER BY sort_order, created_at`),
 		get: db.prepare(`SELECT * FROM mail_accounts WHERE id = ?`),
-		byEmail: db.prepare(`SELECT * FROM mail_accounts WHERE email = ?`),
+		// Scoped to the login: re-linking refreshes only an account this
+		// login already has, never another login's row with the same address.
+		byEmailForUser: db.prepare(`SELECT * FROM mail_accounts WHERE email = ? AND user_id = ?`),
 		remove: db.prepare(`DELETE FROM mail_accounts WHERE id = ? AND user_id = ?`),
 		maxSort: db.prepare(
 			`SELECT COALESCE(MAX(sort_order), -1) AS m FROM mail_accounts WHERE user_id = ?`
@@ -68,6 +70,15 @@ function prepareStmts() {
 			`UPDATE mail_accounts
 			 SET secret_enc = ?, jmap_account_id = ?, needs_reauth = 0, last_verified_at = datetime('now')
 			 WHERE id = ?`
+		),
+		// A re-link that verified against another server moves the account
+		// there too; keeping the old URL with the new server's account id
+		// broke the account until the next re-auth.
+		relink: db.prepare(
+			`UPDATE mail_accounts
+			 SET secret_enc = ?, jmap_account_id = ?, server_url = ?, needs_reauth = 0,
+			     last_verified_at = datetime('now')
+			 WHERE id = ? AND user_id = ?`
 		)
 	};
 }
@@ -124,11 +135,11 @@ export async function linkAccount(opts: {
 	const email = opts.email.trim().toLowerCase();
 	const auth = await authenticate(opts.serverUrl, email, opts.password);
 
-	const existing = stmts().byEmail.get(email) as MailAccountRow | undefined;
+	const existing = stmts().byEmailForUser.get(email, opts.userId) as MailAccountRow | undefined;
 	if (existing) {
 		// Re-linking an existing account refreshes its credentials in place.
-		stmts().updateSecret.run(encryptSecret(opts.password), auth.accountId, existing.id);
-		return toPublic({ ...existing, needs_reauth: 0 });
+		stmts().relink.run(encryptSecret(opts.password), auth.accountId, opts.serverUrl, existing.id, opts.userId);
+		return toPublic({ ...existing, server_url: opts.serverUrl, needs_reauth: 0 });
 	}
 
 	const id = randomUUID();

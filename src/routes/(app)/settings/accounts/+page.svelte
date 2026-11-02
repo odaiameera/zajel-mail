@@ -141,7 +141,7 @@
 		addBusy = true;
 		addError = null;
 		try {
-			const res = await fetch('/api/accounts', {
+			const res = await fetchWithStepUp('/api/accounts', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
