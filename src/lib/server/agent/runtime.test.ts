@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 	updateEmailMailboxes: vi.fn(),
 	sendEmail: vi.fn(),
 	getEmailDetail: vi.fn(),
+	createEvent: vi.fn(async () => ({ id: 'ev-new' })),
 	runChat: vi.fn(async () => 'Thanks, Thursday works for me.'),
 	claudeConfigured: true,
 	logEvent: vi.fn()
@@ -54,7 +55,11 @@ vi.mock('$lib/server/ai/chat', () => ({ runChat: mocks.runChat }));
 vi.mock('$lib/server/identity-resolve', () => ({
 	resolveIdentity: () => ({ id: 'ident-1', email: 'me@example.test', name: 'Me' })
 }));
-vi.mock('$lib/server/calendar/service', () => ({ getEventsInRange: vi.fn() }));
+vi.mock('$lib/server/calendar/service', () => ({
+	getEventsInRange: vi.fn(),
+	createEvent: mocks.createEvent,
+	listCalendarsWithMeta: async () => [{ id: 'default', name: 'Personal', isDefault: true }]
+}));
 vi.mock('$lib/server/db/queries/reminders', () => ({ scheduleReminder: vi.fn() }));
 vi.mock('$lib/server/db/queries/jev-decisions', () => ({ getDecision: () => null }));
 
@@ -224,12 +229,12 @@ describe('runAgentTurn', () => {
 		const first = await runAgentTurn(turn());
 		expect(first.message).toBe('Here you go');
 		expect(strictIn(0)).toEqual(expect.arrayContaining(['send_email', 'mark_read']));
-		expect(strictIn(1).sort()).toEqual(['delete_event', 'schedule_job', 'send_email']);
+		expect(strictIn(1).sort()).toEqual(['create_event', 'delete_event', 'schedule_job', 'send_email']);
 
 		// The next turn starts from the form that worked.
 		await runAgentTurn(turn());
 		expect(mocks.create).toHaveBeenCalledTimes(3);
-		expect(strictIn(2).sort()).toEqual(['delete_event', 'schedule_job', 'send_email']);
+		expect(strictIn(2).sort()).toEqual(['create_event', 'delete_event', 'schedule_job', 'send_email']);
 	});
 
 	it('drops strict altogether when the outward tools alone are refused too', async () => {
@@ -413,6 +418,56 @@ describe('runAgentTurn', () => {
 		expect(result.pending).toEqual([]);
 		const results = mocks.create.mock.calls[1][0].messages[2].content;
 		expect(results[0]).toMatchObject({ is_error: true, content: 'No such tool' });
+	});
+
+	const dentist = toolUse('t1', 'create_event', {
+		title: 'Dentist',
+		start: '2026-11-03T10:00',
+		end: '2026-11-03T11:00',
+		all_day: false,
+		location: null,
+		description: 'Bring the forms',
+		attendees: [],
+		calendar_id: null
+	});
+
+	it('adds a calendar event only after a click, like sending', async () => {
+		mocks.create
+			.mockResolvedValueOnce(reply([dentist]))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'The event is waiting for you.' }], 'end_turn'));
+		const result = await runAgentTurn(turn());
+		expect(mocks.createEvent).not.toHaveBeenCalled();
+		expect(result.done).toEqual([]);
+		expect(result.pending).toHaveLength(1);
+		expect(result.pending[0]).toMatchObject({
+			kind: 'create_event',
+			status: 'pending',
+			payload: { title: 'Dentist', description: 'Bring the forms', attendees: [] }
+		});
+		expect(listAudit(USER).map((e) => [e.tool, e.tier, e.outcome])).toEqual([['create_event', 'outward', 'proposed']]);
+	});
+
+	it('never adds a calendar event from an unattended run, even if the model asks', async () => {
+		mocks.create
+			.mockResolvedValueOnce(reply([dentist]))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+		const result = await runAgentTurn(turn({ source: 'job' }));
+		expect(mocks.create.mock.calls[0][0].tools.map((t: { name: string }) => t.name)).not.toContain('create_event');
+		expect(mocks.createEvent).not.toHaveBeenCalled();
+		expect(result.pending).toEqual([]);
+		expect(mocks.create.mock.calls[1][0].messages[2].content[0]).toMatchObject({ is_error: true, content: 'No such tool' });
+	});
+
+	it('refuses a snooze at a time that doesn’t exist instead of rolling it over', async () => {
+		mocks.create
+			.mockResolvedValueOnce(reply([toolUse('t1', 'snooze', { email_id: 'e2', until: '2026-11-31T09:00' })]))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+		await runAgentTurn(turn());
+		expect(mocks.create.mock.calls[1][0].messages[2].content[0]).toMatchObject({
+			is_error: true,
+			content: expect.stringContaining('2026-11-31T09:00')
+		});
+		expect(mocks.getEmailDetail).not.toHaveBeenCalled();
 	});
 
 	it('fences email content as untrusted, so it cannot close the fence itself', async () => {

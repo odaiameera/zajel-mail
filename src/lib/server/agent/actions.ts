@@ -83,7 +83,12 @@ const EXECUTORS: Record<string, Executor> = {
 		const account = ownAccount(action);
 		if (!draft || !account) return { success: false, message: 'That event can no longer be added' };
 		await createDraftedEvent(authStateForAccount(account), account.email, action.userId, draft);
-		return { success: true, message: `Added “${draft.title}” and invited ${draft.attendees.join(', ')}` };
+		return {
+			success: true,
+			message: draft.attendees.length
+				? `Added “${draft.title}” and invited ${draft.attendees.join(', ')}`
+				: `Added “${draft.title}” to ${draft.calendarName || 'the calendar'}`
+		};
 	},
 
 	async create_job(action) {
@@ -176,16 +181,21 @@ export function pendingView(action: PendingAction): PendingView {
 			};
 		case 'create_event': {
 			const draft = asEventDraft(p);
+			const attendees = list(p.attendees);
 			return {
 				...base,
-				label: 'Send invitations',
+				label: attendees.length ? 'Send invitations' : 'Add event',
 				title: String(p.title ?? ''),
 				lines: [
 					...(draft ? [describeWhen(draft)] : []),
+					...(p.calendarName ? [`In ${String(p.calendarName)}`] : []),
 					...(p.location ? [String(p.location)] : []),
-					`Invite ${list(p.attendees).join(', ')}`
+					...(attendees.length ? [`Invite ${attendees.join(', ')}`] : [])
 				],
-				confirmLabel: 'Add and invite'
+				// Everything the attendees will read is on the card: the
+				// description goes into the invitation, so it is shown whole.
+				body: p.description ? String(p.description) : null,
+				confirmLabel: attendees.length ? 'Add and invite' : 'Add to calendar'
 			};
 		}
 		case 'create_job': {

@@ -7,18 +7,20 @@ import {
 	listCalendarsWithMeta
 } from '$lib/server/calendar/service';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
+import { parseLocalDate, parseLocalTime } from './local-time';
 import { createPendingAction } from './store';
 import type { AgentTool, ToolContext } from './tools';
 
 /**
- * Calendar tools. An event with nobody else on it is created straight away:
- * it touches only your calendar and deleting it undoes it. Inviting people
- * sends them mail, and deleting can't be undone, so both wait for a click.
+ * Calendar tools. Adding an event changes the calendar (and, with attendees,
+ * sends them invitations), and deleting one can't be undone, so both wait
+ * for a click: the card shows exactly what will happen, and only a
+ * conversation the user is in can propose either.
  */
 
 const ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
-const LOCAL_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
-const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** The description goes out in the invitation, so it is kept short enough to read on the card. */
+const DESCRIPTION_MAX = 1000;
 
 function schema(properties: Record<string, unknown>, required: string[] = Object.keys(properties)) {
 	return { type: 'object', properties, required, additionalProperties: false };
@@ -26,6 +28,12 @@ function schema(properties: Record<string, unknown>, required: string[] = Object
 
 function str(value: unknown, max = 500): string {
 	return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+/** `value` cut to `max` characters, ending in an ellipsis when it was longer. */
+function cut(value: unknown, max: number): string {
+	const text = str(value, max + 1);
+	return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
 export interface EventDraft {
@@ -47,10 +55,13 @@ async function draftEvent(ctx: ToolContext, input: Record<string, unknown>): Pro
 	const allDay = input.all_day === true;
 	const start = str(input.start, 20);
 	const end = str(input.end, 20);
-	const shape = allDay ? LOCAL_DATE : LOCAL_TIME;
 	if (!title) return { error: 'The event needs a title' };
-	if (!shape.test(start) || !shape.test(end)) {
-		return { error: allDay ? 'All-day start and end are YYYY-MM-DD' : 'Start and end are local times, YYYY-MM-DDTHH:mm' };
+	// A moment that exists, not just the right shape: "2026-11-31T09:00"
+	// would otherwise be written as 1 December without anyone noticing.
+	const parse = allDay ? parseLocalDate : parseLocalTime;
+	const unreal = [start, end].find((value) => !parse(value));
+	if (unreal !== undefined) {
+		return { error: `“${unreal}” is not a real ${allDay ? 'date; all-day start and end are YYYY-MM-DD' : 'local time; start and end are YYYY-MM-DDTHH:mm'}` };
 	}
 	if (end <= start) return { error: 'The end must be after the start' };
 	const attendees = (Array.isArray(input.attendees) ? input.attendees : [])
@@ -73,7 +84,7 @@ async function draftEvent(ctx: ToolContext, input: Record<string, unknown>): Pro
 		end,
 		timeZone: ctx.timeZone,
 		location: str(input.location, 300),
-		description: str(input.description, 4000),
+		description: cut(input.description, DESCRIPTION_MAX),
 		attendees: [...new Set(attendees)].slice(0, 50)
 	};
 }
@@ -85,7 +96,7 @@ export function describeWhen(draft: Pick<EventDraft, 'allDay' | 'start' | 'end' 
 	return `${draft.start.replace('T', ' ')}–${end} (${draft.timeZone})`;
 }
 
-/** Create a checked draft in the calendar. Used straight away, or on confirm. */
+/** Create a confirmed draft in the calendar, from the account it was proposed in. */
 export async function createDraftedEvent(
 	auth: AuthState,
 	userEmail: string,
@@ -151,9 +162,9 @@ const searchCalendar: AgentTool = {
 
 const createEventTool: AgentTool = {
 	name: 'create_event',
-	tier: 'self',
+	tier: 'outward',
 	description:
-		'Add an event. Times are local to the user ("YYYY-MM-DDTHH:mm"; all-day: "YYYY-MM-DD", end exclusive). With no attendees it is added straight away. With attendees, nothing happens yet: the user confirms, and then the invitations go out.',
+		'Add an event. Times are local to the user ("YYYY-MM-DDTHH:mm"; all-day: "YYYY-MM-DD", end exclusive). Nothing is added by this call: the user sees the event on a card and confirms it, and with attendees the invitations go out then. Say so in your reply.',
 	input_schema: schema({
 		title: { type: 'string' },
 		start: { type: 'string' },
@@ -167,29 +178,20 @@ const createEventTool: AgentTool = {
 	async run(ctx, input) {
 		const draft = await draftEvent(ctx, input);
 		if ('error' in draft) return { content: draft.error, isError: true };
-		const when = describeWhen(draft);
-
-		// Invitations leave the account: they wait for a click, so only a
-		// conversation the user is in can propose them.
-		if (draft.attendees.length > 0 && ctx.source !== 'chat') {
-			return { content: 'Invitations need the user to confirm them in Zajel', isError: true };
-		}
-		if (draft.attendees.length > 0) {
-			const pending = createPendingAction({
-				userId: ctx.userId,
-				accountId: ctx.accountRowId,
-				conversationId: ctx.conversationId,
-				kind: 'create_event',
-				payload: { ...draft }
-			});
-			return {
-				content: `Waiting for the user to confirm “${draft.title}”, ${when}, with invitations to ${draft.attendees.join(', ')}. Nothing is in the calendar yet.`,
-				pending
-			};
-		}
-		await createDraftedEvent(ctx.auth, ctx.userEmail, ctx.userId, draft);
-		const done = `Added “${draft.title}” to ${draft.calendarName}, ${when}`;
-		return { content: `Done: ${done}.`, done };
+		// The card shows the stored payload as it is, so what the user reads is
+		// what is written, and what the attendees receive.
+		const pending = createPendingAction({
+			userId: ctx.userId,
+			accountId: ctx.accountRowId,
+			conversationId: ctx.conversationId,
+			kind: 'create_event',
+			payload: { ...draft }
+		});
+		const invites = draft.attendees.length ? `, with invitations to ${draft.attendees.join(', ')}` : '';
+		return {
+			content: `Waiting for the user to confirm “${draft.title}”, ${describeWhen(draft)}${invites}. Nothing is in the calendar yet.`,
+			pending
+		};
 	}
 };
 

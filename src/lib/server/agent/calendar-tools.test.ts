@@ -75,47 +75,74 @@ beforeEach(() => {
 });
 
 describe('create_event', () => {
-	it('adds an event with nobody else on it straight away, in the default calendar and the user’s zone', async () => {
-		const result = await tool('create_event').run(ctx(), event());
-		expect(result.done).toBe('Added “Dentist” to Personal, 2026-11-03 10:00–11:00 (Asia/Amman)');
-		expect(mocks.createEvent).toHaveBeenCalledWith(
-			{ accountId: 'jmap' },
-			'me@example.test',
-			expect.objectContaining({ calendarId: 'default', start: '2026-11-03T10:00', timeZone: 'Asia/Amman', attendees: [] }),
-			'Me'
-		);
-	});
-
-	it('waits for a click before anyone is invited, then adds it and lets the server invite', async () => {
-		const result = await tool('create_event').run(ctx(), event({ attendees: ['Dana@Example.test', 'me@example.test'] }));
+	it('writes nothing until the user clicks, even with nobody else on it; then adds it in the default calendar and the user’s zone', async () => {
+		expect(tool('create_event').tier).toBe('outward');
+		const result = await tool('create_event').run(ctx(), event({ description: 'Bring the forms' }));
 		expect(mocks.createEvent).not.toHaveBeenCalled();
-		expect(result.pending?.payload).toMatchObject({ attendees: ['dana@example.test'], title: 'Dentist' });
+		expect(result.done).toBeUndefined();
+		expect(result.content).toContain('Nothing is in the calendar yet');
 		expect(pendingView(result.pending!)).toMatchObject({
-			label: 'Send invitations',
-			lines: ['2026-11-03 10:00–11:00 (Asia/Amman)', 'Invite dana@example.test'],
-			confirmLabel: 'Add and invite'
+			label: 'Add event',
+			title: 'Dentist',
+			lines: ['2026-11-03 10:00–11:00 (Asia/Amman)', 'In Personal'],
+			body: 'Bring the forms',
+			confirmLabel: 'Add to calendar'
 		});
 
-		expect((await decidePendingAction('user-1', result.pending!.id, 'confirm')).status).toBe(200);
+		expect(await decidePendingAction('user-1', result.pending!.id, 'confirm')).toEqual({ status: 200, message: 'Added “Dentist” to Personal' });
 		expect(mocks.createEvent).toHaveBeenCalledWith(
 			{ accountId: 'jmap' },
 			'me@example.test',
-			expect.objectContaining({ attendees: [{ email: 'dana@example.test' }] }),
+			expect.objectContaining({ calendarId: 'default', start: '2026-11-03T10:00', timeZone: 'Asia/Amman', description: 'Bring the forms', attendees: [] }),
 			'Me'
 		);
 	});
 
-	it('refuses invitations from a run the user is not in', async () => {
-		const result = await tool('create_event').run(ctx('job'), event({ attendees: ['dana@example.test'] }));
-		expect(result.isError).toBe(true);
-		expect(result.pending).toBeUndefined();
+	it('shows every invitee and the whole description before anyone is invited, then adds it and lets the server invite', async () => {
+		const description = 'Agenda: <b>cleaning</b> & X-rays. '.repeat(40);
+		const result = await tool('create_event').run(
+			ctx(),
+			event({ attendees: ['Dana@Example.test', 'omar@example.test', 'me@example.test'], description, location: 'Room 2' })
+		);
 		expect(mocks.createEvent).not.toHaveBeenCalled();
+		const card = pendingView(result.pending!);
+		expect(card).toMatchObject({
+			label: 'Send invitations',
+			lines: ['2026-11-03 10:00–11:00 (Asia/Amman)', 'In Personal', 'Room 2', 'Invite dana@example.test, omar@example.test'],
+			confirmLabel: 'Add and invite'
+		});
+		// Cut to fit the card, with an ellipsis; the cut text is what is sent.
+		expect(card.body!.length).toBeLessThanOrEqual(1000);
+		expect(card.body!.endsWith('…')).toBe(true);
+		expect(card.body).toBe(result.pending!.payload.description);
+
+		expect((await decidePendingAction('user-1', result.pending!.id, 'confirm')).message).toBe(
+			'Added “Dentist” and invited dana@example.test, omar@example.test'
+		);
+		expect(mocks.createEvent).toHaveBeenCalledWith(
+			{ accountId: 'jmap' },
+			'me@example.test',
+			expect.objectContaining({ description: card.body, attendees: [{ email: 'dana@example.test' }, { email: 'omar@example.test' }] }),
+			'Me'
+		);
 	});
 
 	it('checks times and addresses', async () => {
 		expect((await tool('create_event').run(ctx(), event({ start: 'tomorrow 10am' }))).isError).toBe(true);
 		expect((await tool('create_event').run(ctx(), event({ end: '2026-11-03T09:00' }))).isError).toBe(true);
 		expect((await tool('create_event').run(ctx(), event({ attendees: ['not-an-address'] }))).isError).toBe(true);
+	});
+
+	it('refuses a date or time that doesn’t exist, naming it, instead of rolling it over', async () => {
+		for (const start of ['2026-11-31T09:00', '2026-13-05T09:00', '2027-02-29T09:00', '2026-11-03T24:00', '2026-11-03T09:60']) {
+			const result = await tool('create_event').run(ctx(), event({ start, end: '2027-12-31T23:59' }));
+			expect(result.isError, start).toBe(true);
+			expect(result.content).toContain(start);
+		}
+		expect((await tool('create_event').run(ctx(), event({ all_day: true, start: '2026-02-30', end: '2026-03-01' }))).content).toContain('2026-02-30');
+		// A leap day is real.
+		expect((await tool('create_event').run(ctx(), event({ all_day: true, start: '2028-02-29', end: '2028-03-01' }))).pending).toBeDefined();
+		expect(mocks.createEvent).not.toHaveBeenCalled();
 	});
 });
 

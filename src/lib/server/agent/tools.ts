@@ -10,7 +10,8 @@ import {
 import { ensureArchiveMailbox, ensureRemindMeLaterMailbox, getMailboxes } from '$lib/jmap/mailbox';
 import { categoryOf, INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
 import { labelMailboxIds } from '$lib/types/labels';
-import { parseWallClock, wallClockToUtc } from '$lib/server/calendar/tz';
+import { wallClockToUtc } from '$lib/server/calendar/tz';
+import { parseLocalTime } from './local-time';
 import { scheduleReminder } from '$lib/server/db/queries/reminders';
 import { getDecision } from '$lib/server/db/queries/jev-decisions';
 import { htmlToPromptText } from '$lib/server/ai/extract-event';
@@ -371,8 +372,9 @@ const snooze: AgentTool = {
 	input_schema: schema({ email_id: { type: 'string' }, until: { type: 'string' } }),
 	async run(ctx, input) {
 		const [id] = ids([input.email_id]);
-		const wall = parseWallClock(str(input.until, 20));
-		if (!id || !wall) return { content: 'email_id or until is not valid', isError: true };
+		if (!id) return { content: 'email_id is not valid', isError: true };
+		const wall = parseLocalTime(input.until);
+		if (!wall) return { content: `until “${str(input.until, 20)}” is not a real local time; use YYYY-MM-DDTHH:mm`, isError: true };
 		const at = wallClockToUtc(wall, ctx.timeZone);
 		if (at <= Date.now()) return { content: 'until must be in the future', isError: true };
 		const boxes = await ctx.mailboxes();
@@ -435,9 +437,10 @@ const remindMe: AgentTool = {
 		if (!telegramConfigured()) return { content: 'Telegram isn’t set up on this server', isError: true };
 		if (!getLink(ctx.userId)) return { content: 'The user hasn’t linked Telegram yet (Settings → Notifications)', isError: true };
 		const text = str(input.text, 500);
-		const wall = parseWallClock(str(input.at, 20));
 		const [emailId] = ids([input.email_id]);
-		if (!text || !wall) return { content: 'text and at are required', isError: true };
+		if (!text) return { content: 'text is required', isError: true };
+		const wall = parseLocalTime(input.at);
+		if (!wall) return { content: `at “${str(input.at, 20)}” is not a real local time; use YYYY-MM-DDTHH:mm`, isError: true };
 		const at = wallClockToUtc(wall, ctx.timeZone);
 		if (at <= Date.now()) return { content: 'at must be in the future', isError: true };
 		addReminder({
