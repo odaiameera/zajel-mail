@@ -22,15 +22,18 @@ import { sveltekit } from '@sveltejs/kit/vite';
 
 const root = join(import.meta.dirname, '..', '..');
 
-// Scratch database (src/test-setup.ts); the server reads the same env.
-process.env.WEBMAIL_SECRET ??= 'form-actions-smoke-test-secret-0123456789abcdef';
-delete process.env.ORIGIN;
+// Scratch database (src/test-setup.ts); the server reads the same env. The
+// secret and ORIGIN are set in beforeAll and put back in afterAll, so the
+// next test file in this worker sees the env it expects.
+const savedEnv = { WEBMAIL_SECRET: process.env.WEBMAIL_SECRET, ORIGIN: process.env.ORIGIN };
 
 let vite: ViteDevServer;
 let http: Server;
 let base = '';
 
 beforeAll(async () => {
+	process.env.WEBMAIL_SECRET ??= 'form-actions-smoke-test-secret-0123456789abcdef';
+	delete process.env.ORIGIN;
 	vite = await createViteServer({
 		root,
 		configFile: false,
@@ -49,6 +52,10 @@ beforeAll(async () => {
 afterAll(async () => {
 	await new Promise((resolve) => http?.close(resolve));
 	await vite?.close();
+	for (const [key, value] of Object.entries(savedEnv)) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
 });
 
 /** `session=...` from a response's Set-Cookie, for the next request. */
@@ -102,6 +109,8 @@ function pageServerFiles(dir: string): string[] {
 
 const EMAIL = 'smoke@example.test';
 const PASSWORD = 'correct horse battery';
+/** The session from the real sign-in, reused below. */
+let session: string | null = null;
 
 describe('form actions through SvelteKit', () => {
 	it('covers every page that has actions', () => {
@@ -134,21 +143,23 @@ describe('form actions through SvelteKit', () => {
 	}, 60_000);
 
 	it('login, with each named action', async () => {
+		// The real sign-in first: the wrong-password probes below count
+		// against the sign-in limit, and this must not depend on its size.
+		const signedIn = await post('/login?/password', { email: EMAIL, password: PASSWORD });
+		expect(signedIn.status).toBe(303);
+		expect(signedIn.headers.get('location')).toBe('/inbox');
+		session = sessionCookie(signedIn);
+		expect(session).toBeTruthy();
+
 		await expectNo500('/login?/password');
 		await expectNo500('/login?/password', { email: EMAIL, password: 'wrong password' });
 		await expectNo500('/login?/code', { code: '123456' });
 		await expectNo500('/login?/cancel');
 		await expectNo500('/login');
-
-		const signedIn = await post('/login?/password', { email: EMAIL, password: PASSWORD });
-		expect(signedIn.status).toBe(303);
-		expect(signedIn.headers.get('location')).toBe('/inbox');
-		expect(sessionCookie(signedIn)).toBeTruthy();
 	}, 60_000);
 
 	it('reauth and logout', async () => {
-		const signedIn = await post('/login?/password', { email: EMAIL, password: PASSWORD });
-		const cookie = sessionCookie(signedIn);
+		const cookie = session;
 		expect(cookie).toBeTruthy();
 
 		await expectNo500('/reauth', {}, cookie);

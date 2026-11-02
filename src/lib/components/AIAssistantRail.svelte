@@ -634,8 +634,7 @@
 							? 'rounded-br-md bg-accent text-white'
 							: 'rounded-bl-md border border-border bg-surface text-text'}">
 						{#if message.html}
-							<!-- Sanitised on the server by renderAgentMarkdown; see
-							     src/lib/server/ai/markdown.ts for the allowlist. -->
+							<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitised on the server by renderAgentMarkdown; src/lib/server/ai/markdown.ts has the allowlist -->
 							<div class="agent-markdown">{@html message.html}</div>
 						{:else}
 							<p class="whitespace-pre-wrap">{message.content}</p>

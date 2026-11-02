@@ -5,7 +5,12 @@ import type { Email } from '$lib/jmap/types';
 
 const mocks = vi.hoisted(() => ({
 	page: {
-		data: { autoLoadImages: 'contacts_only' as string, mailboxes: [], userEmail: 'me@example.test' },
+		data: {
+			autoLoadImages: 'contacts_only' as string,
+			mailboxes: [],
+			userEmail: 'me@example.test',
+			markReadDelay: 1000 as number
+		},
 		url: new URL('http://localhost:3000/inbox')
 	}
 }));
@@ -156,5 +161,29 @@ describe('EmailDetail header', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
 		await waitFor(() => expect(details.className).toContain('hidden'));
 		expect(quiet.className).not.toContain('absolute');
+	});
+});
+
+describe('EmailDetail mark as read', () => {
+	const markReadCalls = () =>
+		(fetchMock.mock.calls as unknown as [RequestInfo | URL, RequestInit | undefined][]).filter(
+			([u, init]) => String(u) === '/api/email/M1' && init?.method === 'PATCH'
+		);
+	const unread = () => ({ ...email(), keywords: {} }) as Email;
+
+	it('marks the message read after the delay from Settings → Messages', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		mocks.page.data.markReadDelay = 0;
+		render(EmailDetail, { email: unread() });
+		await waitFor(() => expect(markReadCalls()).toHaveLength(1));
+		expect(JSON.parse(String(markReadCalls()[0][1]?.body))).toEqual({ action: 'markRead' });
+	});
+
+	it('leaves it unread while the delay is still running', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		mocks.page.data.markReadDelay = 5000;
+		render(EmailDetail, { email: unread() });
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(markReadCalls()).toHaveLength(0);
 	});
 });
