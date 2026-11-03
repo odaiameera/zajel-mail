@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { RequestHandler } from './$types';
 import { getAvatar, type AvatarOut } from '$lib/server/avatars';
+import { imageResponseHeaders } from '$lib/server/avatars/headers';
 
 /**
  * GET /api/avatar?email=<sender>
@@ -16,6 +17,11 @@ import { getAvatar, type AvatarOut } from '$lib/server/avatars';
 // If it overruns, answer 204 now; the in-flight resolution keeps running and
 // populates the cache for the next load.
 const RESOLVE_BUDGET_MS = 5000;
+
+// The avatar bytes can be an attacker-controlled SVG; `imageResponseHeaders`
+// is what keeps that from running as a page. Normal long-lived private
+// caching for the (immutable) image.
+const CACHE_CONTROL = 'private, max-age=86400';
 
 function withTimeout(p: Promise<AvatarOut>, ms: number): Promise<AvatarOut> {
 	return new Promise((resolve) => {
@@ -65,29 +71,15 @@ export const GET: RequestHandler = async ({ url, locals, request }) => {
 
 	const etag = '"' + createHash('sha1').update(result.bytes).digest('base64') + '"';
 	if (request.headers.get('if-none-match') === etag) {
-		return new Response(null, { status: 304, headers: securityHeaders(etag) });
+		return new Response(null, { status: 304, headers: imageResponseHeaders(etag, CACHE_CONTROL) });
 	}
 
 	return new Response(new Uint8Array(result.bytes), {
 		status: 200,
-		headers: { ...securityHeaders(etag), 'Content-Type': result.contentType, 'X-Avatar-Source': result.source }
+		headers: {
+			...imageResponseHeaders(etag, CACHE_CONTROL),
+			'Content-Type': result.contentType,
+			'X-Avatar-Source': result.source
+		}
 	});
 };
-
-/**
- * Headers shared by served-avatar responses. The avatar bytes can be an
- * attacker-controlled SVG (BIMI logos and SVG favicons), and the endpoint URL
- * is same-origin and directly navigable — so a naive `image/svg+xml` response
- * would execute embedded <script> on top-level navigation (stored XSS). The
- * sandbox CSP neutralizes script even then; nosniff blocks MIME confusion;
- * the rest is normal long-lived private caching for the (immutable) image.
- */
-function securityHeaders(etag: string): Record<string, string> {
-	return {
-		'Cache-Control': 'private, max-age=86400',
-		ETag: etag,
-		'X-Content-Type-Options': 'nosniff',
-		'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-		'Content-Disposition': 'inline; filename="avatar"'
-	};
-}

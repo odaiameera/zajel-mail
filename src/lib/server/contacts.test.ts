@@ -242,11 +242,12 @@ describe('contactPatchFromInput', () => {
 				addressBookIds: ['book-1']
 			}, existing)
 		).toEqual({
+			// Renamed, so the parts follow the new name (see the 'name' tests).
 			name: {
 				full: 'Ada Byron',
 				components: [
 					{ kind: 'given', value: 'Ada' },
-					{ kind: 'surname', value: 'Lovelace' }
+					{ kind: 'surname', value: 'Byron' }
 				],
 				isOrdered: true
 			},

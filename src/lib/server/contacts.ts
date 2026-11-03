@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import type { AddressBook, ContactCard, ContactCardCreate, JSContactEmail, JSContactPhone } from '../jmap/types';
+import type {
+	AddressBook,
+	ContactCard,
+	ContactCardCreate,
+	JSContactEmail,
+	JSContactName,
+	JSContactPhone
+} from '../jmap/types';
 
 const MAX_NAME_LENGTH = 255;
 const MAX_EMAIL_LENGTH = 320;
@@ -201,6 +208,42 @@ export function validateAddressBookSelection(
 	}
 }
 
+/**
+ * Structured parts for a free-text name (RFC 9553 §2.2.1): the first word is
+ * the given name, the last the surname, anything between a middle name. A
+ * guess, but one that describes the name it sits beside; CardDAV clients show
+ * and edit these parts and rebuild the full name from them.
+ */
+export function nameComponents(full: string): Array<{ kind: string; value: string }> {
+	const words = full.split(/\s+/).filter(Boolean);
+	if (words.length === 0) return [];
+	if (words.length === 1) return [{ kind: 'given', value: words[0] }];
+	const surname = words.pop()!;
+	const [given, ...middle] = words;
+	return [
+		{ kind: 'given', value: given },
+		...middle.map((value) => ({ kind: 'given2', value })),
+		{ kind: 'surname', value: surname }
+	];
+}
+
+/**
+ * The name object after an edit. Untouched, it is kept whole, parts and all.
+ * Changed, its parts (and sort keys, phonetics, anything else) described the
+ * old name — a phone would keep showing it and write it back over the new
+ * full name on its next edit — so a card that had parts gets parts for the
+ * new name, and everything else goes.
+ */
+function mergeName(existing: JSContactName | undefined, full: string): JSContactName {
+	const previous = existing?.full?.trim() ?? '';
+	if (full === previous) return { ...existing };
+	if (!full) return {};
+	return {
+		full,
+		...(existing?.components && { components: nameComponents(full), isOrdered: true })
+	};
+}
+
 export function contactPatchFromInput(input: ContactFormInput, existing: ContactCard): Record<string, unknown> {
 	if (!input || typeof input !== 'object') throw new ContactValidationError('Contact is required');
 
@@ -211,9 +254,7 @@ export function contactPatchFromInput(input: ContactFormInput, existing: Contact
 	const notes = optionalText(input.notes, 'Notes', MAX_NOTES_LENGTH);
 	const organizations = mergeNamedEntry(existing.organizations, input.organizationId, organization, 'org', 'name');
 	const mergedNotes = mergeNamedEntry(existing.notes, input.noteId, notes, 'note', 'note');
-	const mergedName = { ...(existing.name ?? {}) };
-	delete mergedName.full;
-	if (name) mergedName.full = name;
+	const mergedName = mergeName(existing.name, name);
 	const favorite = input.favorite === undefined ? false : input.favorite;
 	if (typeof favorite !== 'boolean') throw new ContactValidationError('favorite must be a boolean');
 	if (Object.keys(mergedName).length === 0 && !emails && !phones && !organizations) {

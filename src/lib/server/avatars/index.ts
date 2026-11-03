@@ -1,10 +1,12 @@
 import {
 	emailDomain,
+	isFreemailDomain,
 	registrableDomain,
 	resolveBimi,
 	resolveFavicon,
 	resolveGravatar,
-	type Resolved
+	type Asset,
+	type Lookup
 } from './resolve';
 import { getCache, putCache, type CacheRow } from './store';
 
@@ -20,6 +22,11 @@ import { getCache, putCache, type CacheRow } from './store';
 
 const FOUND_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const MISSING_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — retry "no avatar" weekly
+// Nothing answered (DNS down, uplink out, server erroring): not a verdict on
+// the sender, so it is tried again soon rather than remembered for a week.
+const UNREACHABLE_TTL_MS = 15 * 60 * 1000;
+/** `source` of a 'missing' row written after an outage rather than a real "none". */
+const UNREACHABLE_SOURCE = 'unreachable';
 
 export type AvatarOut =
 	| { status: 'found'; contentType: string; bytes: Buffer; source: string }
@@ -33,7 +40,12 @@ export function normalizeEmail(raw: string): string {
 }
 
 function isFresh(row: CacheRow): boolean {
-	const ttl = row.status === 'found' ? FOUND_TTL_MS : MISSING_TTL_MS;
+	const ttl =
+		row.status === 'found'
+			? FOUND_TTL_MS
+			: row.source === UNREACHABLE_SOURCE
+				? UNREACHABLE_TTL_MS
+				: MISSING_TTL_MS;
 	return Date.now() - row.fetched_at < ttl;
 }
 
@@ -50,18 +62,29 @@ function rowToOut(row: CacheRow): AvatarOut | null {
 	return null; // corrupt 'found' row with no bytes — treat as a cache miss
 }
 
-function store(key: string, resolved: Resolved): void {
+function found(asset: Asset): AvatarOut {
+	return { status: 'found', contentType: asset.contentType, bytes: asset.bytes, source: asset.source };
+}
+
+function store(key: string, lookup: Lookup): void {
+	const fetched_at = Date.now();
 	putCache(
 		key,
-		resolved
+		lookup.outcome === 'found'
 			? {
 					status: 'found',
-					source: resolved.source,
-					content_type: resolved.contentType,
-					bytes: resolved.bytes,
-					fetched_at: Date.now()
+					source: lookup.asset.source,
+					content_type: lookup.asset.contentType,
+					bytes: lookup.asset.bytes,
+					fetched_at
 				}
-			: { status: 'missing', source: null, content_type: null, bytes: null, fetched_at: Date.now() }
+			: {
+					status: 'missing',
+					source: lookup.outcome === 'unreachable' ? UNREACHABLE_SOURCE : null,
+					content_type: null,
+					bytes: null,
+					fetched_at
+				}
 	);
 }
 
@@ -74,11 +97,19 @@ async function domainAsset(domain: string): Promise<AvatarOut | null> {
 		if (out) return out.status === 'found' ? out : null; // 'missing' → fall through to gravatar
 		// corrupt → re-resolve below
 	}
-	const resolved = (await resolveBimi(domain)) ?? (await resolveFavicon(domain));
-	store(key, resolved);
-	return resolved
-		? { status: 'found', contentType: resolved.contentType, bytes: resolved.bytes, source: resolved.source }
-		: null;
+	const bimi = await resolveBimi(domain);
+	if (bimi.outcome === 'found') {
+		store(key, bimi);
+		return found(bimi.asset);
+	}
+	const favicon = await resolveFavicon(domain);
+	if (favicon.outcome === 'found') {
+		store(key, favicon);
+		return found(favicon.asset);
+	}
+	// Either source failing to answer makes the whole miss provisional.
+	store(key, bimi.outcome === 'unreachable' ? bimi : favicon);
+	return null;
 }
 
 /** Resolve (or read cached) the address-level Gravatar. */
@@ -89,11 +120,9 @@ async function gravatarAsset(email: string): Promise<AvatarOut> {
 		const out = rowToOut(cached);
 		if (out) return out;
 	}
-	const resolved = await resolveGravatar(email);
-	store(key, resolved);
-	return resolved
-		? { status: 'found', contentType: resolved.contentType, bytes: resolved.bytes, source: 'gravatar' }
-		: { status: 'missing' };
+	const lookup = await resolveGravatar(email);
+	store(key, lookup);
+	return lookup.outcome === 'found' ? found(lookup.asset) : { status: 'missing' };
 }
 
 // Coalesce concurrent domain resolutions: a screenful of senders sharing one
@@ -115,6 +144,10 @@ function domainAssetCoalesced(domain: string): Promise<AvatarOut | null> {
 async function compute(email: string): Promise<AvatarOut> {
 	const domain = emailDomain(email);
 	if (!domain) return { status: 'missing' };
+
+	// A shared mailbox provider's logo says nothing about the person writing
+	// from it; only their own Gravatar can.
+	if (isFreemailDomain(domain)) return gravatarAsset(email);
 
 	// Try the exact sender domain first; if it has no site/favicon of its own
 	// (common for mg.*, email.*, news.* sending subdomains), fall back to the
