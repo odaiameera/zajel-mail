@@ -445,9 +445,12 @@ describe('POST /api/contacts', () => {
 			'contacts-account',
 			'contact-1',
 			{
+				// The label the form never showed survives; the name parts follow
+				// the new name rather than describing the old one.
 				name: {
 					full: 'Ada Byron',
-					components: [{ kind: 'given', value: 'Ada' }, { kind: 'surname', value: 'Lovelace' }]
+					components: [{ kind: 'given', value: 'Ada' }, { kind: 'surname', value: 'Byron' }],
+					isOrdered: true
 				},
 				emails: {
 					primary: {

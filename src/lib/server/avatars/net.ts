@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import type { LookupAddress } from 'node:dns';
 
 /**
  * Outbound fetch helper hardened for fetching avatars from arbitrary
@@ -87,7 +88,7 @@ async function hostFailure(hostname: string): Promise<FetchFailure | null> {
 		return 'blocked';
 	}
 	if (isIP(h)) return ipIsPrivate(h) ? 'blocked' : null;
-	let results: Awaited<ReturnType<typeof lookup>>;
+	let results: LookupAddress[];
 	try {
 		results = await lookup(h, { all: true });
 	} catch (err) {

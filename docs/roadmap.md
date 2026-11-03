@@ -37,7 +37,7 @@ Verified bugs that lose mail or events, or weaken the account, but need a user t
 - [x] Deleting a label that holds any message always fails (`onDestroyRemoveEmails: false` means "refuse if non-empty"); removing a label from a message that is only in that label silently does nothing.
 - [x] Scheduled sends: a missing Scheduled folder drops the message silently; any JMAP method error fails permanently; no request timeout.
 - [x] The rules scheduler re-reads the same page forever when 100+ messages share one second; the deploy route treats an empty result as failure and deactivates other Sieve scripts without saying so.
-- [x] The quadratic regexes in email HTML rewriting run during server rendering (measured 449 ms for 48 KB); the image proxy buffers 10 MB per request with no concurrency cap. Left: stream the proxied image through instead of buffering it, which needs the SSRF-vetted fetcher in `avatars/net.ts` to expose the response.
+- [x] The quadratic regexes in email HTML rewriting run during server rendering (measured 449 ms for 48 KB); the image proxy buffers 10 MB per request with no concurrency cap. The proxy now streams the image through after sniffing its first kilobyte (`safeFetchResponse` hands over the vetted response).
 - [x] Real attachments are hidden when they carry a Content-ID; the attachment Content-Type comes from the file-name extension only and its CSP lacks `sandbox`.
 - [x] Non-ASCII mail passwords cannot be linked (`btoa` versus `Buffer`).
 
@@ -51,12 +51,10 @@ Verified bugs that lose mail or events, or weaken the account, but need a user t
 
 **Contacts, avatars, push (`dev-contacts`)**
 
-Not started: the first attempt was stopped part way, and its partial work was set aside rather than merged.
-
-- The account avatar endpoint serves SVG without the sandbox CSP its sibling has (stored XSS).
-- The layout re-subscribes a device to push whenever the account preference is on, so a device the user turned off re-subscribes itself. Make push per device, using the `user_agent` and `last_sent_at` columns that are already written.
-- Transient DNS and network failures are cached as "no avatar" for seven days; freemail domains get the provider's logo; the SSE stream stays bound to the account that was active when it connected.
-- Renaming a contact keeps the old `name.components`, so other clients can restore the old name.
+- [x] The account avatar endpoint served SVG without the sandbox CSP its sibling has (stored XSS). Both endpoints share one header set.
+- [x] The layout re-subscribed a device to push whenever the account preference was on, so a device the user turned off re-subscribed itself. Push is per device: the device's own switch is kept on the device and the layout only renews, and Settings → Notifications lists the devices receiving push from `user_agent` and `last_sent_at`.
+- [x] Transient DNS and network failures were cached as "no avatar" for seven days (now 15 minutes, told apart from a real "none"); freemail domains got the provider's logo (now only the sender's own Gravatar); the SSE stream stayed bound to the account that was active when it connected (now reopened on switch).
+- [x] Renaming a contact kept the old `name.components`; they are regenerated for the new name.
 
 **AI, Jev, Telegram, jobs (`dev-AI`)**
 - [x] Jev writes `mailboxIds` and keywords from a snapshot taken before the model call, so it can undo a move the user made meanwhile and pull mail out of Trash.

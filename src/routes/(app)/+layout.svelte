@@ -292,7 +292,8 @@
 	// A device with a push subscription gets new mail and reminders from the
 	// server (see $lib/server/push), so the open app leaves those system
 	// notifications to it rather than showing each one twice. Each load
-	// renews the subscription, which also re-links it after a new sign-in.
+	// renews the subscription, which also re-links it after a new sign-in;
+	// a device turned off in Settings → Notifications is left alone.
 	let pushActive = $state(false);
 	// A primitive, so the effect below runs when notifications are turned on
 	// or off, not on every data refresh.
@@ -302,9 +303,19 @@
 			pushActive = false;
 			return;
 		}
-		subscribePush()
+		subscribePush({ auto: true })
 			.then((ok) => { pushActive = ok; })
 			.catch(() => { pushActive = false; });
+	});
+
+	// The stream is opened for the account active at connect time (the
+	// cookie the hooks read), so an in-app switch would leave it listening
+	// to the old account. Reopen it when the active account changes.
+	let streamAccount: string | null | undefined;
+	$effect(() => {
+		const id = data.activeAccountId ?? null;
+		if (streamAccount !== undefined && streamAccount !== id) untrack(() => realtime.connect());
+		streamAccount = id;
 	});
 
 	// Calendar push: poll CalDAV change tokens + VALARM reminders while any

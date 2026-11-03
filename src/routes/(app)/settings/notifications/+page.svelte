@@ -4,7 +4,16 @@
 	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
-	import { canNotify, notificationSupport, subscribePush, unsubscribePush } from '$lib/notifications';
+	import {
+		canNotify,
+		currentPushSubscription,
+		notificationSupport,
+		pushWantedHere,
+		setPushWantedHere,
+		subscribePush,
+		unsubscribePush
+	} from '$lib/notifications';
+	import { relativeTime } from '$lib/devices';
 	import { onMount } from 'svelte';
 	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import type { LayoutData } from '../$types';
@@ -103,37 +112,91 @@
 
 	let permissionError = $state('');
 
+	/**
+	 * Asks this browser for permission, straight from the tap (Safari only
+	 * shows the prompt for a user gesture). The message when it can't notify.
+	 */
+	async function askPermission(): Promise<string | null> {
+		const support = notificationSupport();
+		if (support !== 'supported') {
+			return support === 'needs-home-screen'
+				? 'On iPhone and iPad, add Zajel Mail to your Home Screen and turn notifications on there.'
+				: 'This browser can’t show notifications.';
+		}
+		const perm = await Notification.requestPermission();
+		if (perm !== 'granted') {
+			return 'Browser denied notification permission. Adjust it in your browser settings, then try again.';
+		}
+		return null;
+	}
+
+	// --- Push on this device, and the devices that have it ---
+	// Push is what reaches a device while the app is closed. The account
+	// switch above is for everyone; each device also has its own, kept on
+	// the device, so a phone turned off stays off when the app opens there.
+	type PushDevice = { label: string; current: boolean; createdAt: string; lastSentAt: string | null };
+	let devices = $state<PushDevice[]>([]);
+	let pushHere = $state(false);
+	let pushState = $state<SaveState>('idle');
+	let pushError = $state('');
+
+	async function loadDevices() {
+		const res = await fetch('/api/push/devices').catch(() => null);
+		if (res?.ok) devices = ((await res.json()) as { devices: PushDevice[] }).devices;
+	}
+
+	onMount(async () => {
+		pushHere = pushWantedHere() && (await currentPushSubscription().catch(() => null)) !== null;
+		await loadDevices();
+	});
+
+	/** Subscribe or unsubscribe this device, remembering the choice here. */
+	async function setPushHere(next: boolean): Promise<boolean> {
+		setPushWantedHere(next);
+		if (next) pushHere = await subscribePush().catch(() => false);
+		else {
+			await unsubscribePush();
+			pushHere = false;
+		}
+		await loadDevices();
+		return pushHere === next;
+	}
+
+	async function togglePushHere(next: boolean) {
+		pushError = '';
+		pushState = 'saving';
+		if (next && !canNotify()) {
+			const problem = await askPermission();
+			if (problem) {
+				pushError = problem;
+				pushState = 'error';
+				return;
+			}
+			deviceAllowed = true;
+		}
+		const ok = await setPushHere(next);
+		pushState = ok ? 'saved' : 'error';
+		if (ok) setTimeout(() => { if (pushState === 'saved') pushState = 'idle'; }, 1800);
+	}
+
 	async function toggleEnabled(next: boolean) {
 		permissionError = '';
 		if (next) {
-			const support = notificationSupport();
-			if (support !== 'supported') {
-				permissionError =
-					support === 'needs-home-screen'
-						? 'On iPhone and iPad, add Zajel Mail to your Home Screen and turn notifications on there.'
-						: 'This browser can’t show notifications.';
+			const problem = await askPermission();
+			if (problem) {
+				permissionError = problem;
 				states.enabled = 'error';
 				enabled = false;
 				return;
 			}
-			// Asked first, straight from the tap: Safari only shows the prompt
-			// for a user gesture.
-			const perm = await Notification.requestPermission();
-			if (perm !== 'granted') {
-				permissionError = 'Browser denied notification permission. Adjust it in your browser settings, then try again.';
-				states.enabled = 'error';
-				enabled = false;
-				return;
-			}
+			deviceAllowed = true;
 		}
-		if (next) deviceAllowed = true;
 		enabled = next;
 		await save({ enabled: next }, 'enabled');
-		// This device: subscribe for push so notifications arrive while the
-		// app is closed, or stop them. Without push they still show while the
-		// app is open.
-		if (next) await subscribePush().catch(() => false);
-		else await unsubscribePush();
+		// This device follows the switch: on subscribes it for push so
+		// notifications arrive while the app is closed, off stops them.
+		// Without push they still show while the app is open.
+		await setPushHere(next);
 	}
 
 	function toggleFolder(id: string, checked: boolean) {
@@ -176,6 +239,41 @@
 			<Toggle checked={on} onChange={toggleEnabled} />
 		{/snippet}
 	</SettingRow>
+
+	<SettingRow
+		title="This device"
+		description="Push reaches this device while the app is closed. Off, this device shows notifications only while the app is open, and stays off when the app opens here again."
+		state={pushState}
+		errorMessage={pushError}
+	>
+		{#snippet control()}
+			<Toggle checked={pushHere && on} disabled={!on} onChange={togglePushHere} />
+		{/snippet}
+	</SettingRow>
+
+	{#if devices.length > 0}
+		<div class="py-4 border-b border-border last:border-b-0">
+			<p class="text-sm font-medium text-text">Devices receiving push</p>
+			<p class="text-xs text-text-tertiary mt-1 mb-2">
+				Each browser that turned push on. Signing a device out in Settings → Security stops its push too.
+			</p>
+			{#each devices as d}
+				<div class="flex items-center gap-3 py-2 border-t border-border/60 first:border-t-0">
+					<div class="flex-1 min-w-0">
+						<p class="text-sm text-text truncate">
+							{d.label}
+							{#if d.current}
+								<span class="ml-2 text-3xs uppercase tracking-wide text-accent-fg font-semibold">This device</span>
+							{/if}
+						</p>
+						<p class="text-xs text-text-tertiary mt-0.5">
+							{d.lastSentAt ? `Last notified ${relativeTime(d.lastSentAt)}` : 'Nothing sent yet'} · added {relativeTime(d.createdAt)}
+						</p>
+					</div>
+				</div>
+			{/each}
+		</div>
+	{/if}
 
 	<div class="py-4 border-b border-border last:border-b-0">
 		<p class="text-sm font-medium text-text">Notify for folders</p>
