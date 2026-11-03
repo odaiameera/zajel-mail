@@ -81,12 +81,40 @@ export async function currentPushSubscription(): Promise<PushSubscription | null
 }
 
 /**
+ * Whether this device wants push at all. Kept on the device, because it is
+ * the device's own choice: the account-wide switch lives in the preferences,
+ * and a phone turned off in Settings → Notifications has to stay off when
+ * the app next opens there, rather than subscribing itself again.
+ */
+const PUSH_HERE_KEY = 'zajel:push-this-device';
+
+export function pushWantedHere(): boolean {
+	try {
+		return localStorage.getItem(PUSH_HERE_KEY) !== 'off';
+	} catch {
+		return true;
+	}
+}
+
+export function setPushWantedHere(wanted: boolean): void {
+	try {
+		if (wanted) localStorage.removeItem(PUSH_HERE_KEY);
+		else localStorage.setItem(PUSH_HERE_KEY, 'off');
+	} catch {
+		// Storage blocked: the choice holds for this page load.
+	}
+}
+
+/**
  * Subscribe this device (or refresh its subscription with the server).
  * Needs notification permission already granted. Returns false when push
  * isn't available here; notifications then only show while the app is open.
+ * `auto` is the layout renewing on load: it respects the device's own
+ * switch, so a device turned off here is never subscribed again by a visit.
  */
-export async function subscribePush(): Promise<boolean> {
+export async function subscribePush(opts: { auto?: boolean } = {}): Promise<boolean> {
 	if (!pushAvailable() || !canNotify()) return false;
+	if (opts.auto && !pushWantedHere()) return false;
 	const reg = await registration();
 	if (!reg) return false;
 	const keyRes = await fetch('/api/push');

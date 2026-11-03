@@ -109,6 +109,7 @@ With **semantic search** switched on in Settings → Search, it also finds mail 
 
 **Reading mail**
 - The reading pane can be toggled, and it stays put when a filter has no results.
+- The message header keeps the subject and its labels on one line, with who and when beneath. On a phone and in the reading pane it starts folded; a tap opens the sender, recipients, date and spam score.
 - Attachments show as cards. Inline `cid:` images render.
 - Remote images load through a **server-side proxy**, so the sender's image host sees your server's address, not yours. You choose whether they load: never, for contacts only (the default), or always. When they're held back, a bar above the message offers to load them for that one message.
 - **Sender trust** comes from your address book and the message's authentication results. Stalwart's spam score sits beside every message, and flagged mail says why it was flagged.
@@ -279,7 +280,7 @@ Jev is **off until you turn it on, account by account.** For a demo or developme
   - automatic Trash emptying
 - **Composer**: default font and size, auto-save interval and Undo send window.
 - **Signatures**: as many as you like, with a default for each identity.
-- **Notifications** for new mail, plus new and updated events and event reminders.
+- **Notifications** for new mail, plus new and updated events and event reminders. Push is per device: each phone or browser has its own switch, and the page lists the devices receiving push.
 - **Import / Export** your preferences as a file, or **Reset** them.
 
 ### On your phone

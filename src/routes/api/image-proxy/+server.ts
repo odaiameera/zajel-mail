@@ -1,5 +1,5 @@
 import type { RequestHandler } from './$types';
-import { safeFetch } from '$lib/server/avatars/net';
+import { safeFetchResponse } from '$lib/server/avatars/net';
 import { sniffImage } from '$lib/server/avatars/image';
 
 /**
@@ -16,20 +16,24 @@ import { sniffImage } from '$lib/server/avatars/image';
  *
  * The target is attacker-controlled (anyone can email you), so:
  *  - only a signed-in session may use it,
- *  - `safeFetch` refuses private/loopback addresses on every redirect hop,
- *  - the body is capped and must sniff as an image — the upstream
- *    Content-Type is never trusted or echoed,
+ *  - `safeFetchResponse` refuses private/loopback addresses on every redirect
+ *    hop and keeps its timer armed until the body has been read,
+ *  - the first kilobyte must sniff as an image — the upstream Content-Type is
+ *    never trusted or echoed — and the rest is streamed through, cut off
+ *    past the byte cap, rather than held in memory,
  *  - the response is locked down like the avatar endpoint, because a
  *    same-origin SVG opened directly would otherwise run its scripts,
- *  - only a few run at once. Each one holds its image in memory until it
- *    has been read and sniffed, and the sender decides how many images a
- *    message has and how big each is, so without a gate a message of 300
- *    ten-megabyte pictures would have the server hold gigabytes.
+ *  - only a few run at once. Each one holds a slot until its bytes have been
+ *    passed on, and the sender decides how many images a message has and how
+ *    big each is, so without a gate a message of 300 ten-megabyte pictures
+ *    would have the server relay them all at once.
  */
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 10_000;
 const ACCEPT = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8';
+/** Enough of the start to tell what it is: `sniffImage` looks this far for an <svg>. */
+const SNIFF_BYTES = 1024;
 
 // The gate: this many fetches in flight, this many more waiting their turn,
 // and a 503 beyond that so the browser's own retry (and the next scroll)
@@ -89,23 +93,91 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		busy.headers.set('Retry-After', '2');
 		return busy;
 	}
-	let fetched: Awaited<ReturnType<typeof safeFetch>>;
-	try {
-		fetched = await safeFetch(parsed.toString(), {
-			accept: ACCEPT,
-			maxBytes: MAX_BYTES,
-			timeoutMs: TIMEOUT_MS,
-			allowHttp: true
-		});
-	} finally {
+	// The slot is given back once, whichever way this ends.
+	let released = false;
+	const done = (): void => {
+		if (released) return;
+		released = true;
 		release();
+	};
+
+	const upstream = await safeFetchResponse(parsed.toString(), {
+		accept: ACCEPT,
+		timeoutMs: TIMEOUT_MS,
+		allowHttp: true
+	});
+	if (!upstream || upstream.status < 200 || upstream.status >= 300 || !upstream.body) {
+		void upstream?.body?.cancel().catch(() => {});
+		done();
+		return failure(502);
 	}
-	if (!fetched || fetched.status < 200 || fetched.status >= 300) return failure(502);
+	const declared = Number(upstream.headers.get('content-length') ?? '');
+	if (Number.isFinite(declared) && declared > MAX_BYTES) {
+		void upstream.body.cancel().catch(() => {});
+		done();
+		return failure(502);
+	}
 
-	const type = sniffImage(fetched.bytes) ?? sniffAvif(fetched.bytes);
-	if (!type) return failure(415);
+	const reader = upstream.body.getReader();
+	const refuse = async (status: number): Promise<Response> => {
+		await reader.cancel().catch(() => {});
+		done();
+		return failure(status);
+	};
 
-	return new Response(new Uint8Array(fetched.bytes), {
+	const head: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (total < SNIFF_BYTES) {
+			const { done: ended, value } = await reader.read();
+			if (ended) break;
+			head.push(value);
+			total += value.byteLength;
+		}
+	} catch {
+		return refuse(502);
+	}
+	if (total > MAX_BYTES) return refuse(502);
+	const start = Buffer.concat(head);
+	const type = sniffImage(start) ?? sniffAvif(start);
+	if (!type) return refuse(415);
+
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(new Uint8Array(start));
+		},
+		async pull(controller) {
+			let chunk: ReadableStreamReadResult<Uint8Array>;
+			try {
+				chunk = await reader.read();
+			} catch (err) {
+				controller.error(err);
+				done();
+				return;
+			}
+			if (chunk.done) {
+				controller.close();
+				done();
+				return;
+			}
+			total += chunk.value.byteLength;
+			if (total > MAX_BYTES) {
+				// The sender omitted or understated Content-Length. The headers
+				// are out, so the stream is cut rather than answered with a 413.
+				await reader.cancel().catch(() => {});
+				controller.error(new Error('image exceeds the size limit'));
+				done();
+				return;
+			}
+			controller.enqueue(chunk.value);
+		},
+		cancel() {
+			void reader.cancel().catch(() => {});
+			done();
+		}
+	});
+
+	return new Response(body, {
 		status: 200,
 		headers: {
 			'Content-Type': type,

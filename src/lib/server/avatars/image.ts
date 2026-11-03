@@ -36,69 +36,77 @@ export function sniffImage(bytes: Buffer): string | null {
 	return null;
 }
 
+export interface ImageDimensions {
+	width: number;
+	height: number;
+}
+
 /**
- * Pixel dimensions from an image header, without decoding the image.
+ * Pixel dimensions from a raster image's header, without decoding the image.
+ * Null for an SVG (no fixed size) and for a header too short or too odd to
+ * read, which callers treat as "unknown", never as a size.
  *
  * Needed because favicon quality is wildly inconsistent: a site may declare a
  * 16x16 .ico in its <head> and also ship a 180px apple-touch-icon, and the
- * only way to prefer the good one is to look at what actually arrived. Returns
- * `Infinity` for SVG, which is the honest answer for a vector mark and makes
- * it sort above every raster candidate.
+ * only way to prefer the good one is to look at what actually arrived. The
+ * same numbers bound what gets served at all: a 250 KB PNG can declare a
+ * 40000x40000 canvas that a browser then has to allocate.
  */
-export function imageSize(bytes: Buffer, mime: string): number {
+export function imageDimensions(bytes: Buffer, mime: string): ImageDimensions | null {
 	try {
 		switch (mime) {
-			case 'image/svg+xml':
-				return Infinity;
-
 			case 'image/png': {
 				// IHDR is the first chunk: 8-byte signature, 4 length, 4 type,
 				// then width and height as big-endian uint32.
-				if (bytes.length < 24) return 0;
-				return Math.min(bytes.readUInt32BE(16), bytes.readUInt32BE(20));
+				if (bytes.length < 24) return null;
+				return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 			}
 
 			case 'image/gif':
-				if (bytes.length < 10) return 0;
-				return Math.min(bytes.readUInt16LE(6), bytes.readUInt16LE(8));
+				if (bytes.length < 10) return null;
+				return { width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8) };
 
 			case 'image/bmp':
-				if (bytes.length < 26) return 0;
-				return Math.min(Math.abs(bytes.readInt32LE(18)), Math.abs(bytes.readInt32LE(22)));
+				if (bytes.length < 26) return null;
+				return { width: Math.abs(bytes.readInt32LE(18)), height: Math.abs(bytes.readInt32LE(22)) };
 
 			case 'image/x-icon': {
 				// Icon directory: count at offset 4, then 16-byte entries whose
-				// first two bytes are width and height. 0 encodes 256.
-				if (bytes.length < 22) return 0;
+				// first two bytes are width and height. 0 encodes 256. The
+				// largest entry is the one worth talking about.
+				if (bytes.length < 22) return null;
 				const count = bytes.readUInt16LE(4);
-				let best = 0;
+				let best: ImageDimensions | null = null;
 				for (let i = 0; i < count; i++) {
 					const off = 6 + i * 16;
 					if (off + 1 >= bytes.length) break;
-					const w = bytes[off] === 0 ? 256 : bytes[off];
-					const h = bytes[off + 1] === 0 ? 256 : bytes[off + 1];
-					best = Math.max(best, Math.min(w, h));
+					const entry = {
+						width: bytes[off] === 0 ? 256 : bytes[off],
+						height: bytes[off + 1] === 0 ? 256 : bytes[off + 1]
+					};
+					if (!best || Math.min(entry.width, entry.height) > Math.min(best.width, best.height)) best = entry;
 				}
 				return best;
 			}
 
 			case 'image/webp': {
-				if (bytes.length < 30) return 0;
+				if (bytes.length < 30) return null;
 				const fourcc = bytes.toString('ascii', 12, 16);
 				if (fourcc === 'VP8X') {
 					// 24-bit little-endian, stored as (dimension - 1).
-					const w = 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16));
-					const h = 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16));
-					return Math.min(w, h);
+					return {
+						width: 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)),
+						height: 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16))
+					};
 				}
 				if (fourcc === 'VP8 ') {
-					return Math.min(bytes.readUInt16LE(26) & 0x3fff, bytes.readUInt16LE(28) & 0x3fff);
+					return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
 				}
 				if (fourcc === 'VP8L') {
 					const b = bytes.readUInt32LE(21);
-					return Math.min(1 + (b & 0x3fff), 1 + ((b >> 14) & 0x3fff));
+					return { width: 1 + (b & 0x3fff), height: 1 + ((b >> 14) & 0x3fff) };
 				}
-				return 0;
+				return null;
 			}
 
 			case 'image/jpeg': {
@@ -112,18 +120,30 @@ export function imageSize(bytes: Buffer, mime: string): number {
 					const marker = bytes[i + 1];
 					// SOF0-SOF15, excluding the non-frame markers in that range.
 					if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
-						return Math.min(bytes.readUInt16BE(i + 7), bytes.readUInt16BE(i + 5));
+						return { width: bytes.readUInt16BE(i + 7), height: bytes.readUInt16BE(i + 5) };
 					}
 					i += 2 + bytes.readUInt16BE(i + 2);
 				}
-				return 0;
+				return null;
 			}
 
 			default:
-				return 0;
+				return null;
 		}
 	} catch {
-		// Truncated or malformed header — treat as unknown rather than throw.
-		return 0;
+		// Truncated or malformed header — unknown rather than a throw.
+		return null;
 	}
+}
+
+/**
+ * How big an image is for ranking: its shorter side, so a wide banner is not
+ * mistaken for a big icon. `Infinity` for SVG, which is the honest answer for
+ * a vector mark and makes it sort above every raster candidate; 0 when the
+ * header cannot be read.
+ */
+export function imageSize(bytes: Buffer, mime: string): number {
+	if (mime === 'image/svg+xml') return Infinity;
+	const dims = imageDimensions(bytes, mime);
+	return dims ? Math.min(dims.width, dims.height) : 0;
 }

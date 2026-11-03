@@ -4,6 +4,7 @@
 	import { pageTitle } from '$lib/utils/title';
 	import { browserSupportsWebAuthn, startRegistration } from '@simplewebauthn/browser';
 	import { fetchWithStepUp } from '$lib/auth/step-up';
+	import { describeDevice, relativeTime } from '$lib/devices';
 
 	interface PasskeyInfo {
 		id: string;
@@ -225,32 +226,6 @@
 	async function revokeSession(id: string) {
 		await fetch(`/api/auth/sessions/${id}`, { method: 'DELETE' });
 		await loadSessions();
-	}
-
-	function describeDevice(ua: string | null): string {
-		if (!ua) return 'Unknown device';
-		const browser = /Firefox\//.test(ua) ? 'Firefox'
-			: /Edg\//.test(ua) ? 'Edge'
-			: /Chrome\//.test(ua) ? 'Chrome'
-			: /Safari\//.test(ua) ? 'Safari'
-			: 'Browser';
-		const os = /iPhone|iPad/.test(ua) ? 'iOS'
-			: /Mac/.test(ua) ? 'macOS'
-			: /Android/.test(ua) ? 'Android'
-			: /Windows/.test(ua) ? 'Windows'
-			: /Linux/.test(ua) ? 'Linux'
-			: '';
-		return os ? `${browser} on ${os}` : browser;
-	}
-
-	function relativeTime(iso: string): string {
-		const t = new Date(iso.includes('T') ? iso : iso + 'Z').getTime();
-		const mins = Math.round((Date.now() - t) / 60000);
-		if (mins < 1) return 'just now';
-		if (mins < 60) return `${mins}m ago`;
-		const hours = Math.round(mins / 60);
-		if (hours < 24) return `${hours}h ago`;
-		return `${Math.round(hours / 24)}d ago`;
 	}
 
 	const inputClass =

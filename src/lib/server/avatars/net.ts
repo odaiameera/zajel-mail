@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import type { LookupAddress } from 'node:dns';
 
 /**
  * Outbound fetch helper hardened for fetching avatars from arbitrary
@@ -11,7 +12,7 @@ import { isIP } from 'node:net';
  *   - has its hostname resolved and every resulting IP checked against
  *     private/loopback/link-local/reserved ranges before connecting,
  *   - re-checks the final URL host after redirects,
- *   - is bounded by a timeout and a hard byte cap.
+ *   - is bounded by a timeout and (for `safeFetch`) a hard byte cap.
  *
  * Caveat: this does not pin the socket to the vetted IP, so a determined DNS
  * rebind between our lookup and fetch's own lookup is theoretically possible.
@@ -46,7 +47,7 @@ function ipIsPrivate(ip: string): boolean {
 	if (v === 6) {
 		const lc = ip.toLowerCase().replace(/^\[|\]$/g, '');
 		if (lc === '::1' || lc === '::') return true;
-		if (lc.startsWith('fe80')) return true; // link-local
+		if (/^fe[89ab]/.test(lc)) return true; // link-local, fe80::/10
 		if (lc.startsWith('fec0')) return true; // deprecated site-local
 		if (lc.startsWith('fc') || lc.startsWith('fd')) return true; // unique-local
 		if (lc.startsWith('64:ff9b:')) return true; // NAT64 (may embed a private v4)
@@ -59,7 +60,21 @@ function ipIsPrivate(ip: string): boolean {
 	return true; // not a parseable IP → treat as unsafe
 }
 
-async function assertPublicHost(hostname: string): Promise<void> {
+/**
+ * Why a fetch came back empty-handed. Only `unreachable` is worth trying
+ * again soon: a host we refuse, a name that doesn't exist and a redirect
+ * chain that never ends are answers, not outages.
+ */
+export type FetchFailure =
+	| 'blocked'
+	| 'unknown-host'
+	| 'unreachable'
+	| 'too-many-redirects'
+	| 'too-large'
+	| 'empty';
+
+/** Null when the host may be connected to, else why it may not. */
+async function hostFailure(hostname: string): Promise<FetchFailure | null> {
 	const h = hostname.toLowerCase().replace(/\.$/, '');
 	if (
 		!h ||
@@ -70,41 +85,54 @@ async function assertPublicHost(hostname: string): Promise<void> {
 		h.endsWith('.lan') ||
 		h.endsWith('.home')
 	) {
-		throw new Error('blocked host');
+		return 'blocked';
 	}
-	if (isIP(h)) {
-		if (ipIsPrivate(h)) throw new Error('blocked ip literal');
-		return;
+	if (isIP(h)) return ipIsPrivate(h) ? 'blocked' : null;
+	let results: LookupAddress[];
+	try {
+		results = await lookup(h, { all: true });
+	} catch (err) {
+		// ENOTFOUND is the resolver saying the name has no address; anything
+		// else (EAI_AGAIN, a dead resolver) is the resolver failing to say.
+		return (err as NodeJS.ErrnoException).code === 'ENOTFOUND' ? 'unknown-host' : 'unreachable';
 	}
-	const results = await lookup(h, { all: true });
-	if (!results.length) throw new Error('no dns');
-	for (const r of results) {
-		if (ipIsPrivate(r.address)) throw new Error('resolves to private ip');
-	}
+	if (!results.length) return 'unknown-host';
+	return results.some((r) => ipIsPrivate(r.address)) ? 'blocked' : null;
+}
+
+export interface SafeFetchOptions {
+	accept?: string;
+	/** Covers the whole exchange, body included. */
+	timeoutMs?: number;
+	/** Also accept plain-http URLs (mail images still use them). */
+	allowHttp?: boolean;
+	/** Defaults to GET. A POST keeps its body across 307/308 and becomes a GET on any other redirect, as browsers do. */
+	method?: 'GET' | 'POST';
+	body?: string;
+	contentType?: string;
+	/** Told why a null came back, for callers that treat an outage differently from a refusal. */
+	onFailure?: (failure: FetchFailure) => void;
 }
 
 export type FetchedBlob = { bytes: Buffer; contentType: string | null; status: number };
 
 const MAX_REDIRECTS = 4;
 
-export async function safeFetch(
+/**
+ * The vetted response, body unread, for callers that stream it on. The
+ * timeout stays armed until the body has been read to its end, so a server
+ * that sends headers promptly and then trickles bytes still gets cut off.
+ * Null when the host was refused, could not be reached, or redirected too
+ * often; `onFailure` says which.
+ */
+export async function safeFetchResponse(
 	rawUrl: string,
-	opts: {
-		accept?: string;
-		maxBytes?: number;
-		/** Covers the whole exchange, body included. */
-		timeoutMs?: number;
-		/** Also accept plain-http URLs (mail images still use them). */
-		allowHttp?: boolean;
-		/** Defaults to GET. A POST keeps its body across 307/308 and becomes a GET on any other redirect, as browsers do. */
-		method?: 'GET' | 'POST';
-		body?: string;
-		contentType?: string;
-		/** Treat an empty body (a 204, say) as an answer rather than a failure. */
-		allowEmpty?: boolean;
-	} = {}
-): Promise<FetchedBlob | null> {
-	const max = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+	opts: SafeFetchOptions = {}
+): Promise<Response | null> {
+	const fail = (failure: FetchFailure): null => {
+		opts.onFailure?.(failure);
+		return null;
+	};
 	let target = rawUrl;
 	let method = opts.method ?? 'GET';
 	let body = method === 'POST' ? opts.body : undefined;
@@ -113,77 +141,118 @@ export async function safeFetch(
 	// to it. With `redirect: 'follow'`, undici would resolve and connect to an
 	// intermediate Location pointing at a private/link-local address before we
 	// ever get to re-check the final URL — a blind-SSRF hole. Manual mode lets
-	// us re-run assertPublicHost on each hop's target first.
+	// us re-run the host check on each hop's target first.
 	for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
 		let url: URL;
 		try {
 			url = new URL(target);
 		} catch {
-			return null;
+			return fail('blocked');
 		}
-		if (url.protocol !== 'https:' && !(opts.allowHttp && url.protocol === 'http:')) return null;
-		try {
-			await assertPublicHost(url.hostname);
-		} catch {
-			return null;
-		}
+		if (url.protocol !== 'https:' && !(opts.allowHttp && url.protocol === 'http:')) return fail('blocked');
+		const refused = await hostFailure(url.hostname);
+		if (refused) return fail(refused);
 
-		// The timer stays armed through the body read: a server that sends
-		// headers promptly and then trickles bytes must not hold the request.
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+		timer.unref?.();
+		let res: Response;
 		try {
-			let res: Response;
-			try {
-				res = await fetch(url, {
-					method,
-					body,
-					signal: controller.signal,
-					redirect: 'manual',
-					headers: {
-						'User-Agent': BROWSER_UA,
-						...(opts.accept ? { Accept: opts.accept } : {}),
-						...(body !== undefined && opts.contentType ? { 'Content-Type': opts.contentType } : {})
-					}
-				});
-			} catch {
-				return null;
-			}
-
-			if (res.status >= 300 && res.status < 400) {
-				const location = res.headers.get('location');
-				if (!location) return null;
-				try {
-					target = new URL(location, url).toString(); // re-vetted at loop top
-				} catch {
-					return null;
+			res = await fetch(url, {
+				method,
+				body,
+				signal: controller.signal,
+				redirect: 'manual',
+				headers: {
+					'User-Agent': BROWSER_UA,
+					...(opts.accept ? { Accept: opts.accept } : {}),
+					...(body !== undefined && opts.contentType ? { 'Content-Type': opts.contentType } : {})
 				}
-				if (res.status !== 307 && res.status !== 308) {
-					method = 'GET';
-					body = undefined;
-				}
-				continue;
-			}
-
-			const declared = Number(res.headers.get('content-length') ?? '');
-			if (Number.isFinite(declared) && declared > max) return null;
-			const bytes = await readCapped(res, max).catch(() => null);
-			if (!bytes || (bytes.length === 0 && !opts.allowEmpty)) return null;
-			return { bytes, contentType: res.headers.get('content-type'), status: res.status };
-		} finally {
+			});
+		} catch {
 			clearTimeout(timer);
+			return fail('unreachable');
 		}
+
+		const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+		if (location) {
+			clearTimeout(timer);
+			// Nothing reads a redirect's body; let the socket go.
+			void res.body?.cancel().catch(() => {});
+			try {
+				target = new URL(location, url).toString(); // re-vetted at loop top
+			} catch {
+				return fail('blocked');
+			}
+			if (res.status !== 307 && res.status !== 308) {
+				method = 'GET';
+				body = undefined;
+			}
+			continue;
+		}
+
+		return armed(res, timer);
 	}
 
-	return null; // too many redirects
+	return fail('too-many-redirects');
+}
+
+/** The response with its body wrapped so the timer is cleared once it has been read to the end. */
+function armed(res: Response, timer: ReturnType<typeof setTimeout>): Response {
+	if (!res.body) {
+		clearTimeout(timer);
+		return res;
+	}
+	const body = res.body.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			flush() {
+				clearTimeout(timer);
+			}
+		})
+	);
+	return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+}
+
+/** The whole body, capped at `maxBytes`; null past the cap or (unless `allowEmpty`) when there is none. */
+export async function safeFetch(
+	rawUrl: string,
+	opts: SafeFetchOptions & {
+		maxBytes?: number;
+		/** Treat an empty body (a 204, say) as an answer rather than a failure. */
+		allowEmpty?: boolean;
+	} = {}
+): Promise<FetchedBlob | null> {
+	const res = await safeFetchResponse(rawUrl, opts);
+	if (!res) return null;
+	const fail = (failure: FetchFailure): null => {
+		opts.onFailure?.(failure);
+		return null;
+	};
+
+	const max = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+	const declared = Number(res.headers.get('content-length') ?? '');
+	if (Number.isFinite(declared) && declared > max) {
+		void res.body?.cancel().catch(() => {});
+		return fail('too-large');
+	}
+	let bytes: Buffer | null;
+	try {
+		bytes = await readCapped(res, max);
+	} catch {
+		// The timer fired, or the connection dropped, part-way through the body.
+		return fail('unreachable');
+	}
+	if (!bytes) return fail('too-large');
+	if (bytes.length === 0 && !opts.allowEmpty) return fail('empty');
+	return { bytes, contentType: res.headers.get('content-type'), status: res.status };
 }
 
 /** Read a response body, aborting if it exceeds `max` bytes (defends against
  *  an oversized or content-length-lying body). */
 async function readCapped(res: Response, max: number): Promise<Buffer | null> {
 	if (!res.body) {
-		const ab = await res.arrayBuffer().catch(() => null);
-		if (!ab || ab.byteLength > max) return null;
+		const ab = await res.arrayBuffer();
+		if (ab.byteLength > max) return null;
 		return Buffer.from(ab);
 	}
 	const reader = res.body.getReader();

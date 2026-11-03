@@ -75,6 +75,21 @@ describe('realtime', () => {
 		expect(mocks.invalidateAll).toHaveBeenCalledTimes(1);
 	});
 
+	it('replaces the stream when connected again, as the layout does after an account switch', () => {
+		realtime.connect();
+		const first = latest();
+		first.open();
+		vi.advanceTimersByTime(1000);
+
+		realtime.connect();
+		expect(first.readyState).toBe(2);
+		expect(FakeEventSource.instances).toHaveLength(2);
+		latest().open();
+		vi.advanceTimersByTime(1000);
+		// A reopened stream refreshes once, since Stalwart replays nothing.
+		expect(mocks.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
 	it('refreshes when the app is shown again after a while', () => {
 		realtime.connect();
 		latest().open();
