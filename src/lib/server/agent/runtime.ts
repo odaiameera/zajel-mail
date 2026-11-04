@@ -14,6 +14,7 @@ import {
 	modelUnavailable,
 	supportsFallbacks
 } from '$lib/server/ai/claude';
+import { utcToWallClock } from '$lib/server/calendar/tz';
 import { errorFields, logEvent } from '$lib/server/log';
 import { newTurnBudget } from './budget';
 import { recordAudit, type AgentSource, type PendingAction } from './store';
@@ -85,6 +86,22 @@ export interface AgentTurnResult {
 	done: string[];
 	/** Outward changes waiting for the user's click. */
 	pending: PendingAction[];
+	/** A job's turn asked for nothing to be sent (stay_quiet). */
+	quiet?: boolean;
+}
+
+/**
+ * Said only to a scheduled job. Its reply goes straight to Telegram, which
+ * the model can't otherwise know: it used to set a Telegram reminder to
+ * deliver its own report, and to say "I didn't send a message" in a message.
+ */
+const JOB_NOTE =
+	'This is a scheduled job, running with no one watching. Your final reply is its report and goes to the user’s Telegram chat as it is, so write it to be read on a phone. Never set a reminder to deliver it. If the job wants to hear from you only when something has happened and it hasn’t, call stay_quiet.';
+
+/** The time on the user's own clock, "HH:mm". */
+function clockTime(ms: number, timeZone: string): string {
+	const wall = utcToWallClock(ms, timeZone);
+	return `${String(wall.hour).padStart(2, '0')}:${String(wall.minute).padStart(2, '0')}`;
 }
 
 /**
@@ -353,13 +370,16 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 	// agent model was down as the turn began.
 	let active = model;
 	let retried = false;
+	const started = Date.now();
+	// The time as well as the date: without it the model guessed, and a
+	// reminder it set at 23:00 "for 22:15" was refused as in the past.
 	const system: Anthropic.Beta.BetaTextBlockParam[] = [
 		{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } },
 		{
 			type: 'text',
-			text: `Today is ${input.today.iso} (${input.today.weekday}). The user's time zone is ${input.timeZone}; times in results are already in that zone.${
+			text: `Today is ${input.today.iso} (${input.today.weekday}), and the time is ${clockTime(started, input.timeZone)}. The user's time zone is ${input.timeZone}; times in results are already in that zone.${
 				input.currentEmailId ? ` The user has the message id=${input.currentEmailId} open.` : ''
-			}`
+			}${input.source === 'job' ? `\n\n${JOB_NOTE}` : ''}`
 		}
 	];
 	const messages: Anthropic.Beta.BetaMessageParam[] = [
@@ -369,7 +389,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 
 	const done: string[] = [];
 	const pending: PendingAction[] = [];
-	const started = Date.now();
+	let quiet = false;
 	const deadline = started + TURN_BUDGET_MS;
 	let toolCalls = 0;
 	let rounds = 0;
@@ -390,7 +410,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 			...fields,
 			ms: Date.now() - started
 		});
-		return { outcome, message, done, pending };
+		return { outcome, message, done, pending, quiet };
 	};
 
 	// For a turn that ends early: the changes it made stand, and its cards
@@ -414,6 +434,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 				input.onProgress?.([...done]);
 			}
 			if (result.pending) pending.push(result.pending);
+			if (result.quiet) quiet = true;
 			recordAudit({
 				userId: input.userId,
 				accountId: input.accountRowId,

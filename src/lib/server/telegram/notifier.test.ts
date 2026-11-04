@@ -253,6 +253,14 @@ describe('reminders', () => {
 		expect(sentTexts()).toEqual(['<b>Reminder</b>\nPay rent', '<b>Reminder</b>\nPay rent']);
 	});
 
+	it('shows a reminder the agent wrote in Markdown as formatting', async () => {
+		await start(createLinkCode('user-1'));
+		mocks.sendMessage.mockClear();
+		addReminder({ userId: 'user-1', accountId: null, emailId: null, text: '**Call Elaine** about `608 Pier Head` & the keys', dueAt: new Date(Date.now() - 1000).toISOString() });
+		await sendDueReminders();
+		expect(sentTexts()).toEqual(['<b>Reminder</b>\n<b>Call Elaine</b> about <code>608 Pier Head</code> &amp; the keys']);
+	});
+
 	it('does not retry a reminder Telegram refuses for good', async () => {
 		await start(createLinkCode('user-1'));
 		mocks.sendMessage.mockClear();

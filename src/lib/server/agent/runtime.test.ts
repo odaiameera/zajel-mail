@@ -218,6 +218,46 @@ describe('runAgentTurn', () => {
 		expect(strict).not.toContain('search_mail');
 	});
 
+	it('tells the model the time as well as the date, on the user’s own clock', async () => {
+		// Without it, a job at 23:01 set a reminder "for 22:15" and was refused as in the past.
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-11-01T20:01:00Z')); // 23:01 in Amman
+		try {
+			mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
+			await runAgentTurn(turn());
+			expect(mocks.create.mock.calls[0][0].system[1].text).toContain('Today is 2026-11-01 (Sunday), and the time is 23:01.');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('tells a job that its reply is what goes to Telegram, and a chat nothing of the sort', async () => {
+		mocks.create.mockResolvedValue(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));
+		await runAgentTurn(turn({ source: 'job' }));
+		await runAgentTurn(turn());
+		expect(mocks.create.mock.calls[0][0].system[1].text).toMatch(/final reply is its report and goes to the user’s Telegram chat.*Never set a reminder to deliver it.*stay_quiet/);
+		expect(mocks.create.mock.calls[1][0].system[1].text).not.toContain('Telegram');
+		// The cached block is the same for both.
+		expect(mocks.create.mock.calls[0][0].system[0].text).toBe(mocks.create.mock.calls[1][0].system[0].text);
+	});
+
+	it('lets a job, and only a job, stay quiet', async () => {
+		const names = (source: 'chat' | 'telegram' | 'job') => toolsFor(source).map((t) => t.name);
+		expect(names('job')).toContain('stay_quiet');
+		expect(names('chat')).not.toContain('stay_quiet');
+		expect(names('telegram')).not.toContain('stay_quiet');
+
+		mocks.create
+			.mockResolvedValueOnce(reply([toolUse('t1', 'stay_quiet', {})]))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Elaine hasn’t replied yet.' }], 'end_turn'));
+		const quiet = await runAgentTurn(turn({ source: 'job', message: 'Tell me when Elaine replies' }));
+		expect(quiet).toMatchObject({ outcome: 'answered', message: 'Elaine hasn’t replied yet.', quiet: true });
+		expect(mocks.create.mock.calls[1][0].messages[2].content[0]).toMatchObject({ content: 'Nothing will be sent to Telegram for this run.' });
+
+		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'She replied.' }], 'end_turn'));
+		expect((await runAgentTurn(turn({ source: 'job' }))).quiet).toBe(false);
+	});
+
 	// Over any limit, the API refuses every turn with a 400 before Claude runs.
 	it.each(['chat', 'telegram', 'job'] as const)('keeps strict tools within every API limit for %s', async (source) => {
 		mocks.create.mockResolvedValueOnce(reply([{ type: 'text', text: 'Hi' }], 'end_turn'));

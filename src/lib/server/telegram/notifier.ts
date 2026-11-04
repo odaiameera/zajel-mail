@@ -18,6 +18,7 @@ import {
 	type InlineButton,
 	type TelegramUpdate
 } from './bot';
+import { markdownToTelegram } from './format';
 import {
 	claimAlert,
 	claimReminder,
@@ -294,7 +295,8 @@ export async function sendDueReminders(nowMs = Date.now()): Promise<void> {
 		if (!link || link.paused || !claimReminder(reminder.id)) continue;
 		const buttons = reminder.emailId && reminder.accountId ? emailButtons(link.userId, reminder.accountId, reminder.emailId) : [];
 		try {
-			await sendMessage(link.chatId, `<b>Reminder</b>\n${escapeHtml(reminder.text)}`, buttons);
+			// The agent wrote it, in Markdown like its replies (500 characters at most).
+			await sendMessage(link.chatId, `<b>Reminder</b>\n${markdownToTelegram(reminder.text)}`, buttons);
 			markReminderSent(reminder.id);
 			sent += 1;
 			noteSendOk();
