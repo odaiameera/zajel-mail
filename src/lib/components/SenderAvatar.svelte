@@ -28,13 +28,23 @@
 
 	let loaded = $state(false);
 	let plate = $state(PLATE_LIGHT);
+	let imgEl = $state<HTMLImageElement>();
 
 	// Reset when the sender changes; a reused row instance must not keep the
 	// previous sender's plate while the new avatar is still loading.
+	//
+	// Then catch an image that is already there. On a reload the list comes
+	// from the server and the avatars from the browser's cache, so they finish
+	// before hydration attaches onload. Svelte would replay that load through
+	// an inline onload="this.__e=event" it writes on server-rendered images,
+	// but the app's CSP (svelte.config.js) refuses inline handlers, so the
+	// event was lost and every avatar stayed hidden behind its initial. A
+	// complete image with no width is a miss (the endpoint's 204) or an error.
 	$effect(() => {
 		src;
 		loaded = false;
 		plate = PLATE_LIGHT;
+		if (imgEl?.complete && imgEl.naturalWidth > 0) onImageReady(imgEl);
 	});
 
 	/**
@@ -82,9 +92,13 @@
 		}
 	}
 
-	function onImageLoad(event: Event) {
-		plate = pickPlate(event.currentTarget as HTMLImageElement);
+	function onImageReady(img: HTMLImageElement) {
+		plate = pickPlate(img);
 		loaded = true;
+	}
+
+	function onImageLoad(event: Event) {
+		onImageReady(event.currentTarget as HTMLImageElement);
 	}
 </script>
 
@@ -130,6 +144,7 @@
 			just floats.
 		-->
 		<img
+			bind:this={imgEl}
 			{src}
 			alt=""
 			width={size}
