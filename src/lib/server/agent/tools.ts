@@ -62,6 +62,8 @@ export interface ToolResult {
 	done?: string;
 	/** An outward change waiting for your click. */
 	pending?: PendingAction;
+	/** A scheduled job asked for its report not to be sent (stay_quiet). */
+	quiet?: boolean;
 }
 
 export interface AgentTool {
@@ -488,6 +490,23 @@ const remindMe: AgentTool = {
 	}
 };
 
+/**
+ * A job's final reply is its report, sent to Telegram. Without a way to send
+ * nothing, a watch ("tell me if Elaine replies") pinged every hour to say
+ * she hadn't. Only a job is offered this (toolsFor); it changes nothing.
+ */
+const stayQuiet: AgentTool = {
+	name: 'stay_quiet',
+	tier: 'read',
+	description:
+		'Send nothing to Telegram for this run. Use it when the job asks to hear from you only if something happens (a reply arrives, a message matches) and it hasn’t. Your reply is then only kept in the job’s history, so end with one line saying what you checked. Never use it when there is something the job asked to be told.',
+	input_schema: schema({}),
+	async run(ctx) {
+		if (ctx.source !== 'job') return { content: 'Only a scheduled job can stay quiet', isError: true };
+		return { content: 'Nothing will be sent to Telegram for this run.', quiet: true };
+	}
+};
+
 // --- outward: needs your click ------------------------------------------------
 
 const sendEmail: AgentTool = {
@@ -533,9 +552,11 @@ export const AGENT_TOOLS: AgentTool[] = [
 	...JOB_TOOLS
 ];
 
-/** Tools allowed for a source: unattended runs never get outward ones. */
+/** Tools allowed for a source: unattended runs never get outward ones, and only a job can stay quiet. */
 export function toolsFor(source: AgentSource): AgentTool[] {
-	return source === 'chat' ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.tier !== 'outward');
+	if (source === 'chat') return AGENT_TOOLS;
+	const unattended = AGENT_TOOLS.filter((t) => t.tier !== 'outward');
+	return source === 'job' ? [...unattended, stayQuiet] : unattended;
 }
 
 /** A per-request mailbox list, fetched once. */

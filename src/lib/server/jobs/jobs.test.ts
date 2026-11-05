@@ -378,12 +378,20 @@ describe('running a job', () => {
 		expect(mocks.runChat.mock.calls[0][0].messages[0].content).toMatch(/\n…and 6 more$/);
 	});
 
+	it('shows the writer’s Markdown as formatting, and the plain list as written', async () => {
+		mocks.searchEmails.mockResolvedValue({ emails: [{ id: 'a', keywords: {}, from: [{ name: 'Dana' }], subject: 'Contract' }], total: 1 });
+		mocks.runChat.mockResolvedValueOnce('**Dana**: the contract is due *today*');
+		await runJob(makeJob({ title: 'Morning' }), SUNDAY_9AM_UTC);
+		expect(mocks.sendMessage).toHaveBeenCalledWith('555', '<b>Morning</b>\n<b>Dana</b>: the contract is due <i>today</i>');
+	});
+
 	it('sends the plain list when the writer model fails', async () => {
-		mocks.searchEmails.mockResolvedValue({ emails: [{ id: 'a', keywords: {}, from: [{ name: 'Dana & Co' }], subject: 'Contract' }], total: 1 });
+		mocks.searchEmails.mockResolvedValue({ emails: [{ id: 'a', keywords: {}, from: [{ name: 'Dana & Co' }], subject: '**Contract**' }], total: 1 });
 		mocks.runChat.mockRejectedValueOnce(new MailAssistantError('The AI service returned an error (529)', 502, true));
 		const job = makeJob({ title: 'Morning' });
 		expect(await runJob(job, SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Sent a digest of 1' });
-		expect(mocks.sendMessage).toHaveBeenCalledWith('555', '<b>Morning</b>\n- Dana &amp; Co: Contract');
+		// Subjects are senders' words: a plain list, never read as Markdown.
+		expect(mocks.sendMessage).toHaveBeenCalledWith('555', '<b>Morning</b>\n- Dana &amp; Co: **Contract**');
 		expect(mocks.logEvent).toHaveBeenCalledWith('warn', 'jobs', 'digest_writer_failed', expect.objectContaining({ job: job.id, error: 'The AI service returned an error (529)' }));
 	});
 
@@ -423,12 +431,54 @@ describe('running a job', () => {
 			expect(mocks.logEvent).toHaveBeenCalledWith('warn', 'jobs', 'report_not_sent', expect.objectContaining({ status: 502 }));
 		});
 
-		it('cuts a long report to fit one Telegram message', async () => {
-			mocks.runAgentTurn.mockResolvedValue({ message: '&'.repeat(1500), done: Array.from({ length: 60 }, (_, i) => `Moved message ${i} ${'x'.repeat(80)}`), pending: [] });
+		it('sends its Markdown as Telegram formatting, not asterisks', async () => {
+			mocks.runAgentTurn.mockResolvedValue({ message: '**Elaine replied.** She can do `Thursday`:\n\n- viewing at 10\n- keys at 12', done: [], pending: [] });
 			await runJob(agentJob(), SUNDAY_9AM_UTC);
-			const html = mocks.sendMessage.mock.calls[0][1] as string;
-			const text = html.replace(/<\/?b>/g, '').replace(/&amp;|&lt;|&gt;/g, '_');
-			expect(text.length).toBeLessThan(4096);
+			expect(mocks.sendMessage).toHaveBeenCalledWith(
+				'555',
+				'<b>Bank check</b>\n<b>Elaine replied.</b> She can do <code>Thursday</code>:\n\n• viewing at 10\n• keys at 12'
+			);
+		});
+
+		it('lists each change on one line, as text, since a change can quote a subject', async () => {
+			mocks.runAgentTurn.mockResolvedValue({ message: 'Done.', done: ['Set a Telegram reminder for 2026-11-03 23:59: “Newsletters:\n1. *Sale*”'], pending: [] });
+			await runJob(agentJob(), SUNDAY_9AM_UTC);
+			expect(mocks.sendMessage.mock.calls[0][1]).toBe('<b>Bank check</b>\nDone.\n\n• Set a Telegram reminder for 2026-11-03 23:59: “Newsletters: 1. *Sale*”');
+		});
+
+		it('sends a long report whole, over as many messages as it takes', async () => {
+			// It was cut at 1,500 characters: "7. IATA via LinkedIn: "Here's Wh".
+			const items = Array.from({ length: 30 }, (_, i) => `${i + 1}. **Newsletter ${i + 1}**: ${'what it says. '.repeat(12)}`);
+			mocks.runAgentTurn.mockResolvedValue({
+				message: `It lists **30 newsletters**:\n\n${items.join('\n')}\n\nThat's all.`,
+				done: Array.from({ length: 40 }, (_, i) => `Moved message ${i}`),
+				pending: []
+			});
+			await runJob(agentJob(), SUNDAY_9AM_UTC);
+			const sent = mocks.sendMessage.mock.calls.map((call) => call[1] as string);
+			expect(sent.length).toBeGreaterThan(1);
+			for (const html of sent) expect(html.replace(/<[^>]+>/g, '').length).toBeLessThan(4096);
+			const all = sent.join('\n');
+			expect(all).toContain('30. <b>Newsletter 30</b>');
+			expect(all).toContain('That\'s all.');
+			expect(all).toContain('• Moved message 29\n…and 10 more');
+			expect(sent[0]).toMatch(/^<b>Bank check<\/b>\n/);
+		});
+
+		it('counts a report as sent once its first message is, logging the rest that failed', async () => {
+			const items = Array.from({ length: 30 }, (_, i) => `${i + 1}. ${'what it says. '.repeat(12)}`);
+			mocks.runAgentTurn.mockResolvedValue({ message: items.join('\n'), done: ['Archived 2'], pending: [] });
+			mocks.sendMessage.mockResolvedValueOnce({}).mockRejectedValueOnce(new TelegramError('Too Many Requests', 429));
+			expect(await runJob(agentJob(), SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Archived 2' });
+			expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+			expect(mocks.logEvent).toHaveBeenCalledWith('warn', 'jobs', 'report_cut', expect.objectContaining({ sent: 1, status: 429 }));
+		});
+
+		it('sends nothing when the agent stays quiet, and keeps what it found', async () => {
+			// The hourly watch said "So I didn't send a Telegram message", in a Telegram message.
+			mocks.runAgentTurn.mockResolvedValue({ message: 'Elaine hasn’t replied yet.', done: [], pending: [], quiet: true });
+			expect(await runJob(agentJob(), SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Nothing sent: Elaine hasn’t replied yet.' });
+			expect(mocks.sendMessage).not.toHaveBeenCalled();
 		});
 	});
 });

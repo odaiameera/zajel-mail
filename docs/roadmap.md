@@ -64,6 +64,7 @@ Verified bugs that lose mail or events, or weaken the account, but need a user t
 - [x] Reminders are never expired, capped or pruned.
 - [x] HTML-only mail is handed to Jev as raw markup; the privacy text undersells what is sent.
 - [x] A rule with a Jev condition could move mail to Trash or Junk through "Move to folder". Left: pins act only while Jev is on (now said in Settings); Jev's mixed-batch failures still burn attempts; the dotted display-name false positive (jev#8).
+- [x] A job's Telegram report was cut at 1,500 characters mid-word, showed the agent's Markdown as raw asterisks, and went out on every run, so an hourly watch said "nothing yet" every hour. Reports now go whole (split between paragraphs and list items, at most five messages), formatted, and a job can `stay_quiet`. The agent is also told the time, not only the date: it had set a reminder at 23:00 "for 22:15".
 
 **Search (`dev-search`)**
 - [x] Vectors stored under a model are kept when a new tick switches model mid-batch; loaded vectors are never evicted on unlink; the first search after a restart loads synchronously. Also fixed: migration 026's late columns are repaired on databases that ran its first version.
