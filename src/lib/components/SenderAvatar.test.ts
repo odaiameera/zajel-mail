@@ -31,6 +31,8 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+const disc = (container: HTMLElement) => container.firstElementChild as HTMLElement;
+
 describe('SenderAvatar', () => {
 	it('shows an avatar that finished loading before it could hear the load event', async () => {
 		stubImages({ complete: true, naturalWidth: 64 });
@@ -38,42 +40,71 @@ describe('SenderAvatar', () => {
 		await tick();
 		const { img, chip } = parts(container);
 		expect(img.getAttribute('src')).toBe('/api/avatar?email=no-reply%40revolut.com');
-		expect(img.style.opacity).toBe('1');
+		expect(disc(container).dataset.status).toBe('loaded');
+		expect(img.style.visibility).toBe('visible');
+		expect(img.style.backgroundColor).toBe('rgb(255, 255, 255)');
 		expect(chip.style.opacity).toBe('0');
 	});
 
-	it('keeps the initial for a miss (the endpoint’s empty 204) or a broken image', async () => {
+	it('never shows the coloured initial while an avatar may still come', async () => {
+		// The chip under a loading logo was the red flash before every avatar.
+		stubImages({ complete: false, naturalWidth: 0 });
+		const { container } = render(SenderAvatar, { email: 'no-reply@revolut.com', name: 'Revolut' });
+		await tick();
+		const { img, chip } = parts(container);
+		expect(disc(container).dataset.status).toBe('pending');
+		expect(chip.style.opacity).toBe('0');
+		// Painted as soon as the browser has it: no opacity gate, no white plate yet.
+		expect(img.style.opacity).toBe('');
+		expect(img.style.backgroundColor).toBe('transparent');
+		img.dispatchEvent(new Event('load'));
+		await tick();
+		expect(disc(container).dataset.status).toBe('loaded');
+		expect(chip.style.opacity).toBe('0');
+		expect(img.style.backgroundColor).toBe('rgb(255, 255, 255)');
+	});
+
+	it('brings the initial in only once there is no avatar: the endpoint’s 204, or an error', async () => {
+		stubImages({ complete: false, naturalWidth: 0 });
+		const { container } = render(SenderAvatar, { email: 'no-reply@revolut.com', name: 'Revolut' });
+		await tick();
+		const { img, chip } = parts(container);
+		img.dispatchEvent(new Event('error'));
+		await tick();
+		expect(disc(container).dataset.status).toBe('missing');
+		expect(chip.style.opacity).toBe('1');
+		expect(chip.textContent?.trim()).toBe('R');
+		// Hidden, not removed: removing it would reset the avatar and load it again, forever.
+		expect(parts(container).img).toBe(img);
+		expect(img.style.visibility).toBe('hidden');
+	});
+
+	it('knows a miss that settled before hydration', async () => {
 		stubImages({ complete: true, naturalWidth: 0 });
 		const { container } = render(SenderAvatar, { email: 'no-reply@revolut.com', name: 'Revolut' });
 		await tick();
-		const { img, chip } = parts(container);
-		expect(img.style.opacity).toBe('0');
-		expect(chip.style.opacity).toBe('1');
-		expect(chip.textContent?.trim()).toBe('R');
+		expect(disc(container).dataset.status).toBe('missing');
+		expect(parts(container).chip.style.opacity).toBe('1');
 	});
 
-	it('still waits for the load event while the image is on its way', async () => {
-		stubImages({ complete: false, naturalWidth: 0 });
-		const { container } = render(SenderAvatar, { email: 'no-reply@revolut.com', name: 'Revolut' });
+	it('shows the initial straight away when there is no address to look up', async () => {
+		const { container } = render(SenderAvatar, { email: '', name: 'Dana' });
 		await tick();
-		const { img, chip } = parts(container);
-		expect(img.style.opacity).toBe('0');
-		img.dispatchEvent(new Event('load'));
-		await tick();
-		expect(img.style.opacity).toBe('1');
-		expect(chip.style.opacity).toBe('0');
+		expect(disc(container).dataset.status).toBe('missing');
+		expect(container.querySelector('img')).toBeNull();
+		expect(parts(container).chip.style.opacity).toBe('1');
 	});
 
-	it('starts over for a new sender rather than keeping the last one’s avatar shown', async () => {
+	it('starts over for a new sender rather than keeping the last one’s avatar', async () => {
 		stubImages({ complete: false, naturalWidth: 0 });
 		const { container, rerender } = render(SenderAvatar, { email: 'a@revolut.com', name: 'Revolut' });
-		const { img } = parts(container);
-		img.dispatchEvent(new Event('load'));
+		parts(container).img.dispatchEvent(new Event('load'));
 		await tick();
-		expect(img.style.opacity).toBe('1');
+		expect(disc(container).dataset.status).toBe('loaded');
 		await rerender({ email: 'b@example.test', name: 'Bea' });
 		await tick();
-		expect(parts(container).img.style.opacity).toBe('0');
+		expect(disc(container).dataset.status).toBe('pending');
+		expect(parts(container).chip.style.opacity).toBe('0');
 		expect(parts(container).chip.textContent?.trim()).toBe('B');
 	});
 });
