@@ -33,7 +33,9 @@
 	 * loaded: the image, on its plate. missing: the server has none (its 204)
 	 * or it failed, and only now does the initials chip fade in.
 	 */
-	let status = $state<'pending' | 'loaded' | 'missing'>(src ? 'pending' : 'missing');
+	let settled = $state<'pending' | 'loaded' | 'missing'>('pending');
+	// No address, nothing to look up: the initial from the first frame, SSR included.
+	const status = $derived(src ? settled : 'missing');
 	let plate = $state(PLATE_LIGHT);
 	let imgEl = $state<HTMLImageElement>();
 
@@ -50,10 +52,10 @@
 	$effect(() => {
 		src;
 		plate = PLATE_LIGHT;
-		status = src ? 'pending' : 'missing';
+		settled = 'pending';
 		if (imgEl?.complete) {
 			if (imgEl.naturalWidth > 0) onImageReady(imgEl);
-			else status = 'missing';
+			else settled = 'missing';
 		}
 	});
 
@@ -104,7 +106,7 @@
 
 	function onImageReady(img: HTMLImageElement) {
 		plate = pickPlate(img);
-		status = 'loaded';
+		settled = 'loaded';
 	}
 
 	function onImageLoad(event: Event) {
@@ -177,7 +179,7 @@
 			style="background-color:{status === 'loaded' ? plate : 'transparent'};box-shadow:inset 0 0 0 1px var(--color-border);visibility:{status === 'missing' ? 'hidden' : 'visible'}"
 			draggable="false"
 			onload={onImageLoad}
-			onerror={() => (status = 'missing')}
+			onerror={() => (settled = 'missing')}
 		/>
 	{/if}
 </div>
