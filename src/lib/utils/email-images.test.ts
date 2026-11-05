@@ -309,7 +309,7 @@ describe('dark-mode CSS in the reading view', () => {
 		expect(html).toBe('<style media="(max-width: 0px)">p{color:#fff}</style><style>@media (max-width: 600px) { p { font-size: 12px } }</style>');
 	});
 
-	it('keeps the dark-mode CSS in replies and forwards, which go to other mail clients', () => {
+	it('leaves dark-mode CSS alone outside the reading pass', () => {
 		expect(rewriteEmailImages(REVOLUT, ctx())).toBe(REVOLUT);
 	});
 
