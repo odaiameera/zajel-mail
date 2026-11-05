@@ -3,6 +3,7 @@ import type { EmailAttachment } from '$lib/jmap/types';
 import {
 	MAX_HTML_LENGTH,
 	emailFrameCsp,
+	lightOnlyMedia,
 	prepareEmailForReading,
 	proxiedImageUrl,
 	rewriteEmailImages
@@ -265,6 +266,58 @@ describe('prepareEmailForReading', () => {
 		expect(html).not.toMatch(/<link|refresh|t\.test/i);
 		expect(html).toContain('<meta charset="utf-8">');
 		expect(html).toContain('<p>Hello</p>');
+	});
+});
+
+describe('dark-mode CSS in the reading view', () => {
+	// The shape of Revolut's mail, which showed white text on the white sheet:
+	// it opts in to dark mode and whitens its text there, expecting a dark canvas.
+	const REVOLUT = [
+		'<html><head><meta name="color-scheme" content="light dark"><style>',
+		':root { color-scheme: light dark; }',
+		'.btn { background: #191c1f; } .btn-text { color: #fff; }',
+		'@media (prefers-color-scheme: dark) { h1, p, .dark-text { color: #ffffff !important; } .btn { background: #fff !important; } }',
+		'@media screen and (prefers-color-scheme:DARK){ .x { color: #fff } }',
+		'@media (prefers-color-scheme: light) { .logo-light { display: block } }',
+		'@media not all and (prefers-color-scheme: light) { .y { color: #fff } }',
+		'@media (prefers-dark-interface) { .z { color: #fff } }',
+		'</style></head><body><h1>Your card is on its way</h1><p>Track it in the app.</p>',
+		'<picture><source media="(prefers-color-scheme: dark)" srcset="data:image/png;base64,AA=="><img src="data:image/png;base64,BB==" alt="Revolut"></picture>',
+		'<a class="btn"><span class="btn-text">Learn more</span></a></body></html>'
+	].join('');
+
+	it('switches every dark-mode branch off and every light one on', () => {
+		const { html } = prepareEmailForReading(REVOLUT, ctx());
+		expect(html).not.toMatch(/prefers-color-scheme|prefers-dark-interface/i);
+		expect(html).toContain('@media (max-width: 0px) { h1, p, .dark-text { color: #ffffff !important; }');
+		expect(html).toContain('@media screen and (max-width: 0px){ .x');
+		expect(html).toContain('@media (min-width: 0px) { .logo-light');
+		// "Not light" is dark too, so it stays off.
+		expect(html).toContain('@media not all and (min-width: 0px) { .y');
+		expect(html).toContain('@media (max-width: 0px) { .z');
+		expect(html).toContain('<source media="(max-width: 0px)" srcset="data:image/png;base64,AA==">');
+		// Everything else is as sent.
+		expect(html).toContain('.btn { background: #191c1f; } .btn-text { color: #fff; }');
+		expect(html).toContain('<h1>Your card is on its way</h1>');
+	});
+
+	it('covers a <style media> attribute, and leaves other media queries alone', () => {
+		const { html } = prepareEmailForReading(
+			"<style media='(prefers-color-scheme: dark)'>p{color:#fff}</style><style>@media (max-width: 600px) { p { font-size: 12px } }</style>",
+			ctx()
+		);
+		expect(html).toBe('<style media="(max-width: 0px)">p{color:#fff}</style><style>@media (max-width: 600px) { p { font-size: 12px } }</style>');
+	});
+
+	it('keeps the dark-mode CSS in replies and forwards, which go to other mail clients', () => {
+		expect(rewriteEmailImages(REVOLUT, ctx())).toBe(REVOLUT);
+	});
+
+	it('stays linear on hostile CSS', () => {
+		const css = '('.repeat(200_000) + ' '.repeat(200_000) + 'prefers-color-scheme';
+		const started = performance.now();
+		expect(lightOnlyMedia(css)).toBe(css);
+		expect(performance.now() - started).toBeLessThan(1000);
 	});
 });
 

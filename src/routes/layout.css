@@ -210,8 +210,9 @@ html {
 	 * every scrollbar, <select> popup and date/time picker rendered in the
 	 * light system style — bright white scrollbar tracks down the mail list,
 	 * reading pane and calendar on the dark theme. html.light flips it back.
-	 * The email iframe sets no scheme of its own, so it keeps painting light,
-	 * which is what its white body expects.
+	 * The email iframe must not inherit it: inside a frame, prefers-color-scheme
+	 * follows the iframe element's scheme, so the email's dark-mode CSS would
+	 * fire on a white sheet. EmailDetail gives the iframe its own (light).
 	 */
 	color-scheme: dark;
 	/*

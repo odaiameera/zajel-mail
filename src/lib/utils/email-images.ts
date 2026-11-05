@@ -67,6 +67,8 @@ interface RewriteCtx {
 	blocked: number;
 	/** Blob ids of the `cid:` parts a reference resolved to. */
 	inline: Set<string>;
+	/** Reading view only: the email's dark-mode media queries never match ({@link lightOnlyMedia}). */
+	lightOnly: boolean;
 }
 
 /**
@@ -285,6 +287,31 @@ function decodeCssEscapes(value: string): string {
 	});
 }
 
+/*
+ * The reading view is always a white sheet, but the browser can still tell
+ * the email the reader prefers dark: on Safari before 27 the frame follows
+ * the device's appearance whatever the page says, and DevTools emulation
+ * forces it everywhere. Marketing mail (Revolut, for one) answers that with
+ * `@media (prefers-color-scheme: dark) { … color: #fff !important }`,
+ * expecting the client to paint a dark canvas too, so its text went white on
+ * white. Each query is swapped for one that is always false (dark) or always
+ * true (light), so `not all and (prefers-color-scheme: light)` stays off as
+ * well. The reading pane is never zero pixels wide; a frame that is, shows
+ * nothing either way. `prefers-dark-interface` is Apple Mail's older name.
+ * Each pattern starts with a literal `(` and backtracks over whitespace only,
+ * so a pass stays linear in the length of the CSS.
+ */
+const DARK_QUERY = /\(\s*(?:prefers-color-scheme\s*:\s*dark|prefers-dark-interface)\s*\)/gi;
+const LIGHT_QUERY = /\(\s*prefers-color-scheme\s*:\s*light\s*\)/gi;
+const NEVER = '(max-width: 0px)';
+const ALWAYS = '(min-width: 0px)';
+
+/** CSS, or a `media` attribute, with its dark-mode branches switched off. */
+export function lightOnlyMedia(css: string): string {
+	if (!/prefers-(?:color-scheme|dark-interface)/i.test(css)) return css;
+	return css.replace(DARK_QUERY, NEVER).replace(LIGHT_QUERY, ALWAYS);
+}
+
 interface StartTag {
 	name: string;
 	lowerName: string;
@@ -429,6 +456,10 @@ function rewriteTag(tag: StartTag, ctx: RewriteCtx): string | null {
 		} else if (key === 'style') {
 			const rewritten = rewriteCss(value, ctx);
 			next = rewritten === value ? null : rewritten;
+		} else if (key === 'media' && ctx.lightOnly && (lowerName === 'style' || lowerName === 'source')) {
+			// <source media="(prefers-color-scheme: dark)"> picks the white-on-clear logo.
+			const rewritten = lightOnlyMedia(value);
+			next = rewritten === value ? null : rewritten;
 		}
 
 		if (next === null) return whole;
@@ -450,7 +481,9 @@ export function rewriteEmailImages(html: string, context: EmailImageContext): st
  * `strip` also removes what loads or navigates outside an image rule's reach:
  * <link> covers stylesheets but also dns-prefetch, preconnect and prefetch,
  * which reach the sender's host without any CSP directive applying, and a
- * meta refresh moves the frame wherever the sender likes.
+ * meta refresh moves the frame wherever the sender likes. It also switches
+ * off the email's dark-mode media queries ({@link lightOnlyMedia}): the
+ * reading view is a white sheet. Replies and forwards keep them as sent.
  */
 function rewrite(
 	html: string,
@@ -473,7 +506,8 @@ function rewrite(
 		base: null,
 		remote: context.remote ?? 'proxy',
 		blocked: 0,
-		inline
+		inline,
+		lightOnly: strip
 	};
 
 	// A sender's <base href> would re-root our /api/image-proxy URLs onto the
@@ -502,7 +536,10 @@ function rewrite(
 			}
 			return rewriteTag(tag, ctx);
 		},
-		(css) => rewriteCss(css, ctx)
+		(css) => {
+			const rewritten = rewriteCss(css, ctx);
+			return strip ? lightOnlyMedia(rewritten) : rewritten;
+		}
 	);
 	return { html: out, blocked: ctx.blocked, inline };
 }

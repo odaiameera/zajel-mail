@@ -502,13 +502,27 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// The CSP <meta> comes first, so it governs everything the email loads; an
 	// email's own CSP <meta> can only tighten it. no-referrer keeps the address
 	// of this webmail out of any link you follow from the message.
+	//
+	// The page is a white sheet in either theme, and says so: the first
+	// color-scheme <meta> wins over the email's own "light dark", and the
+	// doubled :root outranks its :root rule, so system colours, form controls
+	// and light-dark() stay light (the iframe's scheme-only-light class is
+	// what keeps prefers-color-scheme light; prepareEmailForReading switches
+	// the email's dark-mode queries off for browsers that ignore it).
+	//
+	// The default text and background sit on html rather than body: the email's
+	// own <body bgcolor text> ends up on this body, and an author rule on body
+	// would outrank those, leaving a sender's white text with no dark behind it.
 	const iframeContent = $derived(`<!DOCTYPE html><html><head>
 		<meta http-equiv="Content-Security-Policy" content="${frameCsp}">
 		<meta name="referrer" content="no-referrer">
+		<meta name="color-scheme" content="light only">
 		<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 		<base target="_blank">
 		<style>
-			body { margin: 16px; font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.6; word-wrap: break-word; overflow-wrap: break-word; color: #1f2328; background: #fff; }
+			:root:root { color-scheme: light only !important; }
+			html { color: #1f2328; background: #fff; }
+			body { margin: 16px; font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.6; word-wrap: break-word; overflow-wrap: break-word; }
 			img { max-width: 100%; height: auto; }
 			a { color: #0969da; }
 			pre { white-space: pre-wrap; }
@@ -1421,14 +1435,19 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		     pane, and long ones scroll inside the iframe instead of the
 		     wrapper. -->
 		<div class="flex-1 overflow-hidden {compact ? 'px-4 py-3' : 'px-6 py-4 max-md:px-2 max-md:py-2'}">
-			<!-- bg-white matches the document's body background so swapping
+			<!-- bg-white matches the document's background so swapping
 			     srcdoc (next/previous message) repaints white-on-white instead
-			     of flashing through the dark page background. -->
+			     of flashing through the dark page background.
+			     scheme-only-light: an iframe's prefers-color-scheme follows the
+			     iframe element's color-scheme, which otherwise inherits the dark
+			     theme's. The email's dark-mode CSS then turned its text white on
+			     this white sheet (Revolut). Not "normal": that falls back to the
+			     device's dark mode. -->
 			<iframe
 				srcdoc={iframeContent}
 				sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
 				title="Email content"
-				class="w-full h-full border-none rounded-md bg-white"
+				class="w-full h-full border-none rounded-md bg-white scheme-only-light"
 			></iframe>
 		</div>
 	</div>
