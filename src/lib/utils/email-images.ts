@@ -483,7 +483,8 @@ export function rewriteEmailImages(html: string, context: EmailImageContext): st
  * which reach the sender's host without any CSP directive applying, and a
  * meta refresh moves the frame wherever the sender likes. It also switches
  * off the email's dark-mode media queries ({@link lightOnlyMedia}): the
- * reading view is a white sheet. Replies and forwards keep them as sent.
+ * reading view is a white sheet. Replies and forwards quote the raw body
+ * (getBodyHtml in EmailDetail), so they keep the CSS as sent.
  */
 function rewrite(
 	html: string,

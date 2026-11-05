@@ -510,9 +510,12 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// what keeps prefers-color-scheme light; prepareEmailForReading switches
 	// the email's dark-mode queries off for browsers that ignore it).
 	//
-	// The default text and background sit on html rather than body: the email's
-	// own <body bgcolor text> ends up on this body, and an author rule on body
-	// would outrank those, leaving a sender's white text with no dark behind it.
+	// The default text colour sits on html rather than body: the email's own
+	// <body bgcolor text> ends up on this body, and an author rule on body
+	// would outrank those, leaving a sender's white text with no dark behind
+	// it. html has no background, so the email's body background fills the
+	// whole frame as it would in a browser; where it sets none, the iframe's
+	// bg-white shows through.
 	const iframeContent = $derived(`<!DOCTYPE html><html><head>
 		<meta http-equiv="Content-Security-Policy" content="${frameCsp}">
 		<meta name="referrer" content="no-referrer">
@@ -521,7 +524,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		<base target="_blank">
 		<style>
 			:root:root { color-scheme: light only !important; }
-			html { color: #1f2328; background: #fff; }
+			html { color: #1f2328; }
 			body { margin: 16px; font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.6; word-wrap: break-word; overflow-wrap: break-word; }
 			img { max-width: 100%; height: auto; }
 			a { color: #0969da; }
