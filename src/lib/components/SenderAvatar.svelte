@@ -26,25 +26,35 @@
 	const PLATE_LIGHT = '#ffffff';
 	const PLATE_DARK = '#24292f';
 
-	let loaded = $state(false);
+	/**
+	 * pending: the avatar may still come, so the disc is a quiet neutral, with
+	 * no letter and no colour. The hashed chip used to be the placeholder, so
+	 * every logo arrived over a flash of red or green, cached ones included.
+	 * loaded: the image, on its plate. missing: the server has none (its 204)
+	 * or it failed, and only now does the initials chip fade in.
+	 */
+	let status = $state<'pending' | 'loaded' | 'missing'>(src ? 'pending' : 'missing');
 	let plate = $state(PLATE_LIGHT);
 	let imgEl = $state<HTMLImageElement>();
 
 	// Reset when the sender changes; a reused row instance must not keep the
-	// previous sender's plate while the new avatar is still loading.
+	// previous sender's avatar while the new one is still loading.
 	//
-	// Then catch an image that is already there. On a reload the list comes
+	// Then catch an image that has already settled. On a reload the list comes
 	// from the server and the avatars from the browser's cache, so they finish
-	// before hydration attaches onload. Svelte would replay that load through
-	// an inline onload="this.__e=event" it writes on server-rendered images,
-	// but the app's CSP (svelte.config.js) refuses inline handlers, so the
-	// event was lost and every avatar stayed hidden behind its initial. A
-	// complete image with no width is a miss (the endpoint's 204) or an error.
+	// before hydration attaches onload/onerror. Svelte would replay those
+	// through an inline onload="this.__e=event" it writes on server-rendered
+	// images, but the app's CSP (svelte.config.js) refuses inline handlers, so
+	// the events never arrive. A complete image with no width is a miss or an
+	// error.
 	$effect(() => {
 		src;
-		loaded = false;
 		plate = PLATE_LIGHT;
-		if (imgEl?.complete && imgEl.naturalWidth > 0) onImageReady(imgEl);
+		status = src ? 'pending' : 'missing';
+		if (imgEl?.complete) {
+			if (imgEl.naturalWidth > 0) onImageReady(imgEl);
+			else status = 'missing';
+		}
 	});
 
 	/**
@@ -94,7 +104,7 @@
 
 	function onImageReady(img: HTMLImageElement) {
 		plate = pickPlate(img);
-		loaded = true;
+		status = 'loaded';
 	}
 
 	function onImageLoad(event: Event) {
@@ -102,18 +112,24 @@
 	}
 </script>
 
+<!--
+	The disc itself is the pending state: a neutral fill and the same hairline
+	ring a loaded avatar has, so the shape is there from the first frame and
+	nothing about it changes when a logo lands on it.
+-->
 <div
 	class="relative rounded-full overflow-hidden select-none shrink-0"
-	style="width:{size}px;height:{size}px"
+	style="width:{size}px;height:{size}px;background-color:var(--color-surface-hover);box-shadow:inset 0 0 0 1px var(--color-border)"
+	data-status={status}
 >
 	<!--
-		Initials chip. Its colour is hashed from the address, so it is a
-		different hue per sender — fine as a standalone fallback, wrong as a
-		backdrop. It is hidden the moment a real avatar loads (see below).
+		Initials chip, only once there is no avatar to wait for. Its colour is
+		hashed from the address, so it is a different hue per sender: fine as
+		a fallback, wrong as a backdrop.
 	-->
 	<div
 		class="absolute inset-0 flex items-center justify-center text-white font-semibold transition-opacity duration-150"
-		style="background-color:{bg};font-size:{Math.round(size * 0.42)}px;opacity:{loaded ? 0 : 1}"
+		style="background-color:{bg};font-size:{Math.round(size * 0.42)}px;opacity:{status === 'missing' ? 1 : 0}"
 		aria-hidden="true"
 	>
 		{letter}
@@ -142,6 +158,12 @@
 			The hairline ring is what stops a white plate from disappearing into a
 			white row in light mode — without it the disc has no edge and the mark
 			just floats.
+
+			No fade, and no opacity gate: the browser paints the image the moment
+			it has it (at once, from the cache), over the neutral disc. The plate
+			goes on once it is known; before that the image is transparent, so a
+			pending disc shows no white. A miss is hidden rather than removed, so
+			the element (and imgEl) stays put.
 		-->
 		<img
 			bind:this={imgEl}
@@ -151,11 +173,11 @@
 			height={size}
 			loading="lazy"
 			decoding="async"
-			class="absolute inset-0 w-full h-full object-cover transition-opacity duration-150"
-			style="opacity:{loaded ? 1 : 0};background-color:{plate};box-shadow:inset 0 0 0 1px var(--color-border)"
+			class="absolute inset-0 w-full h-full object-cover"
+			style="background-color:{status === 'loaded' ? plate : 'transparent'};box-shadow:inset 0 0 0 1px var(--color-border);visibility:{status === 'missing' ? 'hidden' : 'visible'}"
 			draggable="false"
 			onload={onImageLoad}
-			onerror={() => (loaded = false)}
+			onerror={() => (status = 'missing')}
 		/>
 	{/if}
 </div>
