@@ -17,7 +17,9 @@ const mocks = vi.hoisted(() => ({
 	createEvent: vi.fn(async () => ({ id: 'ev-new' })),
 	runChat: vi.fn(async () => 'Thanks, Thursday works for me.'),
 	claudeConfigured: true,
-	logEvent: vi.fn()
+	logEvent: vi.fn(),
+	/** Jev's decision record per email id, as getDecision returns it. */
+	decisions: {} as Record<string, Record<string, unknown>>
 }));
 
 vi.mock('$lib/server/ai/claude', () => ({
@@ -67,7 +69,7 @@ vi.mock('$lib/server/calendar/service', () => ({
 	listCalendarsWithMeta: async () => [{ id: 'default', name: 'Personal', isDefault: true }]
 }));
 vi.mock('$lib/server/db/queries/reminders', () => ({ scheduleReminder: vi.fn() }));
-vi.mock('$lib/server/db/queries/jev-decisions', () => ({ getDecision: () => null }));
+vi.mock('$lib/server/db/queries/jev-decisions', () => ({ getDecision: (_account: string, id: string) => mocks.decisions[id] ?? null }));
 vi.mock('$lib/server/db/queries/identities', () => ({ listIdentities: () => [{ email: 'alias@example.test' }] }));
 vi.mock('$lib/server/telegram/bot', () => ({ telegramConfigured: () => true }));
 vi.mock('$lib/server/telegram/store', () => ({ getLink: () => ({ chatId: '555' }), addReminder: mocks.addReminder }));
@@ -138,6 +140,7 @@ beforeAll(() => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.decisions = {};
 	// A failed test can leave queued replies behind; start each one clean.
 	mocks.create.mockReset();
 	forgetStrictRefusals();
@@ -614,6 +617,32 @@ describe('runAgentTurn', () => {
 			// Amman is three hours ahead of UTC.
 			expect(resultsOf(1)[0].content).toContain('date=2026-11-03 01:30');
 			expect(mocks.create.mock.calls[0][0].system[1].text).toContain('already in that zone');
+		});
+
+		it('gives Jev’s verdict only where Jev put the message and it is still there', async () => {
+			const inbox = (id: string, keywords: Record<string, boolean>) => ({
+				id, receivedAt: '2026-11-02T08:00:00Z', from: [{ email: 'news@shop.example' }], subject: id, mailboxIds: { IN: true }, keywords, preview: ''
+			});
+			mocks.searchEmails.mockResolvedValueOnce({
+				emails: [inbox('sorted', { $cat_updates: true }), inbox('unsure', {}), inbox('movedBack', {})],
+				total: 3
+			});
+			mocks.decisions = {
+				sorted: { status: 'done', category: 'updates', confidence: 0.85, applied: 'updates' },
+				// Below the confidence a tab needs: Jev left it in Important.
+				unsure: { status: 'done', category: 'updates', confidence: 0.3, applied: null },
+				// Jev sorted it; you moved it back to Important.
+				movedBack: { status: 'done', category: 'updates', confidence: 0.9, applied: 'updates', correctedTo: 'important' }
+			};
+			mocks.create
+				.mockResolvedValueOnce(reply([toolUse('t1', 'inbox_triage', { limit: 10, unread_only: false })]))
+				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+			await runAgentTurn(turn());
+			const lines: string[] = resultsOf(1)[0].content.split('\n');
+			expect(lines.find((l) => l.includes('id=sorted'))).toMatch(/tab=updates \|.* \| jev=updates@0\.85/);
+			// A pick that never reached the message, or no longer stands, isn't Jev's verdict.
+			expect(lines.find((l) => l.includes('id=unsure'))).toMatch(/tab=important \|.* \| jev=none/);
+			expect(lines.find((l) => l.includes('id=movedBack'))).toMatch(/tab=important \|.* \| jev=none/);
 		});
 	});
 
