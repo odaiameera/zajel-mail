@@ -187,3 +187,41 @@ describe('EmailDetail mark as read', () => {
 		expect(markReadCalls()).toHaveLength(0);
 	});
 });
+
+describe('EmailDetail Inbox tab', () => {
+	const data = mocks.page.data as Record<string, unknown>;
+	const inTab = (keywords: Record<string, boolean>, mailboxIds: Record<string, boolean> = { inbox: true }) =>
+		({ ...email(), keywords: { $seen: true, ...keywords }, mailboxIds }) as Email;
+
+	beforeEach(() => {
+		mocks.page.data.autoLoadImages = 'never';
+		data.mailboxes = [
+			{ id: 'inbox', name: 'Inbox', role: 'inbox', parentId: null },
+			{ id: 'archive', name: 'Archive', role: 'archive', parentId: null }
+		];
+		data.inboxTabs = true;
+	});
+	afterEach(() => {
+		data.mailboxes = [];
+		delete data.inboxTabs;
+	});
+
+	it('shows the tab a sorted message is in beside its labels', () => {
+		render(EmailDetail, { email: inTab({ $cat_updates: true }) });
+		expect(screen.getByTitle('In the Updates tab').textContent).toContain('Updates');
+	});
+
+	it('shows none for Important, outside the Inbox, or while tabs are off', () => {
+		render(EmailDetail, { email: inTab({}) });
+		expect(screen.queryByTitle(/ tab$/)).toBeNull();
+		cleanup();
+
+		render(EmailDetail, { email: inTab({ $cat_newsletters: true }, { archive: true }) });
+		expect(screen.queryByTitle(/ tab$/)).toBeNull();
+		cleanup();
+
+		data.inboxTabs = false;
+		render(EmailDetail, { email: inTab({ $cat_promotions: true }) });
+		expect(screen.queryByTitle(/ tab$/)).toBeNull();
+	});
+});
