@@ -77,6 +77,55 @@ function crossSiteWrite(request: Request, url: URL): boolean {
 	return origin !== null && origin !== url.origin;
 }
 
+// The session cookie is SameSite=Strict, so the browser leaves it off a
+// navigation that another site started: a link from a search result, a chat,
+// a web mail client, or a mailto: link handed to this app as its protocol
+// handler. That request looks signed out, so /login drew the sign-in form,
+// and any deep link was sent to /login, for someone who was signed in all
+// along; opening the app again from the address bar then found the session.
+//
+// Such a navigation without the cookie gets a page that loads the same
+// address again. That second load comes from this site, so the cookie goes
+// with it, and someone who isn't signed in just sees the page they asked for.
+// Strict stays: another site still can't make a request that carries the
+// session.
+const RETRY_COOKIE = 'same_site_retry';
+
+// A page load, not a frame: `document` straight from the browser, `empty`
+// when the service worker passes the navigation on (it fetches it itself).
+const PAGE_DESTINATIONS = new Set(['document', 'empty']);
+
+function crossSiteNavigation(request: Request): boolean {
+	const h = request.headers;
+	return (
+		request.method === 'GET' &&
+		h.get('sec-fetch-mode') === 'navigate' &&
+		PAGE_DESTINATIONS.has(h.get('sec-fetch-dest') ?? '') &&
+		h.get('sec-fetch-site') === 'cross-site'
+	);
+}
+
+function sameSiteRetry(): Response {
+	// A refresh with no URL reloads this address, and nothing from the request
+	// is written into the page. The link is there in case a browser declines
+	// to refresh.
+	const html =
+		'<!doctype html><html><head><meta charset="utf-8">' +
+		'<meta http-equiv="refresh" content="0"><title>Zajel Mail</title></head>' +
+		'<body><a href="">Continue to Zajel Mail</a></body></html>';
+	return new Response(html, {
+		headers: {
+			'content-type': 'text/html; charset=utf-8',
+			'cache-control': 'no-store',
+			'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+			// Lax, so it comes back even if a browser counted the reload as
+			// cross-site too: then the page is served as it is rather than
+			// sending the browser round in a loop.
+			'set-cookie': `${RETRY_COOKIE}=1; Path=/; Max-Age=60; HttpOnly; Secure; SameSite=Lax`
+		}
+	});
+}
+
 // Fail fast on a missing/short WEBMAIL_SECRET: without it linked-account
 // passwords can't be encrypted or decrypted, and the breakage would
 // otherwise surface mid-flow as misleading "can't reach the mail server"
@@ -162,6 +211,11 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	const sessionId = event.cookies.get('session');
+	const retried = event.cookies.get(RETRY_COOKIE) !== undefined;
+	if (retried) event.cookies.delete(RETRY_COOKIE, { path: '/' });
+	if (!sessionId && !retried && crossSiteNavigation(event.request)) {
+		return sameSiteRetry();
+	}
 	if (sessionId) {
 		const session = getAppSession(sessionId);
 		const user = session ? getUserById(session.user_id) : undefined;

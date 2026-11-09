@@ -109,6 +109,64 @@ describe('session cookie', () => {
 	});
 });
 
+describe('a navigation another site started', () => {
+	const CROSS_SITE = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-site': 'cross-site' };
+
+	/** A GET with these cookies (the session cookie only if given). */
+	async function navigate(path: string, headers: Record<string, string>, jar: Record<string, string> = {}) {
+		mocks.session = null;
+		const url = new URL(`http://localhost${path}`);
+		const cookies = { get: (name: string) => jar[name], set: vi.fn(), delete: vi.fn() };
+		const event = { url, request: new Request(url, { headers }), cookies, locals: {} } as unknown as Parameters<
+			typeof handle
+		>[0]['event'];
+		const resolve = vi.fn(async () => new Response('page'));
+		const res = await handle({ event, resolve });
+		return { res, resolved: resolve.mock.calls.length > 0, cookies };
+	}
+
+	it('loads the address again from this site, so the SameSite=Strict session cookie comes with it', async () => {
+		const { res, resolved } = await navigate('/login', CROSS_SITE);
+		expect(resolved).toBe(false);
+		expect(res.status).toBe(200);
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		expect(res.headers.get('set-cookie')).toMatch(/^same_site_retry=1;.*SameSite=Lax/);
+		expect(await res.text()).toContain('<meta http-equiv="refresh" content="0">');
+	});
+
+	it('does the same for a deep link, and when the service worker passes the navigation on', async () => {
+		expect((await navigate('/email/abc', CROSS_SITE)).resolved).toBe(false);
+		expect((await navigate('/inbox', { ...CROSS_SITE, 'sec-fetch-dest': 'empty' })).resolved).toBe(false);
+	});
+
+	it('writes nothing from the request into the page', async () => {
+		const { res } = await navigate('/login?next=%22%3E%3Cscript%3Ealert(1)%3C/script%3E', CROSS_SITE);
+		const html = await res.text();
+		expect(html).not.toContain('next');
+		expect(html).not.toContain('script');
+	});
+
+	it('serves the page as usual once the reload is back, even if it was counted as cross-site again', async () => {
+		const { resolved, cookies } = await navigate('/login', CROSS_SITE, { same_site_retry: '1' });
+		expect(resolved).toBe(true);
+		expect(cookies.delete).toHaveBeenCalledWith('same_site_retry', { path: '/' });
+	});
+
+	it('leaves alone requests that carry the session cookie, or that this site or the address bar started', async () => {
+		expect((await navigate('/login', CROSS_SITE, { session: 'stale' })).resolved).toBe(true);
+		for (const site of ['same-origin', 'same-site', 'none']) {
+			expect((await navigate('/login', { ...CROSS_SITE, 'sec-fetch-site': site })).resolved).toBe(true);
+		}
+		// No fetch metadata at all: an older browser, or not a browser.
+		expect((await navigate('/login', {})).resolved).toBe(true);
+	});
+
+	it('leaves alone frames and requests that are not page loads', async () => {
+		expect((await navigate('/login', { ...CROSS_SITE, 'sec-fetch-dest': 'iframe' })).resolved).toBe(true);
+		expect((await navigate('/api/avatar', { ...CROSS_SITE, 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' })).resolved).toBe(true);
+	});
+});
+
 describe('a failed migration', () => {
 	it('refuses every request with the operator message instead of serving a partial schema', async () => {
 		vi.resetModules();
