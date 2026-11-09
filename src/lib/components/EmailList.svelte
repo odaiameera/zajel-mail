@@ -8,6 +8,7 @@
 	import CategoryPicker from './CategoryPicker.svelte';
 	import { moveToCategory } from '$lib/categories/api';
 	import { INBOX_CATEGORIES, type InboxCategory, type InboxTabsState } from '$lib/types/categories';
+	import { tabContentIn } from '$lib/transitions';
 	import { invalidateAll, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { getContext, setContext, untrack } from 'svelte';
@@ -149,6 +150,31 @@
 			}
 			const kept = [...selectedIds].filter((id) => visible.has(id));
 			if (kept.length !== selectedIds.size) selectedIds = new Set(kept);
+		});
+	});
+
+	// Switching Inbox tabs slides the new tab's mail in from the side of the
+	// tab you moved to. Only a change of tab does: the realtime layer re-runs
+	// the load all the time, and a refresh, a page turn or a filter keeps the
+	// tab and so keeps still; the first paint has nothing to move from. The
+	// new tab starts at its top, as a new list should, rather than wherever
+	// the last one was scrolled to — set before the browser paints it.
+	let listScroller = $state<HTMLElement>();
+	let listBody = $state<HTMLElement>();
+	let tabShown: InboxCategory | null = null;
+	let tabMotion: Animation[] = [];
+	$effect(() => {
+		const tab = inboxTabs?.active ?? null;
+		untrack(() => {
+			const from = tabShown;
+			tabShown = tab;
+			if (!from || !tab || from === tab) return;
+			for (const a of tabMotion) a.cancel();
+			tabMotion = [];
+			if (listScroller) listScroller.scrollTop = 0;
+			if (!listBody) return;
+			const order = (key: InboxCategory) => INBOX_CATEGORIES.findIndex((c) => c.key === key);
+			tabMotion = tabContentIn(listBody, order(tab) > order(from) ? 1 : -1);
 		});
 	});
 
@@ -487,63 +513,72 @@
 			<InboxTabs tabs={inboxTabs} />
 		{/if}
 
-		<div class="flex-1 overflow-y-auto">
-			{#if emails.length === 0}
-				<div class="h-full grid place-items-center px-6 text-center">
-					<div class="max-w-xs">
-						<div class="w-12 h-12 mx-auto mb-3 rounded-2xl bg-surface-hover grid place-items-center text-text-tertiary">
-							<Icon name="inbox" size={20} />
+		<!-- Clipped sideways rather than scrolling (overflow-y alone would make
+		     that auto), so the slide between tabs can't flash a horizontal
+		     scrollbar. -->
+		<div bind:this={listScroller} class="flex-1 overflow-y-auto overflow-x-hidden">
+			<!-- What slides when you switch tabs, inside the scroller, so the
+			     scrollbar stays put. At least as tall as the scroller so the empty
+			     state can still centre itself in it, and as tall as the list
+			     otherwise, so the date headers stick all the way down. -->
+			<div bind:this={listBody} class="min-h-full flex flex-col">
+				{#if emails.length === 0}
+					<div class="flex-1 grid place-items-center px-6 text-center">
+						<div class="max-w-xs">
+							<div class="w-12 h-12 mx-auto mb-3 rounded-2xl bg-surface-hover grid place-items-center text-text-tertiary">
+								<Icon name="inbox" size={20} />
+							</div>
+							<p class="text-sm font-medium text-text">{emptyTitle}</p>
 						</div>
-						<p class="text-sm font-medium text-text">{emptyTitle}</p>
 					</div>
-				</div>
-			{:else}
-				<!--
-					Date headers use surface-HOVER, not surface. When surface meant
-					"elevated panel" it was the lighter tone and this read as a strip
-					sitting just above the rows. Under the Primer palette surface is
-					the chrome — the darkest tone, #010409 — and these headers sit
-					inside the content tray at #0d1117, so they turned into a
-					near-black band darker than everything around them, which merged
-					with the toolbar above and buried the divider between the two.
-					surface-hover is #151b23 in dark and #eff2f5 in light: a step away
-					from the row colour in each theme, which is what a header strip
-					wants, and what GitHub uses for the header of a box.
-				-->
-				{#each groups as group (group.key)}
-					{@const isCollapsed = byDate && collapsedGroups.has(group.key)}
-					{#if byDate}
-						<button
-							type="button"
-							onclick={() => toggleGroup(group.key)}
-							class="w-full sticky top-0 z-10 flex items-center gap-2 px-4 py-1.5 bg-surface-hover/95 backdrop-blur-sm border-b border-border text-left hover:bg-surface-hover transition-colors cursor-pointer"
-						>
-							<span
-								class="inline-flex items-center justify-center w-4 h-4 text-text-tertiary transition-transform"
-								style={isCollapsed ? '' : 'transform: rotate(90deg)'}
+				{:else}
+					<!--
+						Date headers use surface-HOVER, not surface. When surface meant
+						"elevated panel" it was the lighter tone and this read as a strip
+						sitting just above the rows. Under the Primer palette surface is
+						the chrome — the darkest tone, #010409 — and these headers sit
+						inside the content tray at #0d1117, so they turned into a
+						near-black band darker than everything around them, which merged
+						with the toolbar above and buried the divider between the two.
+						surface-hover is #151b23 in dark and #eff2f5 in light: a step away
+						from the row colour in each theme, which is what a header strip
+						wants, and what GitHub uses for the header of a box.
+					-->
+					{#each groups as group (group.key)}
+						{@const isCollapsed = byDate && collapsedGroups.has(group.key)}
+						{#if byDate}
+							<button
+								type="button"
+								onclick={() => toggleGroup(group.key)}
+								class="w-full sticky top-0 z-10 flex items-center gap-2 px-4 py-1.5 bg-surface-hover/95 backdrop-blur-sm border-b border-border text-left hover:bg-surface-hover transition-colors cursor-pointer"
 							>
-								<Icon name="expand" size={12} />
-							</span>
-							<span class="text-2xs font-semibold uppercase tracking-wider text-text-secondary">
-								{group.label}
-							</span>
-							<span class="text-2xs text-text-tertiary">{group.emails.length}</span>
-						</button>
-					{/if}
-					{#if !isCollapsed}
-						{#each group.emails as email (email.id)}
-							<EmailListItem
-								{email}
-								selected={selectedIds.has(email.id)}
-								onSelect={toggleSelect}
-								onClick={paneOpen ? handlePaneClick : undefined}
-								onDragStart={handleRowDragStart}
-								active={paneOpen && (previewSelectedId ?? previewEmail?.id) === email.id}
-							/>
-						{/each}
-					{/if}
-				{/each}
-			{/if}
+								<span
+									class="inline-flex items-center justify-center w-4 h-4 text-text-tertiary transition-transform"
+									style={isCollapsed ? '' : 'transform: rotate(90deg)'}
+								>
+									<Icon name="expand" size={12} />
+								</span>
+								<span class="text-2xs font-semibold uppercase tracking-wider text-text-secondary">
+									{group.label}
+								</span>
+								<span class="text-2xs text-text-tertiary">{group.emails.length}</span>
+							</button>
+						{/if}
+						{#if !isCollapsed}
+							{#each group.emails as email (email.id)}
+								<EmailListItem
+									{email}
+									selected={selectedIds.has(email.id)}
+									onSelect={toggleSelect}
+									onClick={paneOpen ? handlePaneClick : undefined}
+									onDragStart={handleRowDragStart}
+									active={paneOpen && (previewSelectedId ?? previewEmail?.id) === email.id}
+								/>
+							{/each}
+						{/if}
+					{/each}
+				{/if}
+			</div>
 		</div>
 
 		{#if total > 0}
