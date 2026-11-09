@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import type { Email } from '$lib/jmap/types';
+import { LABELS_CONTEXT, type Label } from '$lib/types/labels';
 
 const mocks = vi.hoisted(() => ({
 	page: {
@@ -138,29 +139,164 @@ describe('EmailDetail attachments', () => {
 });
 
 describe('EmailDetail header', () => {
+	const details = () => document.getElementById('message-head-details')!;
+	const subject = () => screen.getByRole('button', { name: 'Hello' });
+	/** Who and when, the line just before the details. */
+	const quietLine = () => details().previousElementSibling as HTMLElement;
+	const labels: Label[] = [{ id: 'L1', name: 'Work', color: '#4493f8', createdAt: 0 }];
+	function withLabel(): Email {
+		const e = email();
+		e.mailboxIds = { inbox: true, L1: true };
+		return e;
+	}
+	const renderWithLabels = (e: Email) =>
+		render(EmailDetail, {
+			props: { email: e, compact: true },
+			context: new Map([[LABELS_CONTEXT, { current: labels }]])
+		});
+
 	it('keeps the subject and labels in place and switches the line below it between who-and-when and the details', async () => {
 		mocks.page.data.autoLoadImages = 'never';
 		render(EmailDetail, { email: email(), compact: true });
 
 		// Folded in the reading pane: the quiet line shows, the details don't.
-		const details = document.getElementById('message-head-details')!;
-		expect(details.className).toContain('hidden');
-		const toggle = screen.getByRole('button', { name: 'Show details' });
+		expect(details().className).toContain('hidden');
+		// The subject is the toggle, and still the page's heading.
+		const toggle = subject();
+		expect(toggle.closest('h1')).toBe(screen.getByRole('heading', { level: 1, name: 'Hello' }));
 		expect(toggle.getAttribute('aria-expanded')).toBe('false');
-		expect(screen.getByRole('heading', { name: 'Hello' })).toBeTruthy();
+		expect(toggle.getAttribute('aria-controls')).toBe('message-head-details');
+		expect(toggle.getAttribute('tabindex')).toBe('0');
+		// No arrow beside it any more.
+		expect(screen.queryByRole('button', { name: /details/i })).toBeNull();
 
 		await fireEvent.click(toggle);
-		await waitFor(() => expect(screen.getByRole('button', { name: 'Hide details' })).toBeTruthy());
-		expect(details.className).not.toContain('hidden');
-		// The quiet line stays in the DOM, out of the flow, so the two can crossfade.
-		const quiet = screen.getByText('Newsletter', { selector: 'button > span' }).closest('button')!;
+		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'));
+		expect(details().className).not.toContain('hidden');
+		// The quiet line stays in the DOM, out of the flow and hidden from
+		// screen readers, so the fold can fade one into the other.
+		const quiet = quietLine();
 		expect(quiet.className).toContain('absolute');
-		expect(quiet.getAttribute('tabindex')).toBe('-1');
-		expect(screen.getByRole('heading', { name: 'Hello' })).toBeTruthy();
+		expect(quiet.getAttribute('aria-hidden')).toBe('true');
 
-		await fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
-		await waitFor(() => expect(details.className).toContain('hidden'));
+		await fireEvent.click(toggle);
+		await waitFor(() => expect(details().className).toContain('hidden'));
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
 		expect(quiet.className).not.toContain('absolute');
+		expect(quiet.getAttribute('aria-hidden')).toBe('false');
+	});
+
+	it('opens from a click on the quiet line, too', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		const e = email();
+		e.cc = [{ name: 'Sam', email: 'sam@example.test' }];
+		render(EmailDetail, { email: e, compact: true });
+		expect(quietLine().textContent).toContain('Newsletter');
+		expect(quietLine().textContent).toContain('· to 2 people');
+		await fireEvent.click(quietLine());
+		await waitFor(() => expect(subject().getAttribute('aria-expanded')).toBe('true'));
+	});
+
+	it('toggles from the keyboard: Enter on the press, Space on the release', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		render(EmailDetail, { email: email(), compact: true });
+		const toggle = subject();
+
+		const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+		toggle.dispatchEvent(enter);
+		expect(enter.defaultPrevented).toBe(true);
+		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'));
+		// Held down, Enter repeats; that mustn't flick the header back and forth.
+		await fireEvent.keyDown(toggle, { key: 'Enter', repeat: true });
+		expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+		// Space doesn't scroll the page, and acts when it's let go.
+		const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+		toggle.dispatchEvent(space);
+		expect(space.defaultPrevented).toBe(true);
+		expect(toggle.getAttribute('aria-expanded')).toBe('true');
+		await fireEvent.keyUp(toggle, { key: ' ' });
+		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'));
+
+		// A release without a press here (Space pressed elsewhere) does nothing.
+		await fireEvent.keyUp(toggle, { key: ' ' });
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+	});
+
+	it('leaves the header alone when a label chip, its ×, or the + is clicked', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		renderWithLabels(withLabel());
+		const toggle = subject();
+
+		const labelCalls = () => fetchMock.mock.calls.filter(([u]) => String(u) === '/api/email/M1/label');
+		await fireEvent.click(screen.getByTitle('Work'));
+		await fireEvent.click(screen.getByRole('button', { name: 'Remove label Work' }));
+		await waitFor(() => expect(labelCalls()).toHaveLength(1));
+		await fireEvent.click(screen.getByRole('button', { name: 'Add label' }));
+		expect(screen.getByRole('button', { name: 'Add label' }).getAttribute('aria-expanded')).toBe('true');
+		// Picking a label from the menu doesn't toggle it either.
+		await fireEvent.click(screen.getByRole('button', { name: 'Work' }));
+		await waitFor(() => expect(labelCalls()).toHaveLength(2));
+
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+		expect(details().className).toContain('hidden');
+	});
+
+	it('does not toggle when the click ends a selection of the subject’s text', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		render(EmailDetail, { email: email(), compact: true });
+		const toggle = subject();
+
+		// A drag: the mouse moved between press and release.
+		await fireEvent.pointerDown(toggle, { pointerType: 'mouse', clientX: 10, clientY: 10 });
+		await fireEvent.click(toggle, { clientX: 60, clientY: 11, detail: 1 });
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+		// Text selected in the subject (say, a Shift-click extending it).
+		const range = document.createRange();
+		range.selectNodeContents(toggle);
+		window.getSelection()!.removeAllRanges();
+		window.getSelection()!.addRange(range);
+		await fireEvent.click(toggle, { detail: 1 });
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+		window.getSelection()!.removeAllRanges();
+
+		// A plain click, with a jitter of a pixel or two, still toggles.
+		await fireEvent.pointerDown(toggle, { pointerType: 'mouse', clientX: 10, clientY: 10 });
+		await fireEvent.click(toggle, { clientX: 11, clientY: 11, detail: 1 });
+		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'));
+	});
+
+	it('leaves the header as it was after a double- or triple-click, which select words', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		render(EmailDetail, { email: email(), compact: true });
+		const toggle = subject();
+
+		for (const clicks of [2, 3]) {
+			for (let detail = 1; detail <= clicks; detail++) {
+				await fireEvent.click(toggle, { detail });
+			}
+			await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'));
+			expect(details().className).toContain('hidden');
+		}
+	});
+
+	it('starts the next message from the default, open on a wide page', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		const { rerender } = render(EmailDetail, { email: email() });
+		const toggle = subject();
+		// Not the reading pane: open, by CSS, from md up.
+		expect(toggle.getAttribute('aria-expanded')).toBe('true');
+		expect(details().className).toBe('max-md:hidden');
+
+		await fireEvent.click(toggle);
+		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'));
+		expect(details().className).toBe('hidden');
+
+		await rerender({ email: { ...email(), id: 'M2', subject: 'Next one' } as Email });
+		const next = screen.getByRole('button', { name: 'Next one' });
+		expect(next.getAttribute('aria-expanded')).toBe('true');
+		expect(details().className).toBe('max-md:hidden');
 	});
 });
 
