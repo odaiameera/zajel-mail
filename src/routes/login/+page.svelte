@@ -54,6 +54,17 @@
 	<title>{pageTitle({ page: 'Sign in' })}</title>
 </svelte:head>
 
+<!--
+	Back to this page after signing in can restore it whole from the
+	back/forward cache, with no request to say the session exists. Ask the
+	server again; it sends anyone signed in on to the Inbox.
+-->
+<svelte:window
+	onpageshow={(e) => {
+		if (e.persisted) location.reload();
+	}}
+/>
+
 <div class="min-h-screen flex items-center justify-center px-4">
 	<div class="w-full max-w-sm">
 		<div class="text-center mb-8">

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -111,10 +112,11 @@ describe('session cookie', () => {
 
 describe('a navigation another site started', () => {
 	const CROSS_SITE = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-site': 'cross-site' };
+	const tag = (target: string) => createHash('sha256').update(target).digest('base64url').slice(0, 22);
 
 	/** A GET with these cookies (the session cookie only if given). */
 	async function navigate(path: string, headers: Record<string, string>, jar: Record<string, string> = {}) {
-		mocks.session = null;
+		mocks.session = jar.session ? { id: jar.session, user_id: 'u1' } : null;
 		const url = new URL(`http://localhost${path}`);
 		const cookies = { get: (name: string) => jar[name], set: vi.fn(), delete: vi.fn() };
 		const event = { url, request: new Request(url, { headers }), cookies, locals: {} } as unknown as Parameters<
@@ -130,26 +132,64 @@ describe('a navigation another site started', () => {
 		expect(resolved).toBe(false);
 		expect(res.status).toBe(200);
 		expect(res.headers.get('cache-control')).toBe('no-store');
-		expect(res.headers.get('set-cookie')).toMatch(/^same_site_retry=1;.*SameSite=Lax/);
-		expect(await res.text()).toContain('<meta http-equiv="refresh" content="0">');
+		expect(res.headers.get('set-cookie')).toBe(
+			`same_site_retry=${tag('/login')}; Path=/; Max-Age=10; HttpOnly; Secure; SameSite=Lax`
+		);
+		expect(await res.text()).toContain('<meta http-equiv="refresh" content="0;url=/login">');
 	});
 
-	it('does the same for a deep link, and when the service worker passes the navigation on', async () => {
-		expect((await navigate('/email/abc', CROSS_SITE)).resolved).toBe(false);
-		expect((await navigate('/inbox', { ...CROSS_SITE, 'sec-fetch-dest': 'empty' })).resolved).toBe(false);
-	});
-
-	it('writes nothing from the request into the page', async () => {
-		const { res } = await navigate('/login?next=%22%3E%3Cscript%3Ealert(1)%3C/script%3E', CROSS_SITE);
+	it('keeps a deep link\'s path and query, and works when the service worker passes the navigation on', async () => {
+		const { res } = await navigate('/inbox?category=updates&page=2', { ...CROSS_SITE, 'sec-fetch-dest': 'empty' });
 		const html = await res.text();
-		expect(html).not.toContain('next');
-		expect(html).not.toContain('script');
+		expect(html).toContain('content="0;url=/inbox?category=updates&amp;page=2"');
+		expect(html).toContain('<a href="/inbox?category=updates&amp;page=2">');
+		expect((await navigate('/email/abc', CROSS_SITE)).resolved).toBe(false);
 	});
 
-	it('serves the page as usual once the reload is back, even if it was counted as cross-site again', async () => {
-		const { resolved, cookies } = await navigate('/login', CROSS_SITE, { same_site_retry: '1' });
+	it('names an address on this site only, with nothing from the request able to leave the attribute', async () => {
+		const evil = await (await navigate('//evil.example/x', CROSS_SITE)).res.text();
+		expect(evil).toContain('content="0;url=/evil.example/x"');
+		expect(evil).not.toContain('//evil');
+
+		const html = await (await navigate('/login?next="><script>alert(1)</script>\'', CROSS_SITE)).res.text();
+		expect(html).not.toContain('<script');
+		expect(html.match(/"/g)?.length).toBe(
+			(await (await navigate('/login', CROSS_SITE)).res.text()).match(/"/g)?.length
+		);
+	});
+
+	it('serves the page as usual when that address comes back still counted as cross-site, instead of looping', async () => {
+		const { resolved, cookies } = await navigate('/login', CROSS_SITE, { same_site_retry: tag('/login') });
 		expect(resolved).toBe(true);
 		expect(cookies.delete).toHaveBeenCalledWith('same_site_retry', { path: '/' });
+	});
+
+	it("doesn't let one address's retry cookie switch the retry off for another, or a stale one", async () => {
+		expect((await navigate('/calendar?date=2026-12-01', CROSS_SITE, { same_site_retry: tag('/login') })).resolved).toBe(false);
+		expect((await navigate('/login', CROSS_SITE, { same_site_retry: '1' })).resolved).toBe(false);
+	});
+
+	it('spends the cookie on the reload from this site, so the next link to that address is retried too', async () => {
+		const { resolved, cookies } = await navigate(
+			'/login',
+			{ ...CROSS_SITE, 'sec-fetch-site': 'same-origin' },
+			{ session: 's1', same_site_retry: tag('/login') }
+		);
+		expect(resolved).toBe(true);
+		expect(cookies.delete).toHaveBeenCalledWith('same_site_retry', { path: '/' });
+	});
+
+	it('keeps the API, the build and static files out of it', async () => {
+		for (const path of [
+			'/api/auth/sessions',
+			'/api/avatar?email=a%40b.test',
+			'/api/image-proxy?url=http%3A%2F%2F127.0.0.1',
+			'/_app/immutable/entry/start.js',
+			'/manifest.webmanifest',
+			'/offline.html'
+		]) {
+			expect((await navigate(path, CROSS_SITE)).resolved, path).toBe(true);
+		}
 	});
 
 	it('leaves alone requests that carry the session cookie, or that this site or the address bar started', async () => {
@@ -163,7 +203,27 @@ describe('a navigation another site started', () => {
 
 	it('leaves alone frames and requests that are not page loads', async () => {
 		expect((await navigate('/login', { ...CROSS_SITE, 'sec-fetch-dest': 'iframe' })).resolved).toBe(true);
-		expect((await navigate('/api/avatar', { ...CROSS_SITE, 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' })).resolved).toBe(true);
+		expect((await navigate('/inbox', { ...CROSS_SITE, 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' })).resolved).toBe(true);
+	});
+
+	it('comes after the first-run gate, which still sends everything to /setup', async () => {
+		// The gate remembers once it has seen the master user, so this needs a
+		// module that hasn't yet.
+		vi.resetModules();
+		mocks.hasAppUser = false;
+		const fresh = await import('./hooks.server');
+		const run = (path: string) => {
+			const url = new URL(`http://localhost${path}`);
+			const event = {
+				url,
+				request: new Request(url, { headers: CROSS_SITE }),
+				cookies: { get: () => undefined, set: vi.fn(), delete: vi.fn() },
+				locals: {}
+			} as unknown as Parameters<typeof handle>[0]['event'];
+			return fresh.handle({ event, resolve: async () => new Response('page') });
+		};
+		await expect(run('/login')).rejects.toMatchObject({ status: 303, location: '/setup' });
+		expect(await (await run('/setup')).text()).toBe('page');
 	});
 });
 

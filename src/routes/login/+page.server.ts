@@ -35,10 +35,14 @@ function startSession(cookies: Cookies, request: Request, ip: string, userId: st
 	redirect(303, '/inbox');
 }
 
-export const load: PageServerLoad = async ({ locals, cookies }) => {
+export const load: PageServerLoad = async ({ locals, cookies, setHeaders }) => {
 	if (locals.user) {
 		redirect(303, '/inbox');
 	}
+	// Never kept: a copy from before signing in, brought back by Back or by
+	// the browser's back/forward cache, would offer the sign-in form to
+	// someone who is signed in.
+	setHeaders({ 'cache-control': 'no-store' });
 	// A second step in progress survives a reload.
 	const pending = cookies.get(MFA_COOKIE);
 	const userId = pending ? pendingMfaUser(pending) : null;

@@ -34,7 +34,7 @@ vi.mock('$lib/server/auth/mfa', () => ({
 }));
 vi.mock('$lib/server/auth/passkeys', () => ({ listPasskeys: () => [] }));
 
-import { actions } from './+page.server';
+import { actions, load } from './+page.server';
 
 const IP = '203.0.113.7';
 type Result = { status: number; data: Record<string, unknown> } & Record<string, unknown>;
@@ -158,5 +158,27 @@ describe('code step', () => {
 		expect((await run('code', { code: '123456' }, cookieJar({ mfa: 'old' }))).result?.status).toBe(401);
 		expect((await run('code', { code: '123456' })).result?.status).toBe(401);
 		expect(mocks.verifySecondFactorCode).not.toHaveBeenCalled();
+	});
+});
+
+describe('the sign-in page', () => {
+	async function visit(user?: { id: string }) {
+		const setHeaders = vi.fn();
+		try {
+			await load({ locals: { user }, cookies: cookieJar(), setHeaders } as unknown as Parameters<typeof load>[0]);
+		} catch (thrown) {
+			if (isRedirect(thrown)) return { redirect: thrown.location, setHeaders };
+			throw thrown;
+		}
+		return { setHeaders };
+	}
+
+	it('is never kept, so Back after signing in asks the server again', async () => {
+		const { setHeaders } = await visit();
+		expect(setHeaders).toHaveBeenCalledWith({ 'cache-control': 'no-store' });
+	});
+
+	it('sends someone already signed in on to the Inbox', async () => {
+		expect((await visit({ id: 'u1' })).redirect).toBe('/inbox');
 	});
 });

@@ -1,4 +1,5 @@
 import { redirect, type Handle, type HandleServerError, type ServerInit } from '@sveltejs/kit';
+import { createHash } from 'node:crypto';
 import { building } from '$app/environment';
 import { runMigrations } from '$lib/server/db/migrate';
 import {
@@ -84,11 +85,15 @@ function crossSiteWrite(request: Request, url: URL): boolean {
 // and any deep link was sent to /login, for someone who was signed in all
 // along; opening the app again from the address bar then found the session.
 //
-// Such a navigation without the cookie gets a page that loads the same
+// Such a page load without the cookie gets a page that loads the same
 // address again. That second load comes from this site, so the cookie goes
 // with it, and someone who isn't signed in just sees the page they asked for.
-// Strict stays: another site still can't make a request that carries the
-// session.
+//
+// What that gives up: a page another site opens now loads signed in, as it
+// would with SameSite=Lax (sending the reader to a page was all it could do
+// before, too). Only the app's pages get the reload. The API, every write and
+// everything a page embeds keep Strict, so another site still can't call the
+// API with the session, even by navigating to it.
 const RETRY_COOKIE = 'same_site_retry';
 
 // A page load, not a frame: `document` straight from the browser, `empty`
@@ -105,14 +110,40 @@ function crossSiteNavigation(request: Request): boolean {
 	);
 }
 
-function sameSiteRetry(): Response {
-	// A refresh with no URL reloads this address, and nothing from the request
-	// is written into the page. The link is there in case a browser declines
-	// to refresh.
+// The app's pages, as against the API, the build's assets and static files.
+// The API stays Strict; and the service worker caches some of it (avatars),
+// where a cached reload page would reload itself forever.
+function isAppPage(pathname: string): boolean {
+	if (pathname.startsWith('/api/') || pathname === '/api' || pathname.startsWith('/_app/')) return false;
+	return !pathname.slice(pathname.lastIndexOf('/') + 1).includes('.');
+}
+
+// Where the reload goes: this address, path and query only. A leading `//`
+// would name another host, so it is cut to one slash (no route starts so).
+// The fragment never reaches the server, and leaving it out is what makes the
+// refresh a real load: to the same address with its #fragment, the browser
+// would only scroll.
+function retryTarget(url: URL): string {
+	return url.pathname.replace(/^\/+/, '/') + url.search;
+}
+
+// The retry cookie names the address it was set for, so it only stops a
+// second reload of that address, not another tab's or the next link's.
+function retryTag(target: string): string {
+	return createHash('sha256').update(target).digest('base64url').slice(0, 22);
+}
+
+function escapeAttr(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function sameSiteRetry(target: string): Response {
+	const href = escapeAttr(target);
 	const html =
 		'<!doctype html><html><head><meta charset="utf-8">' +
-		'<meta http-equiv="refresh" content="0"><title>Zajel Mail</title></head>' +
-		'<body><a href="">Continue to Zajel Mail</a></body></html>';
+		'<meta name="color-scheme" content="dark light">' +
+		`<meta http-equiv="refresh" content="0;url=${href}"><title>Zajel Mail</title></head>` +
+		`<body><a href="${href}">Continue to Zajel Mail</a></body></html>`;
 	return new Response(html, {
 		headers: {
 			'content-type': 'text/html; charset=utf-8',
@@ -121,7 +152,7 @@ function sameSiteRetry(): Response {
 			// Lax, so it comes back even if a browser counted the reload as
 			// cross-site too: then the page is served as it is rather than
 			// sending the browser round in a loop.
-			'set-cookie': `${RETRY_COOKIE}=1; Path=/; Max-Age=60; HttpOnly; Secure; SameSite=Lax`
+			'set-cookie': `${RETRY_COOKIE}=${retryTag(target)}; Path=/; Max-Age=10; HttpOnly; Secure; SameSite=Lax`
 		}
 	});
 }
@@ -211,10 +242,15 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	const sessionId = event.cookies.get('session');
-	const retried = event.cookies.get(RETRY_COOKIE) !== undefined;
-	if (retried) event.cookies.delete(RETRY_COOKIE, { path: '/' });
-	if (!sessionId && !retried && crossSiteNavigation(event.request)) {
-		return sameSiteRetry();
+	// The reload of an address that got the retry page spends its cookie,
+	// whichever site the browser says it came from, so the next link to the
+	// same address is retried too. Counted as cross-site again, it is served
+	// as it is rather than going round in a loop.
+	const tag = event.cookies.get(RETRY_COOKIE);
+	const reloaded = tag !== undefined && tag === retryTag(retryTarget(event.url));
+	if (reloaded) event.cookies.delete(RETRY_COOKIE, { path: '/' });
+	if (!sessionId && !reloaded && crossSiteNavigation(event.request) && isAppPage(pathname)) {
+		return sameSiteRetry(retryTarget(event.url));
 	}
 	if (sessionId) {
 		const session = getAppSession(sessionId);
