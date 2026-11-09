@@ -393,6 +393,37 @@ describe('sortNewMail', () => {
 		expect(fake.emails.get('deal')!.keywords).toEqual({ $flagged: true, $cat_promotions: true });
 	});
 
+	it('keeps the mail server’s reason when it refuses the tab, and tries again', async () => {
+		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
+		const realRequest = fake.request.bind(fake);
+		let refuse = true;
+		fake.request = async (calls: MethodCall[]) => {
+			if (refuse && calls[0][0] === 'Email/set') {
+				const ids = Object.keys(calls[0][1].update as Record<string, unknown>);
+				const notUpdated = Object.fromEntries(
+					ids.map((id) => [id, { type: 'invalidPatch', description: 'Invalid patch value', properties: ['keywords'] }])
+				);
+				return { methodResponses: [['Email/set', { updated: {}, notUpdated }, '0']], sessionState: '' };
+			}
+			return realRequest(calls);
+		};
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+		// Nothing was written, nothing claims it was, and the server's words
+		// are kept: a bare "refused" can't tell a bad patch from a gone message.
+		expect(fake.emails.get('news')!.keywords).toEqual({});
+		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'pending', attempts: 1, applied: null });
+		expect(getDecision(ACCT, 'news')?.lastError).toBe(
+			'The mail server refused the change: invalidPatch: Invalid patch value (keywords)'
+		);
+
+		// The next pass asks again and, accepted this time, puts it in its tab.
+		refuse = false;
+		await sortNewMail(ACCT, ME, auth, at(11));
+		expect(fake.emails.get('news')!.keywords).toEqual({ $cat_newsletters: true });
+		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'done', applied: 'newsletters', lastError: null });
+	});
+
 	it('leaves mail you put in Important yourself where it is', async () => {
 		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
 		enqueueEmails(ACCT, ['news'], at(1).getTime());

@@ -324,24 +324,42 @@ function planFor(
 	};
 }
 
-/** Write updates in batches; returns the ids the server refused. */
+interface SetError {
+	type?: string;
+	description?: string;
+	properties?: string[];
+}
+
+/** A SetError as one line: its type, what the server said, and which properties. */
+function refusalText(err: SetError | null | undefined): string {
+	const what = [err?.type, err?.description].filter(Boolean).join(': ') || 'no reason given';
+	return err?.properties?.length ? `${what} (${err.properties.join(', ')})` : what;
+}
+
+/**
+ * Write updates in batches; returns the ids the server refused, each with
+ * the server's reason. A refused tab or label never reaches the message,
+ * and "refused" alone can't tell a patch the server can't read from a
+ * message that's gone, so the reason is kept in the record and the log.
+ */
 async function writeUpdates(
 	client: JMAPClient,
 	accountId: string,
 	updates: [string, Record<string, unknown>][]
-): Promise<Set<string>> {
-	const refused = new Set<string>();
+): Promise<Map<string, string>> {
+	const refused = new Map<string, string>();
 	for (let i = 0; i < updates.length; i += WRITE_BATCH) {
 		const chunk = updates.slice(i, i + WRITE_BATCH);
 		try {
 			const res = await client.request([
 				['Email/set', { accountId, update: Object.fromEntries(chunk) }, '0']
 			]);
-			const result = res.methodResponses[0][1] as { notUpdated?: Record<string, unknown> | null };
-			for (const id of Object.keys(result.notUpdated ?? {})) refused.add(id);
+			const result = res.methodResponses[0][1] as { notUpdated?: Record<string, SetError> | null };
+			for (const [id, err] of Object.entries(result.notUpdated ?? {})) refused.set(id, refusalText(err));
 		} catch (err) {
 			if (err instanceof JMAPAuthError) throw err;
-			for (const [id] of chunk) refused.add(id);
+			const reason = err instanceof Error ? err.message : String(err);
+			for (const [id] of chunk) refused.set(id, reason);
 		}
 	}
 	return refused;
@@ -632,13 +650,20 @@ async function judgeAndApply(
 		if (Object.keys(update).length > 0) updates.push([id, update]);
 	}
 	const refused = await writeUpdates(b.client, b.accountId, updates);
+	if (refused.size) {
+		const [first] = refused.values();
+		noteFailure('write', b.accountRowId, 'write_refused', { count: refused.size, error: first });
+	} else if (updates.length) {
+		noteRecovered('write', b.accountRowId, 'write_recovered');
+	}
 
 	// Record.
 	for (const j of judged) {
 		const plan = plans.get(j.email.id);
 		if (!plan || j.error) continue; // failures were recorded above
-		if (refused.has(j.email.id)) {
-			recordFailure(b.accountRowId, j.email.id, 'The mail server refused the change', now);
+		const refusal = refused.get(j.email.id);
+		if (refusal !== undefined) {
+			recordFailure(b.accountRowId, j.email.id, `The mail server refused the change: ${refusal}`, now);
 			continue;
 		}
 		const applied = !moved.has(j.email.id);
