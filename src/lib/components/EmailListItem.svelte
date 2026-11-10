@@ -5,7 +5,8 @@
 	import { categoryOf, type InboxTabsState } from '$lib/types/categories';
 	import { getContext, onDestroy } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
-	import { formatTimeOfDay } from '$lib/utils/date-buckets';
+	import { formatFullDate, formatListDate } from '$lib/utils/list-date';
+	import { now } from '$lib/stores/now';
 	import { formatSendTime } from '$lib/utils/send-later';
 	import EmailRowActions from './EmailRowActions.svelte';
 	import SenderAvatar from './SenderAvatar.svelte';
@@ -180,26 +181,36 @@
 	</div>
 
 	<div class="flex-1 min-w-0">
-		<!-- `relative` anchors the hover actions to this line; the time goes
-		     invisible (not hidden) under them so the name never reflows. -->
-		<div class="relative flex items-baseline justify-between gap-2">
-			<span class="min-w-0 flex items-center gap-2 text-sm {isRead ? 'text-text-secondary font-normal' : 'text-text font-semibold'}">
-				{#if !isRead}
-					<span class="w-2 h-2 rounded-full bg-unread shrink-0" title="Unread"></span>
+		<!-- `relative` anchors the hover actions to this line; the date goes
+		     invisible (not hidden) under them so the name never reflows.
+		     The name comes first: the line wraps and only its first row shows,
+		     so when the name and the date don't both fit, the date drops out
+		     of sight whole (never "12:0…") and the name keeps the room. The name
+		     only truncates when it's wider than the line by itself. -->
+		<div class="relative">
+			<div class="flex flex-wrap items-baseline justify-between gap-x-2 h-5 overflow-hidden">
+				<span class="min-w-0 max-w-full flex items-center gap-2 text-sm leading-5 {isRead ? 'text-text-secondary font-normal' : 'text-text font-semibold'}">
+					{#if !isRead}
+						<span class="w-2 h-2 rounded-full bg-unread shrink-0" title="Unread"></span>
+					{/if}
+					<span class="truncate">{senderName}</span>
+				</span>
+				{#if scheduledSend?.status === 'failed'}
+					<span class="text-xs leading-5 text-danger whitespace-nowrap group-hover:invisible" title={scheduledSend.error ?? undefined}>Not sent</span>
+				{:else if scheduledSend}
+					<span class="text-xs leading-5 text-accent-fg whitespace-nowrap group-hover:invisible" title={new Date(scheduledSend.sendAt).toLocaleString()}>
+						{formatSendTime(new Date(scheduledSend.sendAt))}
+					</span>
+				{:else}
+					<time
+						datetime={new Date(email.receivedAt).toISOString()}
+						class="text-xs leading-5 text-text-tertiary whitespace-nowrap tabular-nums group-hover:invisible"
+						title={formatFullDate(email.receivedAt)}
+					>
+						{formatListDate(email.receivedAt, $now)}
+					</time>
 				{/if}
-				<span class="truncate">{senderName}</span>
-			</span>
-			{#if scheduledSend?.status === 'failed'}
-				<span class="text-xs text-danger shrink-0 group-hover:invisible" title={scheduledSend.error ?? undefined}>Not sent</span>
-			{:else if scheduledSend}
-				<span class="text-xs text-accent-fg shrink-0 group-hover:invisible" title={new Date(scheduledSend.sendAt).toLocaleString()}>
-					{formatSendTime(new Date(scheduledSend.sendAt))}
-				</span>
-			{:else}
-				<span class="text-xs text-text-tertiary shrink-0 group-hover:invisible" title={new Date(email.receivedAt).toLocaleString()}>
-					{formatTimeOfDay(email.receivedAt)}
-				</span>
-			{/if}
+			</div>
 			<EmailRowActions emailId={email.id} {isUnread} {sourceMailboxId} hasReminder={!!reminderAt} {category} />
 		</div>
 		<div class="email-subject truncate text-sm {isRead ? 'text-text-secondary' : 'text-text font-medium'} mt-0.5 flex items-center gap-1.5">

@@ -320,3 +320,37 @@ describe('EmailList divider beside the reading pane', () => {
 		expect(listColumn()).toBe('420px');
 	});
 });
+
+describe('EmailList dates', () => {
+	it('has no date headings, and each row carries its own date', () => {
+		const today = new Date();
+		today.setHours(9, 30, 0, 0);
+		const yesterday = new Date(today);
+		yesterday.setDate(today.getDate() - 1);
+		const lastYear = new Date(today.getFullYear() - 1, 2, 14, 9);
+		render(EmailList, {
+			props: {
+				emails: [
+					{ ...email('a', 'Dana', 'A'), receivedAt: today.toISOString() },
+					{ ...email('b', 'Elaine', 'A'), receivedAt: yesterday.toISOString() },
+					{ ...email('c', 'Old', 'A'), receivedAt: lastYear.toISOString() }
+				],
+				total: 3,
+				title: 'Inbox',
+				mailboxId: 'A'
+			},
+			context: new Map<string, unknown>([
+				['labels', []],
+				['readingPane', writable(false)]
+			])
+		});
+		// The old collapsible headings were buttons naming the day.
+		expect(screen.queryByRole('button', { name: /^(today|yesterday)/i })).toBeNull();
+		const times = [...document.querySelectorAll('time')].map((t) => t.textContent?.trim());
+		expect(times).toEqual([
+			today.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+			'Yesterday',
+			lastYear.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+		]);
+	});
+});

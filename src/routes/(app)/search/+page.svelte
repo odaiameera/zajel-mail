@@ -112,7 +112,6 @@
 				page={data.page}
 				pageSize={data.pageSize}
 				totalPages={data.totalPages}
-				byDate={!data.ranked}
 			/>
 		</div>
 	{/if}
