@@ -53,7 +53,7 @@ describe('the Inbox hold', () => {
 
 	it('splits every message one way between the shown and held queries, as isHeld does', () => {
 		for (let s = 0; s <= INBOX_HOLD_MS / 1000 + 3; s++) {
-			for (const keywords of [{}, { [JEV_SORTED_KEYWORD]: true }]) {
+			for (const keywords of [{}, { [JEV_SORTED_KEYWORD]: true }] as Record<string, boolean>[]) {
 				const email = { keywords, receivedAt: secondsAgo(s) };
 				const shown = matches(shownCondition(NOW), email);
 				const held = matches(heldCondition(NOW), email);
