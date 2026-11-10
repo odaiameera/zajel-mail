@@ -332,6 +332,14 @@ html:not(.light) body {
 }
 
 /*
+ * Pane dividers (role="separator") show focus by lighting up themselves; a
+ * ring around a 1px line read as a second, doubled line beside it.
+ */
+[role='separator']:focus-visible {
+	outline: none;
+}
+
+/*
  * Buttons. One base and a few variants, so every text button in the app has
  * the same height, radius, weight and disabled look. They had grown five
  * heights, three radii and three disabled opacities, and a disabled primary

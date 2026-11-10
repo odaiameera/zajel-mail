@@ -16,8 +16,6 @@
 	import { get } from 'svelte/store';
 	import type { Email, Mailbox } from '$lib/jmap/types';
 	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
-	import { bucketFor, type DateBucket } from '$lib/utils/date-buckets';
-	import { now } from '$lib/stores/now';
 	import { browser } from '$app/environment';
 	import { isPhone } from '$lib/stores/viewport';
 	import { REMIND_ME_LATER_NAME, isScheduledMailbox } from '$lib/jmap/mailbox';
@@ -32,7 +30,6 @@
 		totalPages = 1,
 		showFilters = false,
 		inboxTabs = null,
-		byDate = true
 	}: {
 		emails: Email[];
 		total: number;
@@ -44,8 +41,6 @@
 		showFilters?: boolean;
 		/** The Inbox's category tabs; null everywhere else, and when tabs are off. */
 		inboxTabs?: InboxTabsState | null;
-		/** Group rows under date headings; off for results ranked by relevance. */
-		byDate?: boolean;
 	} = $props();
 
 	const rangeStart = $derived(total === 0 ? 0 : (currentPage - 1) * pageSize + 1);
@@ -130,7 +125,7 @@
 	// on a small one (the saved width is kept for when there's room again).
 	const savedListPx = $derived(browser ? $listWidth : ((page.data.paneListWidth as number | undefined) ?? LIST_WIDTH.fallback));
 	let rowWidth = $state(0);
-	const DIVIDER_PX = 4; // the divider itself, w-1
+	const DIVIDER_PX = 1; // the divider itself, a hairline (its grab area overhangs both sides)
 	// No cap until the row has been measured (0 before the first layout).
 	const listRoom = () => (rowWidth > 0 ? Math.max(LIST_WIDTH.min, rowWidth - MIN_READING_PANE - DIVIDER_PX) : Infinity);
 	const listPx = $derived(rowWidth > 0 ? Math.min(savedListPx, listRoom()) : savedListPx);
@@ -296,51 +291,6 @@
 	}
 
 	async function refresh() { await invalidateAll(); }
-
-	// --- Date grouping ---
-
-	type EmailGroup = DateBucket & { emails: Email[] };
-
-	const groups = $derived.by<EmailGroup[]>(() => {
-		if (!byDate) return [{ key: 'all', label: '', sortKey: 0, emails }];
-		const byKey = new Map<string, EmailGroup>();
-		for (const email of emails) {
-			const b = bucketFor(email.receivedAt, $now);
-			let g = byKey.get(b.key);
-			if (!g) {
-				g = { ...b, emails: [] };
-				byKey.set(b.key, g);
-			}
-			g.emails.push(email);
-		}
-		return [...byKey.values()].sort((a, b) => b.sortKey - a.sortKey);
-	});
-
-	const COLLAPSE_KEY = 'email-group-collapsed';
-	let collapsedGroups = $state<Set<string>>(new Set());
-	// Load collapsed state on mount; guarded against SSR.
-	if (browser) {
-		try {
-			const raw = localStorage.getItem(COLLAPSE_KEY);
-			if (raw) collapsedGroups = new Set(JSON.parse(raw) as string[]);
-		} catch {
-			// corrupt entry — ignore
-		}
-	}
-
-	function toggleGroup(key: string) {
-		const next = new Set(collapsedGroups);
-		if (next.has(key)) next.delete(key);
-		else next.add(key);
-		collapsedGroups = next;
-		if (browser) {
-			try {
-				localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...next]));
-			} catch {
-				// quota / private mode — harmless
-			}
-		}
-	}
 
 	// Stale-while-revalidate for the reading pane: the previous message (or
 	// a cached copy of the clicked one) stays visible while the fresh detail
@@ -572,50 +522,17 @@
 						</div>
 					</div>
 				{:else}
-					<!--
-						Date headers use surface-HOVER, not surface. When surface meant
-						"elevated panel" it was the lighter tone and this read as a strip
-						sitting just above the rows. Under the Primer palette surface is
-						the chrome — the darkest tone, #010409 — and these headers sit
-						inside the content tray at #0d1117, so they turned into a
-						near-black band darker than everything around them, which merged
-						with the toolbar above and buried the divider between the two.
-						surface-hover is #151b23 in dark and #eff2f5 in light: a step away
-						from the row colour in each theme, which is what a header strip
-						wants, and what GitHub uses for the header of a box.
-					-->
-					{#each groups as group (group.key)}
-						{@const isCollapsed = byDate && collapsedGroups.has(group.key)}
-						{#if byDate}
-							<button
-								type="button"
-								onclick={() => toggleGroup(group.key)}
-								class="w-full sticky top-0 z-10 flex items-center gap-2 px-4 py-1.5 bg-surface-hover/95 backdrop-blur-sm border-b border-border text-left hover:bg-surface-hover transition-colors cursor-pointer"
-							>
-								<span
-									class="inline-flex items-center justify-center w-4 h-4 text-text-tertiary transition-transform"
-									style={isCollapsed ? '' : 'transform: rotate(90deg)'}
-								>
-									<Icon name="expand" size={12} />
-								</span>
-								<span class="text-2xs font-semibold uppercase tracking-wider text-text-secondary">
-									{group.label}
-								</span>
-								<span class="text-2xs text-text-tertiary">{group.emails.length}</span>
-							</button>
-						{/if}
-						{#if !isCollapsed}
-							{#each group.emails as email (email.id)}
-								<EmailListItem
-									{email}
-									selected={selectedIds.has(email.id)}
-									onSelect={toggleSelect}
-									onClick={paneOpen ? handlePaneClick : undefined}
-									onDragStart={handleRowDragStart}
-									active={paneOpen && (previewSelectedId ?? previewEmail?.id) === email.id}
-								/>
-							{/each}
-						{/if}
+					<!-- No date headings: each row carries its own date (see
+					     list-date), today's as the time it arrived. -->
+					{#each emails as email (email.id)}
+						<EmailListItem
+							{email}
+							selected={selectedIds.has(email.id)}
+							onSelect={toggleSelect}
+							onClick={paneOpen ? handlePaneClick : undefined}
+							onDragStart={handleRowDragStart}
+							active={paneOpen && (previewSelectedId ?? previewEmail?.id) === email.id}
+						/>
 					{/each}
 				{/if}
 			</div>
@@ -653,7 +570,8 @@
 
 	{#if paneOpen}
 		<!-- Drag to share the room between the list and the reading pane;
-		     arrow keys when focused, a double-click for the default. -->
+		     arrow keys when focused, a double-click for the default. A hairline,
+		     with a wider grab area (the ::before) over both sides. -->
 		<!-- A focusable separator is ARIA's window splitter: an interactive control. -->
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 		<div
@@ -664,7 +582,9 @@
 			aria-valuemax={LIST_WIDTH.max}
 			aria-valuenow={listPx}
 			tabindex="0"
-			class="max-md:hidden w-1 shrink-0 bg-border hover:bg-accent/40 focus-visible:bg-accent/40 outline-none cursor-col-resize touch-none transition-colors {dragging ? 'bg-accent/40' : ''}"
+			class="max-md:hidden relative z-10 w-px shrink-0 outline-none cursor-col-resize touch-none transition-colors
+				before:absolute before:inset-y-0 before:-left-1 before:-right-1 before:content-['']
+				{dragging ? 'bg-accent' : 'bg-border hover:bg-accent/70 focus-visible:bg-accent'}"
 			onpointerdown={startDrag}
 			onkeydown={(e) => {
 				if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;

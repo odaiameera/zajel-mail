@@ -1,12 +1,9 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import { parseSearch, type Token } from '$lib/search/parse';
-	import SearchHelp from './SearchHelp.svelte';
 	import SearchQuickFilters from './SearchQuickFilters.svelte';
 	import { getRecentSearches, rememberSearch, clearRecentSearches } from '$lib/utils/recent-searches';
 	import type { Mailbox } from '$lib/jmap/types';
-	import { onMount } from 'svelte';
-	import { shortcutLabel } from '$lib/utils/platform';
 
 	let {
 		value = $bindable(''),
@@ -23,12 +20,9 @@
 	let panelOpen = $state(false);
 	// ⌘K on Apple devices, Ctrl+K elsewhere. Filled in after load: the server
 	// can't know the platform, and a guess would flash the wrong key.
-	let shortcutHint = $state('');
-	onMount(() => { shortcutHint = shortcutLabel('K'); });
 
 	let inputEl = $state<HTMLInputElement | undefined>(undefined);
 	let focused = $state(false);
-	let helpOpen = $state(false);
 
 	// Recent searches, loaded lazily when the panel needs them so we always
 	// reflect the latest localStorage state without a subscription.
@@ -255,7 +249,7 @@
 		{#if !focused && tokens.length > 0}
 			<div
 				aria-hidden="true"
-				class="absolute inset-y-0 left-0 right-16 flex items-center gap-1 pl-9 pr-1 pointer-events-none overflow-hidden whitespace-nowrap"
+				class="absolute inset-y-0 left-0 right-3 flex items-center gap-1 pl-9 pr-1 pointer-events-none overflow-hidden whitespace-nowrap"
 			>
 				{#each tokens as t (t.start)}
 					{#if t.kind === 'text'}
@@ -280,34 +274,13 @@
 			onkeydown={handleKeydown}
 			type="text"
 			{placeholder}
-			class="w-full bg-bg/50 border border-border island-corners pl-9 pr-16 py-1.5 text-sm text-text placeholder-text-tertiary
-				focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent transition-colors
+			class="search-field w-full bg-bg/50 border border-border island-corners pl-9 pr-3 py-1.5 text-sm text-text placeholder-text-tertiary
+				hover:border-text-tertiary/40 focus:bg-bg focus:border-accent/60 transition-colors duration-150
 				{!focused && tokens.length > 0 ? 'text-transparent caret-text' : ''}"
 		/>
-
-		<!-- Keyboard hint, hidden once the field is engaged. -->
-		{#if !focused && value.length === 0 && shortcutHint}
-			<kbd class="absolute right-9 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-0.5 px-1.5 h-5 rounded-md border border-border bg-surface text-3xs font-medium text-text-tertiary pointer-events-none select-none">
-				{shortcutHint}
-			</kbd>
-		{/if}
-
-		<button
-			type="button"
-			onmousedown={(e) => { e.preventDefault(); helpOpen = !helpOpen; }}
-			class="absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-md text-text-tertiary hover:text-text hover:bg-surface-hover transition-colors cursor-pointer"
-			aria-label="Search help"
-			title="Search operators"
-		>
-			<Icon name="help" size={14} />
-		</button>
 	</div>
 
-	{#if helpOpen}
-		<SearchHelp onClose={() => (helpOpen = false)} />
-	{/if}
-
-	{#if panelOpen && !helpOpen}
+	{#if panelOpen}
 		<div class="absolute top-full left-0 right-0 mt-1 bg-surface border border-border rounded-lg shadow-lg p-2 z-30">
 			{#if value.trim().length === 0 && recents.length > 0}
 				<div class="flex items-center justify-between px-1 pb-1.5">
@@ -336,3 +309,12 @@
 		</div>
 	{/if}
 </form>
+
+<style>
+	/* One focus state, the field's own: its border turns a quiet accent. The
+	   app-wide keyboard outline (2px, offset) would otherwise ring it a second
+	   time, much louder than any other field. Scoped, so it outranks that rule. */
+	.search-field:focus-visible {
+		outline: none;
+	}
+</style>
