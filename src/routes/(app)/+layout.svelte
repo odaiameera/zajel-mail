@@ -88,8 +88,8 @@
 	});
 
 	const avatarLetter = $derived((data.displayName ?? 'O')[0].toUpperCase());
-	// An account's colour (the stripe along the top, the avatar and its ring)
-	// is there to tell linked accounts apart. With only one it is just a
+	// An account's colour (the avatar and its ring) is there to tell linked
+	// accounts apart. With only one it is just a
 	// second accent competing with the real one, so it waits for a second.
 	const accountColor = $derived(
 		(data.accounts?.length ?? 0) > 1 ? (data.activeAccountColor ?? null) : null
@@ -477,8 +477,7 @@
 		pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:pb-[env(safe-area-inset-bottom)]"
 	class:density-compact={data.density === 'compact'}
 	style="--shell-cols: {sidebarWidth} minmax(0, 1fr) 0px 52px;
-		transition: {resizingSidebar ? 'none' : 'grid-template-columns 0.3s ease'};
-		{accountColor ? `border-top: 2px solid ${accountColor};` : ''}"
+		transition: {resizingSidebar ? 'none' : 'grid-template-columns 0.3s ease'};"
 >
 	<!-- Row 1: Full-width header. From `md` it's three columns with the search
 	     in the middle one, so the search stays put, centred, however wide the
