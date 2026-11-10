@@ -16,6 +16,7 @@ import { getJevSettings } from '$lib/server/db/queries/jev-settings';
 import { applyInboxHold, inboxHoldOn, knownInboxId, readInboxHold } from '$lib/server/jev/hold';
 import { INBOX_HOLD_MS } from '$lib/inbox-hold';
 import { parseMarkReadDelay } from '$lib/mail-prefs';
+import { LIST_COOKIE, LIST_WIDTH, SIDEBAR_COOKIE, SIDEBAR_WIDTH, parseWidth } from '$lib/stores/paneWidths';
 
 export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 	if (!locals.user) {
@@ -152,6 +153,10 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			activeAccountColor: activeAccount?.color ?? null,
 			accountUnread,
 			readingPaneDefault: readingPane === 'on',
+			// The columns you dragged, per browser (see paneWidths), so the
+			// page is drawn at those widths from the start.
+			paneSidebarWidth: parseWidth(cookies.get(SIDEBAR_COOKIE), SIDEBAR_WIDTH),
+			paneListWidth: parseWidth(cookies.get(LIST_COOKIE), LIST_WIDTH),
 			theme,
 			density,
 			displayName,

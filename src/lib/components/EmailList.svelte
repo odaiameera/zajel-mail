@@ -9,6 +9,7 @@
 	import { moveToCategory } from '$lib/categories/api';
 	import { INBOX_CATEGORIES, type InboxCategory, type InboxTabsState } from '$lib/types/categories';
 	import { tabContentIn } from '$lib/transitions';
+	import { LIST_WIDTH, MIN_READING_PANE, listWidth, nudgeWidth, startWidthDrag } from '$lib/stores/paneWidths';
 	import { invalidateAll, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { getContext, setContext, untrack } from 'svelte';
@@ -121,7 +122,18 @@
 	// with no results (Unread on a read tab) made it vanish, and the toggle
 	// then appeared to do nothing.
 	const paneOpen = $derived(panePreference && !$isPhone);
-	let listWidth = $state(420);
+	// The list's width beside the reading pane is shared by every list (each
+	// folder is its own page, so its own list), so switching folders keeps the
+	// width you dragged. On the server the page data stands in for the store.
+	// It also gives way to the window: the reading pane keeps at least
+	// MIN_READING_PANE, so a width set on a big screen doesn't squeeze it out
+	// on a small one (the saved width is kept for when there's room again).
+	const savedListPx = $derived(browser ? $listWidth : ((page.data.paneListWidth as number | undefined) ?? LIST_WIDTH.fallback));
+	let rowWidth = $state(0);
+	const DIVIDER_PX = 4; // the divider itself, w-1
+	// No cap until the row has been measured (0 before the first layout).
+	const listRoom = () => (rowWidth > 0 ? Math.max(LIST_WIDTH.min, rowWidth - MIN_READING_PANE - DIVIDER_PX) : Infinity);
+	const listPx = $derived(rowWidth > 0 ? Math.min(savedListPx, listRoom()) : savedListPx);
 	let dragging = $state(false);
 	let loadingPreview = $state(false);
 	let showMovePicker = $state(false);
@@ -227,22 +239,11 @@
 		}
 	}
 
-	function startDrag(e: MouseEvent) {
-		e.preventDefault();
-		dragging = true;
-		const startX = e.clientX;
-		const startWidth = listWidth;
-
-		function onMove(ev: MouseEvent) {
-			listWidth = Math.max(280, Math.min(startWidth + (ev.clientX - startX), 800));
-		}
-		function onUp() {
-			dragging = false;
-			window.removeEventListener('mousemove', onMove);
-			window.removeEventListener('mouseup', onUp);
-		}
-		window.addEventListener('mousemove', onMove);
-		window.addEventListener('mouseup', onUp);
+	function startDrag(e: PointerEvent) {
+		// Start from the width as drawn, which may be less than the saved one
+		// on a small window.
+		listWidth.set(listPx);
+		startWidthDrag(e, listWidth, { max: listRoom, onDragging: (d) => (dragging = d) });
 	}
 
 	const allSelected = $derived(emails.length > 0 && selectedIds.size === emails.length);
@@ -430,10 +431,10 @@
 	});
 </script>
 
-<div class="h-full flex overflow-hidden">
+<div class="h-full flex overflow-hidden" bind:clientWidth={rowWidth}>
 	<!-- Email list column -->
 	<div class="flex flex-col shrink-0 min-w-0 overflow-hidden max-md:w-full! max-md:flex-1"
-		style={paneOpen ? `width: ${listWidth}px` : 'flex: 1 1 0%; min-width: 0'}>
+		style={paneOpen ? `width: ${listPx}px` : 'flex: 1 1 0%; min-width: 0'}>
 		<!-- 48px, the height of every pane's top bar, so this lines up with the
 		     reading pane's toolbar across the divider. -->
 		<header class="@container ribbon h-12 px-4 border-b border-border flex items-center gap-2 shrink-0">
@@ -651,9 +652,27 @@
 	</div>
 
 	{#if paneOpen}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="max-md:hidden w-1 shrink-0 bg-border hover:bg-accent/40 cursor-col-resize transition-colors {dragging ? 'bg-accent/40' : ''}"
-			onmousedown={startDrag}></div>
+		<!-- Drag to share the room between the list and the reading pane;
+		     arrow keys when focused, a double-click for the default. -->
+		<!-- A focusable separator is ARIA's window splitter: an interactive control. -->
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+		<div
+			role="separator"
+			aria-orientation="vertical"
+			aria-label="Resize the message list"
+			aria-valuemin={LIST_WIDTH.min}
+			aria-valuemax={LIST_WIDTH.max}
+			aria-valuenow={listPx}
+			tabindex="0"
+			class="max-md:hidden w-1 shrink-0 bg-border hover:bg-accent/40 focus-visible:bg-accent/40 outline-none cursor-col-resize touch-none transition-colors {dragging ? 'bg-accent/40' : ''}"
+			onpointerdown={startDrag}
+			onkeydown={(e) => {
+				if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+				listWidth.set(listPx);
+				nudgeWidth(e, listWidth, LIST_WIDTH, listRoom());
+			}}
+			ondblclick={() => listWidth.reset()}
+		></div>
 
 		<div class="max-md:hidden flex-1 overflow-hidden min-w-0 flex flex-col relative">
 			{#if loadingPreview}
