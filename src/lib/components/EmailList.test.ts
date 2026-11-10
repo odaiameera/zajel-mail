@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import { writable } from 'svelte/store';
 import type { Email } from '$lib/jmap/types';
+import type { InboxCategory } from '$lib/types/categories';
 
 const mocks = vi.hoisted(() => ({
 	page: {
@@ -104,5 +105,92 @@ describe('EmailList selection', () => {
 		await rerender({ emails: [a1], total: 1, title: 'Projects', mailboxId: 'A' });
 		await fireEvent.click(bulkBar().getByTitle('Archive'));
 		expect(bulkBodies()).toEqual([{ ids: ['a1'], action: 'archive', sourceMailboxId: 'A' }]);
+	});
+});
+
+describe('EmailList switching Inbox tabs', () => {
+	const unread = { important: 0, updates: 0, newsletters: 0, promotions: 0 };
+	const inbox = (active: InboxCategory, emails: Email[], page = 1) => ({
+		emails,
+		total: 60,
+		title: 'Inbox',
+		mailboxId: 'A',
+		page,
+		pageSize: 25,
+		totalPages: 3,
+		inboxTabs: { active, unread }
+	});
+
+	function renderInbox(props: ReturnType<typeof inbox>) {
+		return render(EmailList, {
+			props,
+			context: new Map<string, unknown>([
+				['labels', []],
+				['readingPane', writable(false)]
+			])
+		});
+	}
+
+	// The scroller under the tabs, and the column inside it that moves.
+	const scroller = () =>
+		document.querySelector('nav[aria-label="Inbox tabs"]')!.nextElementSibling as HTMLElement;
+	const listBody = () => scroller().firstElementChild as HTMLElement;
+
+	let animate: ReturnType<typeof vi.fn>;
+	/** The keyframes the list's content was animated with, in order. */
+	const listMotion = () =>
+		animate.mock.calls
+			.filter((_, i) => animate.mock.contexts[i] === listBody())
+			.map(([keyframes]) => keyframes as Keyframe[]);
+	const slides = () => listMotion().flatMap((k) => (k[0].transform ? [k[0].transform] : []));
+
+	beforeEach(() => {
+		animate = vi.fn(() => ({ cancel: vi.fn() }));
+		// jsdom has no Web Animations API.
+		(HTMLElement.prototype as unknown as { animate: unknown }).animate = animate;
+	});
+
+	afterEach(() => {
+		delete (HTMLElement.prototype as unknown as { animate?: unknown }).animate;
+	});
+
+	it('slides the new tab in from the side of the tab you moved to', async () => {
+		const { rerender } = renderInbox(inbox('important', [email('i1', 'Dana', 'A')]));
+		expect(listMotion()).toEqual([]);
+
+		await rerender(inbox('promotions', [email('p1', 'Shop', 'A')]));
+		expect(slides()).toEqual(['translateX(24px)']);
+		expect(listMotion().some((k) => k[0].opacity === 0 && k[1].opacity === 1)).toBe(true);
+
+		await rerender(inbox('updates', [email('u1', 'Bank', 'A')]));
+		expect(slides()).toEqual(['translateX(24px)', 'translateX(-24px)']);
+	});
+
+	it('keeps still for a refresh and a page turn', async () => {
+		const { rerender } = renderInbox(inbox('updates', [email('u1', 'Bank', 'A')]));
+		// The realtime layer re-runs the load: same tab, new objects.
+		await rerender(inbox('updates', [email('u1', 'Bank', 'A'), email('u2', 'Card', 'A')]));
+		await rerender(inbox('updates', [email('u3', 'Shop', 'A')], 2));
+		expect(listMotion()).toEqual([]);
+	});
+
+	it('starts the new tab at its top', async () => {
+		const { rerender } = renderInbox(inbox('important', [email('i1', 'Dana', 'A')]));
+		scroller().scrollTop = 400;
+		await rerender(inbox('important', [email('i1', 'Dana', 'A')], 2));
+		expect(scroller().scrollTop).toBe(400);
+		await rerender(inbox('newsletters', [email('n1', 'Digest', 'A')]));
+		expect(scroller().scrollTop).toBe(0);
+	});
+
+	it('only fades when less motion is asked for', async () => {
+		vi.stubGlobal(
+			'matchMedia',
+			vi.fn((query: string) => ({ matches: query.includes('reduce'), media: query }))
+		);
+		const { rerender } = renderInbox(inbox('important', [email('i1', 'Dana', 'A')]));
+		await rerender(inbox('promotions', [email('p1', 'Shop', 'A')]));
+		expect(slides()).toEqual([]);
+		expect(listMotion()).toEqual([[{ opacity: 0 }, { opacity: 1 }]]);
 	});
 });
