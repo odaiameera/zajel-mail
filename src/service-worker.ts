@@ -70,8 +70,10 @@ sw.addEventListener('fetch', (event) => {
 	// 0) Sender avatars: cache-first in their own bucket. Each avatar is
 	//    keyed by its ?email= URL and is effectively immutable, so a cache hit
 	//    is always correct. Only 200s are cached — a 204 "no avatar" stays
-	//    uncached so it can fill in once the server resolves it.
-	if (url.pathname === AVATAR_PATH) {
+	//    uncached so it can fill in once the server resolves it. The app only
+	//    ever loads them as images; a page opened at this address goes to the
+	//    network like any other navigation.
+	if (url.pathname === AVATAR_PATH && request.mode !== 'navigate') {
 		event.respondWith(avatarCacheFirst(request));
 		return;
 	}
@@ -196,7 +198,9 @@ async function avatarCacheFirst(request: Request): Promise<Response> {
 	if (hit) return hit;
 	try {
 		const res = await fetch(request);
-		if (res.status === 200) {
+		// Images only: anything else at this address (a sign-in page, an error
+		// page) would otherwise be served from the cache from then on.
+		if (res.status === 200 && res.headers.get('content-type')?.startsWith('image/')) {
 			await cache.put(request, res.clone());
 			void trimAvatarCache(cache);
 		}

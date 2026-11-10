@@ -1,4 +1,5 @@
 import { redirect, type Handle, type HandleServerError, type ServerInit } from '@sveltejs/kit';
+import { createHash } from 'node:crypto';
 import { building } from '$app/environment';
 import { runMigrations } from '$lib/server/db/migrate';
 import {
@@ -75,6 +76,88 @@ function crossSiteWrite(request: Request, url: URL): boolean {
 	if (SAFE_METHODS.has(request.method)) return false;
 	const origin = request.headers.get('origin');
 	return origin !== null && origin !== url.origin;
+}
+
+// The session cookie is SameSite=Strict, so the browser leaves it off a
+// navigation that another site started: a link from a search result, a chat,
+// a web mail client, or a mailto: link handed to this app as its protocol
+// handler. That request looks signed out, so /login drew the sign-in form,
+// and any deep link was sent to /login, for someone who was signed in all
+// along; opening the app again from the address bar then found the session.
+//
+// Such a page load without the cookie gets a page that loads the same
+// address again. That second load comes from this site, so the cookie goes
+// with it, and someone who isn't signed in just sees the page they asked for.
+//
+// What that gives up: a page another site opens now loads signed in, as it
+// would with SameSite=Lax (sending the reader to a page was all it could do
+// before, too). Only the app's pages get the reload. The API, every write and
+// everything a page embeds keep Strict, so another site still can't call the
+// API with the session, even by navigating to it.
+const RETRY_COOKIE = 'same_site_retry';
+
+// A page load, not a frame: `document` straight from the browser, `empty`
+// when the service worker passes the navigation on (it fetches it itself).
+const PAGE_DESTINATIONS = new Set(['document', 'empty']);
+
+function crossSiteNavigation(request: Request): boolean {
+	const h = request.headers;
+	return (
+		request.method === 'GET' &&
+		h.get('sec-fetch-mode') === 'navigate' &&
+		PAGE_DESTINATIONS.has(h.get('sec-fetch-dest') ?? '') &&
+		h.get('sec-fetch-site') === 'cross-site'
+	);
+}
+
+// The app's pages, as against the API, the build's assets and static files.
+// Decided on the route SvelteKit matched, not on the address as typed: it
+// decodes the path before matching, so `/%61pi/...` is the API too. An
+// address starting `//` matches no route and is served as it is (a reload to
+// it would name another host). The API stays Strict; and the service worker
+// caches some of it (avatars), where a cached reload page would reload itself
+// forever.
+function isAppPage(event: Parameters<Handle>[0]['event']): boolean {
+	const id = event.route.id;
+	return id !== null && id !== '/api' && !id.startsWith('/api/') && !event.url.pathname.startsWith('//');
+}
+
+// Where the reload goes: this address, path and query only. The fragment
+// never reaches the server, and leaving it out is what makes the refresh a
+// real load: to the same address with its #fragment, the browser would only
+// scroll.
+function retryTarget(url: URL): string {
+	return url.pathname + url.search;
+}
+
+// The retry cookie names the address it was set for, so it only stops a
+// second reload of that address, not another tab's or the next link's.
+function retryTag(target: string): string {
+	return createHash('sha256').update(target).digest('base64url').slice(0, 22);
+}
+
+function escapeAttr(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function sameSiteRetry(target: string): Response {
+	const href = escapeAttr(target);
+	const html =
+		'<!doctype html><html><head><meta charset="utf-8">' +
+		'<meta name="color-scheme" content="dark light">' +
+		`<meta http-equiv="refresh" content="0;url=${href}"><title>Zajel Mail</title></head>` +
+		`<body><a href="${href}">Continue to Zajel Mail</a></body></html>`;
+	return new Response(html, {
+		headers: {
+			'content-type': 'text/html; charset=utf-8',
+			'cache-control': 'no-store',
+			'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+			// Lax, so it comes back even if a browser counted the reload as
+			// cross-site too: then the page is served as it is rather than
+			// sending the browser round in a loop.
+			'set-cookie': `${RETRY_COOKIE}=${retryTag(target)}; Path=/; Max-Age=10; HttpOnly; Secure; SameSite=Lax`
+		}
+	});
 }
 
 // Fail fast on a missing/short WEBMAIL_SECRET: without it linked-account
@@ -162,6 +245,16 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	const sessionId = event.cookies.get('session');
+	// The reload of an address that got the retry page spends its cookie,
+	// whichever site the browser says it came from, so the next link to the
+	// same address is retried too. Counted as cross-site again, it is served
+	// as it is rather than going round in a loop.
+	const tag = event.cookies.get(RETRY_COOKIE);
+	const reloaded = tag !== undefined && tag === retryTag(retryTarget(event.url));
+	if (reloaded) event.cookies.delete(RETRY_COOKIE, { path: '/' });
+	if (!sessionId && !reloaded && crossSiteNavigation(event.request) && isAppPage(event)) {
+		return sameSiteRetry(retryTarget(event.url));
+	}
 	if (sessionId) {
 		const session = getAppSession(sessionId);
 		const user = session ? getUserById(session.user_id) : undefined;
@@ -225,7 +318,18 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	if (!event.locals.user && tooLargeForSignedOut(event.request)) return PAYLOAD_TOO_LARGE();
-	return resolve(event);
+	const response = await resolve(event);
+	// A page another site opens now loads signed in (see sameSiteRetry), so it
+	// must not keep a handle on the window: through one it could count the
+	// open message's frames or navigate it under the reader's next click.
+	if (response.headers.get('content-type')?.startsWith('text/html')) {
+		try {
+			response.headers.set('cross-origin-opener-policy', 'same-origin');
+		} catch {
+			// A response passed through from a fetch() keeps immutable headers.
+		}
+	}
+	return response;
 };
 
 // SvelteKit's own handler only prints to the console; this keeps that and

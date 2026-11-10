@@ -2,6 +2,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import type { Email, Mailbox } from '$lib/jmap/types';
 	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
+	import { categoryOf, INBOX_CATEGORIES } from '$lib/types/categories';
+	import { CATEGORY_ICON } from './category-icons';
 	import { openCompose } from '$lib/stores/compose';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
@@ -474,6 +476,18 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	}
 
 	const appliedLabels = $derived(allLabels.filter((l) => email.mailboxIds[l.id] === true));
+
+	// The Inbox tab the message is in, shown with its labels. A tab is a
+	// keyword, not a label, so without this nothing on the message said
+	// where Jev (or you, or a rule) had sorted it. Only for Inbox mail while
+	// the account has tabs on; Important is the tab with no keyword, and
+	// needs no chip.
+	const inboxTab = $derived.by(() => {
+		const inbox = mailboxes.find((m) => m.role === 'inbox');
+		if (!page.data.inboxTabsOn || !inbox || !email.mailboxIds[inbox.id]) return null;
+		const key = categoryOf(email.keywords);
+		return key === 'important' ? null : INBOX_CATEGORIES.find((c) => c.key === key) ?? null;
+	});
 
 	// Calendar invitations arrive as a text/calendar MIME part (iMIP) or an
 	// .ics attachment — both are structured data, detected without guesswork.
@@ -1266,6 +1280,17 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 					>{email.subject || '(no subject)'}</span>
 				</h1>
 
+					{#if inboxTab}
+						<!-- The Inbox tab, first among the labels; see `inboxTab`. The
+						     hidden words tell a screen reader it is a tab, not a label. -->
+						<span
+							class="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-hover px-2 py-0.5 text-2xs font-medium leading-4 text-text-secondary"
+							title="In the {inboxTab.label} tab"
+						>
+							<Icon name={CATEGORY_ICON[inboxTab.key]} size={12} class="block" />
+							<span><span class="sr-only">In the&#32;</span>{inboxTab.label}<span class="sr-only">&#32;tab</span></span>
+						</span>
+					{/if}
 					<!-- Labels sit with the subject. Each chip's × takes it off; the + adds one. -->
 					{#each appliedLabels as label (label.id)}
 						<span

@@ -244,10 +244,22 @@ const inboxTriage: AgentTool = {
 		]);
 		if (emails.length === 0) return { content: 'The Inbox has nothing matching.' };
 		const lines = emails.map((e) => {
+			// Jev's verdict is the tab it put the message in, while the message
+			// is still there. Its record also keeps a pick it wasn't sure enough
+			// to apply, and one you have since overruled; reported as Jev's
+			// verdict, those said Updates about mail that sits in Important.
+			// A sender pin put it there without asking Jev: that is the user's
+			// choice, said as such, not a verdict of no confidence.
 			const decision = getDecision(ctx.accountRowId, e.id);
-			const jev = decision?.status === 'done' && decision.category
-				? `jev=${decision.category}@${(decision.confidence ?? 0).toFixed(2)}`
-				: 'jev=none';
+			const standing =
+				decision?.status === 'done' && decision.applied && decision.applied === categoryOf(e.keywords ?? {})
+					? decision
+					: null;
+			const jev = !standing
+				? 'jev=none'
+				: standing.pinnedBy
+					? `jev=pinned:${standing.applied}`
+					: `jev=${standing.applied}@${(standing.confidence ?? 0).toFixed(2)}`;
 			return untrusted('email_summary', e.id, `${summaryLine(e, boxes, ctx.timeZone)} | ${jev}`);
 		});
 		return { content: lines.join('\n') };
