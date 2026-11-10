@@ -9,7 +9,7 @@
 	import { page } from '$app/state';
 import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	import { browser } from '$app/environment';
-	import { getContext, tick } from 'svelte';
+	import { getContext, tick, untrack } from 'svelte';
 	import { renderEmailBodyHtml } from '$lib/utils/email-body';
 	import { emailFrameCsp, prepareEmailForReading } from '$lib/utils/email-images';
 	import { parseListUnsubscribe, type UnsubInfo } from '$lib/utils/list-unsubscribe';
@@ -225,117 +225,226 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	/** Between open and folded: the details still showing, out of the flow, while they fade. */
 	let headerClosing = $state(false);
 	const headerIsOpen = $derived(headerOpen ?? !(compact || $isPhone));
-	let headerEl = $state<HTMLElement>();
+	/** What the header is becoming, which is what a screen reader is told as soon as you ask. */
+	const headerExpanded = $derived(headerIsOpen && !headerClosing);
+	let foldEl = $state<HTMLElement>();
 	let summaryEl = $state<HTMLElement>();
 	let detailsEl = $state<HTMLElement>();
 	let belowEl = $state<HTMLElement>();
+	let frameBoxEl = $state<HTMLElement>();
 	let headerMotion: Animation[] = [];
 
-	// How the switch moves. Animating the header's height laid the message's
-	// iframe out again on every frame, which is what made the fold stutter.
-	// Instead the header takes its new height at once and everything below it
-	// slides into place with a transform, which the compositor runs on its
-	// own; the message is laid out once, at the start or the end, out of
-	// sight. The two lines crossfade over the slide. The curve is iOS's sheet
-	// curve: quick out of the gate, a long soft landing.
-	const HEADER_MS = 340;
-	const HEADER_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
+	// How the switch moves. The space under the subject grows or shrinks to
+	// the height of the line that's coming, clipping what's in it, and the
+	// message below follows it down or up. The line that's going fades out
+	// first and the one that's coming fades in after it, so the two are never
+	// both legible at once (they used to crossfade on top of each other, which
+	// read as a smudge of doubled text). The curve starts gently and settles
+	// slowly, so there's no jump at either end. A click mid-way turns the
+	// motion round from wherever it has got to.
+	//
+	// The message keeps its size while it moves. Many emails are laid out
+	// against the height of their frame (a body at 100%, a table filling it),
+	// and resizing the frame on every step laid all of that out again each
+	// time, which is what made earlier versions of the fold stutter. So the
+	// message takes the taller of its two heights for the whole switch and
+	// settles to its own height once, at the end of an opening or the start of
+	// a fold. What then hangs past the bottom of the pane is cut off where the
+	// message's own bottom margin begins, so that margin stays put instead of
+	// vanishing under the message and coming back.
+	const HEADER_MS = 300;
+	const HEADER_EASE = 'cubic-bezier(0.2, 0, 0, 1)';
 
-	function stopHeaderMotion() {
+	function cancelHeaderMotion() {
 		for (const a of headerMotion) a.cancel();
 		headerMotion = [];
-		if (belowEl) belowEl.style.marginBottom = '';
-		headerClosing = false;
+	}
+	function stopHeaderMotion() {
+		cancelHeaderMotion();
+		if (foldEl) foldEl.style.overflow = '';
+		if (belowEl) belowEl.style.flex = '';
 	}
 
+	// Back to the default when another message comes in, and only then. The
+	// same message arrives again as a new object whenever the page's data is
+	// refreshed (marking it read does that a second after it opens), and
+	// that mustn't fold away the details you just opened.
+	let headerFor: string | undefined;
 	$effect(() => {
-		email.id;
-		stopHeaderMotion();
-		headerOpen = null;
+		const id = email.id;
+		untrack(() => {
+			if (id === headerFor) return;
+			const first = headerFor === undefined;
+			headerFor = id;
+			if (first) return;
+			stopHeaderMotion();
+			headerClosing = false;
+			headerOpen = null;
+		});
 	});
 
 	async function toggleHeader() {
-		if (headerMotion.length) return;
-		const opening = !headerIsOpen;
-		const header = headerEl;
-		const below = belowEl;
+		const forId = email.id;
+		const opening = !headerExpanded;
+		const fold = foldEl;
 		const details = detailsEl;
 		const summary = summaryEl;
+		const below = belowEl;
 		const still =
 			!browser ||
 			typeof window.matchMedia !== 'function' ||
 			window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
-			!header ||
-			!below ||
+			!fold ||
 			!details ||
 			!summary ||
-			typeof below.animate !== 'function';
+			!below?.parentElement ||
+			typeof fold.animate !== 'function';
 		if (still) {
+			stopHeaderMotion();
+			headerClosing = false;
 			headerOpen = opening;
 			return;
 		}
-		const before = header.offsetHeight;
-		let motion: Animation[];
+		// Start from where things are: at rest, or part-way through the last switch.
+		const moving = headerMotion.length > 0;
+		const fromHeight = fold.getBoundingClientRect().height;
+		const fromSummary = moving ? Number(getComputedStyle(summary).opacity) : opening ? 1 : 0;
+		const fromDetails = moving ? Number(getComputedStyle(details).opacity) : opening ? 0 : 1;
+		const belowBox = below.getBoundingClientRect();
+		const paneBottom = below.parentElement.getBoundingClientRect().bottom;
+		// Held before the header changes, so measuring it can't resize the message.
+		below.style.flex = `0 0 ${belowBox.height}px`;
+		cancelHeaderMotion();
 		if (opening) {
+			headerClosing = false;
 			headerOpen = true;
-			await tick();
-			const d = header.offsetHeight - before;
-			// Keep the content's height while it slides, so the message is laid
-			// out once, when the space goes back at the end.
-			below.style.marginBottom = `${-d}px`;
-			motion = [
-				below.animate([{ transform: `translateY(${-d}px)` }, { transform: 'translateY(0)' }], {
-					duration: HEADER_MS,
-					easing: HEADER_EASE
-				}),
-				details.animate(
-					[
-						{ opacity: 0, transform: 'translateY(-6px)' },
-						{ opacity: 1, transform: 'none' }
-					],
-					{ duration: HEADER_MS, easing: HEADER_EASE }
-				),
-				summary.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: 'ease-out' })
-			];
 		} else {
 			headerClosing = true;
-			await tick();
-			const d = before - header.offsetHeight;
-			motion = [
-				below.animate([{ transform: `translateY(${d}px)` }, { transform: 'translateY(0)' }], {
-					duration: HEADER_MS,
-					easing: HEADER_EASE
-				}),
-				details.animate(
-					[
-						{ opacity: 1, transform: 'none' },
-						{ opacity: 0, transform: 'translateY(-6px)' }
-					],
-					{ duration: HEADER_MS * 0.6, easing: 'ease-out', fill: 'forwards' }
-				),
-				summary.animate([{ opacity: 0 }, { opacity: 1 }], {
-					duration: 180,
-					delay: HEADER_MS * 0.4,
-					easing: 'ease-out',
-					fill: 'backwards'
-				})
-			];
 		}
+		await tick();
+		// Another message came in with the click; it has started from its
+		// own default, and the switch was for the old one.
+		if (email.id !== forId) {
+			stopHeaderMotion();
+			return;
+		}
+		const toHeight = fold.getBoundingClientRect().height;
+		const toTop = belowBox.top + toHeight - fromHeight;
+		const held = Math.max(belowBox.height, paneBottom - toTop);
+		below.style.flex = `0 0 ${held}px`;
+		fold.style.overflow = 'hidden';
+		const margin = frameBoxEl ? parseFloat(getComputedStyle(frameBoxEl).paddingBottom) || 0 : 0;
+		const cut = (top: number) =>
+			`inset(0 0 ${Math.max(0, held - (paneBottom - margin - top))}px 0)`;
+		const timing = { duration: HEADER_MS, easing: HEADER_EASE };
+		// The outgoing line's fade takes the first part of the switch, the
+		// incoming one's the rest. Turned round mid-way, each goes on from its
+		// current opacity, the outgoing one in the share of its time it has
+		// left, and the incoming one waits for that.
+		const outFrom = opening ? fromSummary : fromDetails;
+		const outMs = HEADER_MS * 0.35 * outFrom;
+		const outgoing = { duration: outMs, easing: 'ease-out', fill: 'forwards' as const };
+		const incoming = {
+			duration: HEADER_MS * 0.7,
+			delay: moving ? outMs * 0.85 : HEADER_MS * 0.3,
+			easing: 'ease-out',
+			fill: 'both' as const
+		};
+		const motion = [
+			fold.animate([{ height: `${fromHeight}px` }, { height: `${toHeight}px` }], timing),
+			// The message's top follows the fold's height on the same curve, so
+			// a cut that moves with it in step stays level with the pane's margin.
+			below.animate([{ clipPath: cut(belowBox.top) }, { clipPath: cut(toTop) }], timing),
+			opening
+				? summary.animate([{ opacity: fromSummary }, { opacity: 0 }], outgoing)
+				: summary.animate([{ opacity: fromSummary }, { opacity: 1 }], incoming),
+			opening
+				? details.animate([{ opacity: fromDetails }, { opacity: 1 }], incoming)
+				: details.animate([{ opacity: fromDetails }, { opacity: 0 }], outgoing)
+		];
 		headerMotion = motion;
 		await Promise.all(motion.map((a) => a.finished.catch(() => undefined)));
-		// Stopped meanwhile: another message took over.
+		// Turned round, or another message took over.
 		if (headerMotion !== motion) return;
-		if (!opening) headerOpen = false;
-		headerClosing = false;
+		if (!opening) {
+			headerOpen = false;
+			headerClosing = false;
+		}
 		await tick();
-		for (const a of motion) a.cancel();
-		headerMotion = [];
-		below.style.marginBottom = '';
+		if (headerMotion === motion) stopHeaderMotion();
+	}
+
+	// A press on the subject that ends a text selection is someone copying
+	// it, not asking for the details. With a mouse that is decided by how far
+	// it moved while held, or by Shift (which extends a selection): a hand
+	// moving a pixel or two can cross the middle of a letter, and the
+	// browser then selects that letter, which no one meant, so a short press
+	// still toggles and that stray selection is cleared. A touch or a pen
+	// leaves no such record, and there a selection in the subject decides.
+	let press: { x: number; y: number; mouse: boolean } | null = null;
+	function notePress(e: PointerEvent) {
+		press = { x: e.clientX, y: e.clientY, mouse: e.pointerType === 'mouse' };
+	}
+	function forgetPress() {
+		press = null;
+	}
+	function selectingText(e: MouseEvent): boolean {
+		const pressed = press;
+		press = null;
+		const target = e.currentTarget as Node;
+		const selection = window.getSelection();
+		let selected = false;
+		if (selection && !selection.isCollapsed) {
+			for (let i = 0; i < selection.rangeCount; i++) {
+				if (selection.getRangeAt(i).intersectsNode(target)) selected = true;
+			}
+		}
+		// detail 0: not a pointer's click at all (el.click(), assistive tech).
+		if (pressed?.mouse && e.detail > 0) {
+			if (e.shiftKey || Math.hypot(e.clientX - pressed.x, e.clientY - pressed.y) > 4) return true;
+			if (selected) selection?.removeAllRanges();
+			return false;
+		}
+		return selected;
+	}
+
+	// A double-click selects a word, and a triple-click the whole subject, so
+	// neither should leave the header switched: the second click of a pair
+	// undoes the first, and any further clicks are ignored.
+	let subjectClickToggled = false;
+	function handleSubjectClick(e: MouseEvent) {
+		if (e.detail === 2) {
+			if (subjectClickToggled) void toggleHeader();
+			subjectClickToggled = false;
+			return;
+		}
+		if (e.detail > 2) return;
+		subjectClickToggled = !selectingText(e);
+		if (subjectClickToggled) void toggleHeader();
+	}
+
+	// The subject is a button for the keyboard too: Enter acts on the press,
+	// Space on the release (and doesn't scroll the page), as a <button> does.
+	let spacePressed = false;
+	function handleSubjectKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			if (!e.repeat) void toggleHeader();
+		} else if (e.key === ' ') {
+			e.preventDefault();
+			spacePressed = true;
+		}
+	}
+	function handleSubjectKeyup(e: KeyboardEvent) {
+		if (e.key !== ' ' || !spacePressed) return;
+		e.preventDefault();
+		spacePressed = false;
+		void toggleHeader();
 	}
 
 	// Which of the two lines below the subject is in the flow. In the open
 	// state the summary stays, invisible, over the details' top edge, so the
-	// two can crossfade; while closing it is the other way round.
+	// fold can fade one into the other; while closing it is the other way round.
 	const summaryClass = $derived(
 		headerClosing
 			? ''
@@ -353,9 +462,6 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 				: headerOpen === false || compact
 					? 'hidden'
 					: 'max-md:hidden'
-	);
-	const chevronClass = $derived(
-		headerOpen === true ? 'rotate-90' : headerOpen === false || compact ? '' : 'md:rotate-90'
 	);
 	/** The folded line's date: the time today, the day this year, the year otherwise. */
 	function shortDate(iso: string): string {
@@ -1183,13 +1289,29 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		Two parts. The subject and its labels are always there, the same in
 		either state. Below them is either one quiet line (who and when) or the
 		details; `headerOpen` decides which and `toggleHeader` moves between
-		them. The chevron or the quiet line toggles it.
+		them. The subject is what toggles it; folded, a click on the quiet line
+		opens it too.
 	-->
-	<header bind:this={headerEl} class="shrink-0 {compact ? 'px-4 pb-2.5' : 'px-6 pb-3 max-md:px-4'}">
+	<header class="shrink-0 {compact ? 'px-4 pb-2.5' : 'px-6 pb-3 max-md:px-4'}">
 		<div class="flex items-start gap-3 {compact ? 'pt-2.5' : 'pt-3'}">
 			<div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+				<!-- The subject stays the page's heading, with the button inside it,
+				     named by the subject itself. A role rather than a <button>,
+				     because a <button>'s text can't be selected to copy in every
+				     browser; the keyboard handling is a button's. -->
 				<h1 class="min-w-0 font-semibold leading-snug text-text [text-wrap:balance] {compact ? 'text-base' : 'text-lg'}">
-					{email.subject || '(no subject)'}
+					<span
+						role="button"
+						tabindex="0"
+						aria-expanded={headerExpanded}
+						aria-controls="message-head-details"
+						onpointerdown={notePress}
+						onpointercancel={forgetPress}
+						onclick={handleSubjectClick}
+						onkeydown={handleSubjectKeydown}
+						onkeyup={handleSubjectKeyup}
+						class="cursor-pointer rounded-sm transition-[color] duration-150 hover:text-text/80"
+					>{email.subject || '(no subject)'}</span>
 				</h1>
 
 					{#if inboxTab}
@@ -1256,41 +1378,31 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 						{/if}
 					</span>
 			</div>
-
-			<button
-				type="button"
-				onclick={toggleHeader}
-				aria-expanded={headerIsOpen}
-				aria-controls="message-head-details"
-				aria-label={headerIsOpen ? 'Hide details' : 'Show details'}
-				title={headerIsOpen ? 'Hide details' : 'Show details'}
-				class="-mr-1.5 mt-0.5 shrink-0 cursor-pointer rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text"
-			>
-				<span class="block transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] {chevronClass}">
-					<Icon name="expand" size={16} class="block" />
-				</span>
-			</button>
 		</div>
 
-		<div class="relative">
-			<!-- Folded: one quiet line says who and when, and opens the rest. -->
-			<button
+		<div bind:this={foldEl} class="relative">
+			<!-- Folded: one quiet line says who and when. It is plain text to a
+			     screen reader and the keyboard, which have the subject; a click
+			     on it opens the rest, as a bigger target for a pointer. -->
+			<div
 				bind:this={summaryEl}
-				type="button"
-				onclick={toggleHeader}
-				aria-expanded={headerIsOpen}
-				aria-controls="message-head-details"
-				aria-hidden={headerIsOpen && !headerClosing}
-				tabindex={headerIsOpen && !headerClosing ? -1 : 0}
-				class="block w-full cursor-pointer truncate pt-0.5 text-left text-xs text-text-tertiary {summaryClass}"
+				onpointerdown={notePress}
+				onpointercancel={forgetPress}
+				onclick={(e) => {
+					if (e.detail <= 1 && !selectingText(e)) void toggleHeader();
+				}}
+				aria-hidden={headerExpanded}
+				class="group block w-full cursor-pointer truncate pt-0.5 text-left text-xs text-text-tertiary transition-colors duration-150 hover:text-text-secondary {summaryClass}"
 			>
-				<span class="text-text-secondary">{from?.name || from?.email || 'Unknown'}</span>
+				<span class="text-text-secondary transition-colors duration-150 group-hover:text-text">{from?.name || from?.email || 'Unknown'}</span>
 				<span aria-hidden="true"> · </span>
 				<time datetime={email.receivedAt}>{shortDate(email.receivedAt)}</time>
 				{#if toList.length + ccList.length > 1}
-					<span aria-hidden="true"> · </span>to {toList.length + ccList.length} people
+					<!-- Svelte drops the spaces inside the span; the one after it is what
+					     keeps "·" off "to". -->
+					<span aria-hidden="true"> · </span> to {toList.length + ccList.length} people
 				{/if}
-			</button>
+			</div>
 
 			<div bind:this={detailsEl} id="message-head-details" class={detailsClass}>
 				<div class="flex flex-wrap items-start gap-x-3 gap-y-2 pt-3">
@@ -1372,10 +1484,11 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		</div>
 	</header>
 
-	<!-- Everything under the header, as one block: it is what slides when the
-	     header folds or opens (see toggleHeader), and it paints over the
-	     header's details while it does. -->
-	<div bind:this={belowEl} class="relative z-[1] flex min-h-0 flex-1 flex-col border-t border-border bg-bg">
+	<!-- Everything under the header, as one block: it moves with the header as
+	     it folds or opens, holding its size meanwhile (see toggleHeader), and
+	     the root's overflow-hidden stops what hangs below the pane from making
+	     anything scroll. -->
+	<div bind:this={belowEl} class="flex min-h-0 flex-1 flex-col border-t border-border">
 		{#if otp}
 			<div class="{compact ? 'mx-4' : 'mx-6'} mt-3 shrink-0">
 				<div class="flex items-center gap-3 rounded-xl border border-border bg-surface px-3.5 py-2.5 relative overflow-hidden">
@@ -1462,7 +1575,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		     email's content height — short emails no longer collapse the
 		     pane, and long ones scroll inside the iframe instead of the
 		     wrapper. -->
-		<div class="flex-1 overflow-hidden {compact ? 'px-4 py-3' : 'px-6 py-4 max-md:px-2 max-md:py-2'}">
+		<div bind:this={frameBoxEl} class="flex-1 overflow-hidden {compact ? 'px-4 py-3' : 'px-6 py-4 max-md:px-2 max-md:py-2'}">
 			<!-- bg-white matches the document's background so swapping
 			     srcdoc (next/previous message) repaints white-on-white instead
 			     of flashing through the dark page background.
