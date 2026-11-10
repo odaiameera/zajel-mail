@@ -13,6 +13,8 @@ import { loadRules } from '$lib/server/rules-store';
 import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
+import { applyInboxHold, inboxHoldOn, knownInboxId, readInboxHold } from '$lib/server/jev/hold';
+import { INBOX_HOLD_MS } from '$lib/inbox-hold';
 import { parseMarkReadDelay } from '$lib/mail-prefs';
 
 export const load: LayoutServerLoad = async ({ locals, cookies }) => {
@@ -82,14 +84,29 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 		// These hit the mail server independently — run them concurrently so
 		// every navigation costs one round-trip's latency, not the sum of
 		// three. This load re-runs on each invalidateAll(), so it's hot.
-		const [mailboxes, labels, accountUnread] = await Promise.all([
-			getMailboxes(client, locals.auth.accountId),
+		// While Jev sorts the Inbox tabs, the Inbox's unread count leaves out
+		// new mail it hasn't finished with, as the tabs do (see inbox-hold).
+		// The hold is asked about alongside the mailboxes, using the Inbox id
+		// from the last load; only the first load (or a new Inbox) waits.
+		const holdAccount = inboxHoldOn(locals.activeAccountId) ? locals.activeAccountId! : null;
+		const accountId = locals.auth.accountId;
+		const holdInbox = holdAccount ? knownInboxId(holdAccount) : undefined;
+		const [mailboxList, labels, accountUnread, earlyHold] = await Promise.all([
+			getMailboxes(client, accountId),
 			listLabels(client, locals.auth.accountId, userEmail),
 			// Inbox unread counts for the other accounts' switcher badges.
 			// Cached server-side (30s) so navigations stay cheap.
 			unreadBadges(listAccounts(locals.user.id), locals.activeAccountId),
+			holdInbox ? readInboxHold(client, accountId, holdInbox) : null,
 			identityRefresh
 		]);
+		let mailboxes = mailboxList;
+		let inboxHoldEndsAt: number | null = null;
+		if (holdAccount) {
+			const inboxId = mailboxList.find((m) => m.role === 'inbox')?.id;
+			const hold = !inboxId ? null : inboxId === holdInbox ? earlyHold : await readInboxHold(client, accountId, inboxId);
+			({ mailboxes, releaseAt: inboxHoldEndsAt } = applyInboxHold(holdAccount, mailboxList, hold));
+		}
 
 		// Rules live in SQLite now (device-independent). loadRules also performs
 		// the one-time import from the legacy per-browser `mail_rules` cookie.
@@ -122,6 +139,12 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 
 		return {
 			mailboxes,
+			// How long until the first message the Inbox is holding shows
+			// anyway (ms from now), so the page refreshes for it even when Jev
+			// never answers and nothing else changes; null when none is held.
+			// Never more than one hold, whatever date a message carries.
+			inboxHoldEndsIn:
+				inboxHoldEndsAt === null ? null : Math.min(Math.max(0, inboxHoldEndsAt - Date.now()), INBOX_HOLD_MS),
 			accountId: locals.auth.accountId,
 			userEmail,
 			accounts,
@@ -153,6 +176,10 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			// Whether Jev reads this account's mail — the message view then
 			// offers its "Why is this here?" chip.
 			jevReads: activeAccount ? getJevSettings(activeAccount.id).jevEnabled : false,
+			// Whether this account's Inbox is split into tabs — the message view
+			// then names the tab a message is in, beside its labels. Not
+			// `inboxTabs`: the Inbox page's own data has that name, for its tabs.
+			inboxTabsOn: activeAccount ? getJevSettings(activeAccount.id).inboxTabs : false,
 			// "Create event from email" (LLM extraction) only renders when an
 			// Ollama endpoint is configured server-side.
 			aiEnabled: assistantConfigured()

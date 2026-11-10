@@ -1,5 +1,6 @@
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
+import { inboxHoldOn, withInboxHold } from '$lib/server/jev/hold';
 import { authStateForAccount, type MailAccountRow } from './accounts';
 
 /**
@@ -28,7 +29,10 @@ export async function unreadBadges(
 				}
 				try {
 					const auth = authStateForAccount(account);
-					const mailboxes = await getMailboxes(createClient(auth), auth.accountId);
+					const client = createClient(auth);
+					let mailboxes = await getMailboxes(client, auth.accountId);
+					// Mail the Inbox is still holding for Jev isn't counted yet.
+					if (inboxHoldOn(account.id)) ({ mailboxes } = await withInboxHold(client, auth.accountId, account.id, mailboxes));
 					const unread = mailboxes.find((m) => m.role === 'inbox')?.unreadEmails ?? 0;
 					cache.set(account.id, { at: Date.now(), unread });
 					out[account.id] = unread;
