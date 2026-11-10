@@ -1200,7 +1200,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 							title="In the {inboxTab.label} tab"
 						>
 							<Icon name={CATEGORY_ICON[inboxTab.key]} size={12} class="block" />
-							<span><span class="sr-only">In the{' '}</span>{inboxTab.label}<span class="sr-only">{' '}tab</span></span>
+							<span><span class="sr-only">In the&#32;</span>{inboxTab.label}<span class="sr-only">&#32;tab</span></span>
 						</span>
 					{/if}
 					<!-- Labels sit with the subject. Each chip's × takes it off; the + adds one. -->
