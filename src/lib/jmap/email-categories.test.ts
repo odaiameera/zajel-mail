@@ -38,6 +38,19 @@ describe('countUnreadByCategory', () => {
 	});
 });
 
+describe('countUnreadByCategory with the Inbox hold', () => {
+	it('ANDs the extra condition into every tab’s count', async () => {
+		const { client, requests } = fakeClient(() => ({ ids: [], total: 0 }));
+		const hold = { operator: 'OR', conditions: [{ hasKeyword: '$jev_sorted' }, { before: '2026-11-10T09:58:00Z' }] };
+
+		await countUnreadByCategory(client, 'acc', 'inbox-id', hold);
+
+		for (const [, args] of requests[0]) {
+			expect((args.filter as { conditions: unknown[] }).conditions.at(-1)).toEqual(hold);
+		}
+	});
+});
+
 describe('setEmailCategory', () => {
 	it('writes the same exclusive keyword patch to every email', async () => {
 		const { client, requests } = fakeClient(() => ({ updated: { a: null, b: null } }));

@@ -23,7 +23,11 @@ let started = false;
 
 // Guards against the cron tick and the per-request catch-up running for the
 // same user at once — harmless (actions are idempotent) but wasteful.
-const inFlight = new Set<string>();
+const inFlight = new Map<string, Promise<void>>();
+
+// The mail each user's last run acted on. The cursor re-reads the second a
+// run started in (see runApply), and what was handled then isn't redone.
+const lastHandled = new Map<string, Set<string>>();
 
 export function startRulesScheduler(): void {
 	if (started) return;
@@ -55,17 +59,34 @@ export async function applyRulesForUser(
 	accountRowId: string
 ): Promise<void> {
 	if (inFlight.has(userEmail)) return;
-	inFlight.add(userEmail);
-	try {
-		await runApply(auth, userEmail, accountRowId);
-	} finally {
-		inFlight.delete(userEmail);
+	const run = runApply(auth, userEmail, accountRowId).finally(() => inFlight.delete(userEmail));
+	inFlight.set(userEmail, run);
+	await run;
+}
+
+/**
+ * A run that covers the newest mail, for Jev's worker, which marks mail
+ * done once the rules have had it: one already going may have read the
+ * Inbox before that mail landed, so it is waited out and another run made.
+ */
+export async function applyRulesNow(
+	auth: AuthState,
+	userEmail: string,
+	accountRowId: string
+): Promise<void> {
+	for (let running = inFlight.get(userEmail); running; running = inFlight.get(userEmail)) {
+		await running.catch(() => {});
 	}
+	await applyRulesForUser(auth, userEmail, accountRowId);
 }
 
 async function runApply(auth: AuthState, userEmail: string, accountRowId: string): Promise<void> {
 	const enabled = getRules(userEmail).filter((r) => r.enabled);
-	const nowIso = new Date().toISOString();
+	// Stalwart stamps receivedAt to the second and `after` is strict, so a
+	// cursor at this run's own instant would skip mail landing later in that
+	// second, after the query below. The next run reads from the second
+	// before instead; what this run handled is remembered and not redone.
+	const nowIso = new Date(Math.floor(Date.now() / 1000) * 1000 - 1000).toISOString();
 
 	const cursor = getRulesCursor(userEmail);
 	if (cursor === null || enabled.length === 0 || jevHandlesRules(accountRowId, enabled)) {
@@ -116,7 +137,9 @@ async function runApply(auth: AuthState, userEmail: string, accountRowId: string
 		]
 	]);
 
-	const emails = (response.methodResponses[1][1] as { list: Email[] }).list ?? [];
+	const listed = (response.methodResponses[1][1] as { list: Email[] }).list ?? [];
+	const handled = lastHandled.get(userEmail);
+	const emails = handled ? listed.filter((e) => !handled.has(e.id)) : listed;
 	const { update } = updatesForEmails(emails, enabled, ctx);
 
 	const entries = Object.entries(update);
@@ -148,9 +171,10 @@ async function runApply(auth: AuthState, userEmail: string, accountRowId: string
 	// (a re-read is safe, the updates only write differences) — unless the
 	// whole page is that one second, when stepping back would never move on.
 	// The same stepping as Jev's worker.
+	lastHandled.set(userEmail, new Set(listed.map((e) => e.id)));
 	let newCursor = nowIso;
-	if (emails.length >= PAGE) {
-		const lastSeen = emails[emails.length - 1]!.receivedAt;
+	if (listed.length >= PAGE) {
+		const lastSeen = listed[listed.length - 1]!.receivedAt;
 		const stepped = Date.parse(lastSeen) - 1000;
 		newCursor = stepped > Date.parse(cursor) ? new Date(stepped).toISOString() : lastSeen;
 	}

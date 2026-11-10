@@ -52,11 +52,13 @@ import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import { getJevSettings, updateJevSettings } from '$lib/server/db/queries/jev-settings';
 import { enqueueEmails, getDecision, getUsage, recordCorrections } from '$lib/server/db/queries/jev-decisions';
-import { setRules } from '$lib/server/db/queries/rules';
+import { setRules, setRulesCursor } from '$lib/server/db/queries/rules';
+import { applyRulesForUser } from '$lib/server/rules-scheduler';
+import { INBOX_HOLD_MS, isHeld } from '$lib/inbox-hold';
 import { recordSenderMoves, setPin } from '$lib/server/db/queries/jev-learning';
 import type { AuthState, MethodCall } from '$lib/jmap/types';
 import type { Rule } from '$lib/types/rules';
-import { forgetRateLimits, sortNewMail } from './worker';
+import { forgetRateLimits, sortNewMail, sortNewMailSafe } from './worker';
 import { jevHandlesRules } from './rules';
 
 const ACCT = 'acct-1';
@@ -933,4 +935,258 @@ describe('sortNewMail', () => {
 			expect(getDecision(ACCT, 'wronglyJunked')).toBeNull();
 		});
 	});
+});
+
+describe('the Inbox’s hold on new mail', () => {
+	// Thirty seconds before the pass: still young enough for the Inbox to hold.
+	const JUST_NOW = 9.5;
+	const SORTED = '$jev_sorted';
+
+	it('marks new mail done whatever Jev made of it, so the Inbox shows it in its tab at once', async () => {
+		fake.add('news', JUST_NOW, { 'header:list-unsubscribe': ' <x>', subject: 'Issue 212' });
+		fake.add('person', JUST_NOW, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+		// You put this in a tab before Jev got to it: Jev isn't even asked.
+		fake.add('yours', JUST_NOW, { keywords: { $cat_updates: true } });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('pinned', JUST_NOW, { from: [{ name: 'LinkedIn', email: 'jobs@linkedin.com' }] });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('news')!.keywords).toEqual({ $cat_newsletters: true, [SORTED]: true });
+		// Staying in Important is an outcome too: the hold lets it go now.
+		expect(fake.emails.get('person')!.keywords).toEqual({ [SORTED]: true });
+		expect(fake.emails.get('yours')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		expect(fake.emails.get('pinned')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+	});
+
+	it('leaves mail unmarked while Jev hasn’t answered, so the hold’s own timeout lets it through', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 500 })));
+		fake.add('news', JUST_NOW, { 'header:list-unsubscribe': ' <x>' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('news')!.keywords).toEqual({});
+		expect(getDecision(ACCT, 'news')?.status).toBe('pending');
+	});
+
+	it('spends no write on mail too old to be held', async () => {
+		fake.add('person', 1, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+		const sets: MethodCall[] = [];
+		const realRequest = fake.request.bind(fake);
+		fake.request = async (calls: MethodCall[]) => {
+			sets.push(...calls.filter(([name]) => name === 'Email/set'));
+			return realRequest(calls);
+		};
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('person')!.keywords).toEqual({});
+		expect(sets).toEqual([]);
+	});
+
+	it('marks mail put in another tab while Jev was judging, without writing over your tab', async () => {
+		fake.add('news', JUST_NOW, { 'header:list-unsubscribe': ' <x>' });
+		const realRequest = fake.request.bind(fake);
+		let meanwhile = false;
+		fake.request = async (calls: MethodCall[]) => {
+			const result = await realRequest(calls);
+			if (!meanwhile && calls[0][0] === 'Email/get' && (calls[0][1].properties as string[]).includes('textBody')) {
+				meanwhile = true;
+				fake.emails.get('news')!.keywords = { $cat_promotions: true };
+			}
+			return result;
+		};
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('news')!.keywords).toEqual({ $cat_promotions: true, [SORTED]: true });
+		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'done', applied: null });
+	});
+
+	it('marks mail brought back from Junk, but not mail it sends there', async () => {
+		updateJevSettings(ACCT, { spamMode: 'active' });
+		fake.add('toFriend', -100, { mailboxIds: { sent: true }, to: [{ name: null, email: 'friend@pal.example' }] });
+		fake.add('spammy', JUST_NOW, { 'header:x-spam-status:asText': 'Yes, score=8.1', subject: 'Cheap watches' });
+		fake.add('wronglyJunked', JUST_NOW, {
+			mailboxIds: { junk: true },
+			subject: 'Your receipt',
+			'header:authentication-results:asText:all': ['mx.example.test; spf=pass; dkim=pass; dmarc=pass']
+		});
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true });
+		expect(fake.emails.get('spammy')!.keywords).toEqual({});
+		expect(fake.emails.get('wronglyJunked')!.mailboxIds).toEqual({ inbox: true });
+		expect(fake.emails.get('wronglyJunked')!.keywords).toEqual({ [SORTED]: true });
+	});
+
+	it('writes no mark while the Inbox has no tabs, as nothing is held then', async () => {
+		updateJevSettings(ACCT, { inboxTabs: false, spamMode: 'watch' });
+		fake.add('person', JUST_NOW, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(getDecision(ACCT, 'person')?.status).toBe('done');
+		expect(fake.emails.get('person')!.keywords).toEqual({});
+	});
+
+	it('runs a pass asked for while one is running once it ends, so new mail isn’t left to the next minute', async () => {
+		fake.add('first', JUST_NOW, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+		const realRequest = fake.request.bind(fake);
+		let second: Promise<void> | null = null;
+		fake.request = async (calls: MethodCall[]) => {
+			// Mail lands, and its push asks for a pass, while the first pass is judging.
+			if (!second && calls[0][0] === 'Email/get' && (calls[0][1].properties as string[]).includes('textBody')) {
+				fake.add('second', JUST_NOW + 0.1, { from: [{ name: 'Ana', email: 'ana@example.com' }] });
+				second = sortNewMailSafe(ACCT, ME, auth);
+			}
+			return realRequest(calls);
+		};
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(at(10));
+
+		await sortNewMailSafe(ACCT, ME, auth);
+		await second;
+
+		expect(getDecision(ACCT, 'first')?.status).toBe('done');
+		expect(getDecision(ACCT, 'second')?.status).toBe('done');
+	});
+});
+
+describe('the Inbox’s hold, with rules and the push stream', () => {
+	const JUST_NOW = 9.5;
+	const SORTED = '$jev_sorted';
+	const githubToUpdates: Rule = {
+		id: 'gh',
+		name: 'GitHub to Updates',
+		enabled: true,
+		logic: 'allof',
+		conditions: [{ id: 'c1', field: 'from', op: 'contains', value: 'github.com', negate: false }],
+		actions: [{ type: 'setCategory', value: 'updates' }],
+		createdAt: 0
+	};
+
+	it('lets exact rules act before it marks new mail, so a rule’s tab is there when the message shows', async () => {
+		setRules(ME, [githubToUpdates]);
+		setRulesCursor(ME, at(0).toISOString());
+		fake.add('gh', JUST_NOW, { from: [{ name: 'GitHub', email: 'noreply@github.com' }], 'header:list-unsubscribe': ' <x>' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('gh')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		// The rules scheduler's own run afterwards finds nothing left to do.
+		const writes: MethodCall[] = [];
+		const realRequest = fake.request.bind(fake);
+		fake.request = async (calls: MethodCall[]) => {
+			writes.push(...calls.filter(([name]) => name === 'Email/set'));
+			return realRequest(calls);
+		};
+		await applyRulesForUser(auth, ME, ACCT);
+		expect(writes).toEqual([]);
+	});
+
+	it('keeps exact rules working while TypeSafe is down', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 500 })));
+		setRules(ME, [githubToUpdates]);
+		setRulesCursor(ME, at(0).toISOString());
+		fake.add('gh', JUST_NOW, { from: [{ name: 'GitHub', email: 'noreply@github.com' }] });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		// The rule's tab is on; no mark, so the hold's timeout lets it through.
+		expect(fake.emails.get('gh')!.keywords).toEqual({ $cat_updates: true });
+	});
+
+	it('leaves mail judged while the tabs were off unmarked: it waits out the hold, no longer', async () => {
+		updateJevSettings(ACCT, { inboxTabs: false, spamMode: 'watch' });
+		fake.add('p', JUST_NOW, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+		await sortNewMail(ACCT, ME, auth, at(10));
+		updateJevSettings(ACCT, { inboxTabs: true });
+		await sortNewMail(ACCT, ME, auth, at(10.1));
+
+		const email = fake.emails.get('p')!;
+		expect(email.keywords[SORTED]).toBeUndefined();
+		expect(isHeld(email, at(10.1).getTime())).toBe(true);
+		expect(isHeld(email, at(JUST_NOW).getTime() + INBOX_HOLD_MS + 1000)).toBe(false);
+	});
+
+	it('judges new mail only on a pass the stream asked for, leaving the backlog to the scheduled run', async () => {
+		fake.add('old', -60, { 'header:list-unsubscribe': ' <x>' });
+		enqueueEmails(ACCT, ['old'], T0.getTime(), true);
+		fake.add('news', JUST_NOW, { 'header:list-unsubscribe': ' <x>' });
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(at(10));
+
+		await sortNewMailSafe(ACCT, ME, auth, { fromStream: true });
+		expect(getDecision(ACCT, 'news')?.status).toBe('done');
+		expect(getDecision(ACCT, 'old')?.status).toBe('pending');
+
+		await sortNewMailSafe(ACCT, ME, auth);
+		expect(getDecision(ACCT, 'old')?.status).toBe('done');
+	});
+
+	it('stops calling TypeSafe on every change while it is down, until the next scheduled pass', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 500 }));
+		vi.stubGlobal('fetch', fetchMock);
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(at(10));
+		fake.add('a', JUST_NOW, { 'header:list-unsubscribe': ' <x>' });
+
+		await sortNewMailSafe(ACCT, ME, auth);
+		expect(fetchMock).toHaveBeenCalled();
+
+		// Mail lands, and its change asks for a pass: TypeSafe is left alone.
+		fetchMock.mockClear();
+		fake.add('b', JUST_NOW + 0.2, { 'header:list-unsubscribe': ' <x>' });
+		await sortNewMailSafe(ACCT, ME, auth, { fromStream: true });
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		// The scheduled pass tries again, and once TypeSafe answers, the
+		// stream's passes do too.
+		fetchMock.mockImplementation(async () => liveAnswer());
+		await sortNewMailSafe(ACCT, ME, auth);
+		expect(getDecision(ACCT, 'b')?.status).toBe('done');
+		fake.add('c', JUST_NOW + 0.3, { 'header:list-unsubscribe': ' <x>' });
+		await sortNewMailSafe(ACCT, ME, auth, { fromStream: true });
+		expect(getDecision(ACCT, 'c')?.status).toBe('done');
+	});
+
+	it('doesn’t chain a pass onto every write of the backlog when driven by the stream', async () => {
+		const { startJevWatchers, stopJevWatchers } = await import('./stream');
+		const accounts = await import('$lib/server/auth/accounts');
+		vi.spyOn(accounts, 'listSchedulableAuths').mockReturnValue([{ account: { id: ACCT, email: ME } as never, auth, email: ME }]);
+		const ids = Array.from({ length: 300 }, (_, i) => `old${i}`);
+		ids.forEach((id, i) => fake.add(id, -60 + i * 0.01, { 'header:list-unsubscribe': ' <x>' }));
+		enqueueEmails(ACCT, ids, T0.getTime(), true);
+		let push!: (text: string) => void;
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				push = (text) => controller.enqueue(new TextEncoder().encode(text));
+			}
+		});
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200 })));
+		// Every write is an Email change, which the stream reports.
+		const realRequest = fake.request.bind(fake);
+		fake.request = async (calls: MethodCall[]) => {
+			const result = await realRequest(calls);
+			if (calls.some(([name]) => name === 'Email/set')) push('event: state\ndata: {}\n\n');
+			return result;
+		};
+
+		startJevWatchers(sortNewMailSafe);
+		await new Promise((resolve) => setTimeout(resolve, 3500));
+		stopJevWatchers();
+
+		expect(ids.filter((id) => getDecision(ACCT, id)?.status === 'done')).toEqual([]);
+	}, 10_000);
 });

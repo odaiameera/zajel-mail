@@ -5,6 +5,8 @@ import { countUnreadByCategory, queryAndFetchEmails } from '$lib/jmap/email';
 import { userEmailFromAuth } from '$lib/server/user';
 import { getDefaultPageSize, getDefaultSort } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
+import { inboxHoldOn } from '$lib/server/jev/hold';
+import { shownCondition } from '$lib/inbox-hold';
 import { listMarkedIds } from '$lib/server/db/queries/reminders';
 import { allOf, parseListFilter, listFilterCondition } from '$lib/email-filters';
 import {
@@ -55,15 +57,18 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	// all of it, exactly as before tabs existed.
 	const tabsOn = !!locals.activeAccountId && getJevSettings(locals.activeAccountId).inboxTabs;
 	const category = tabsOn ? parseInboxCategory(url.searchParams.get('category')) : null;
+	// While Jev sorts the tabs, a message it hasn't finished with yet waits
+	// (two minutes at most) instead of showing in Important and then moving.
+	const hold = tabsOn && inboxHoldOn(locals.activeAccountId) ? shownCondition(Date.now()) : null;
 
 	const [result, tabUnread] = await Promise.all([
 		queryAndFetchEmails(client, locals.auth.accountId, inbox.id, {
 			position: (page - 1) * pageSize,
 			limit: pageSize,
 			sort: getDefaultSort(locals.user?.id ?? ''),
-			extraFilter: allOf(listFilterCondition(filter), category ? categoryCondition(category) : null)
+			extraFilter: allOf(listFilterCondition(filter), category ? categoryCondition(category) : null, hold)
 		}),
-		tabsOn ? countUnreadByCategory(client, locals.auth.accountId, inbox.id) : null
+		tabsOn ? countUnreadByCategory(client, locals.auth.accountId, inbox.id, hold) : null
 	]);
 
 	const totalPages = Math.max(1, Math.ceil(result.total / pageSize));
