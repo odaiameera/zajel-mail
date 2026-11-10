@@ -324,45 +324,78 @@ function planFor(
 	};
 }
 
-interface SetError {
-	type?: string;
-	description?: string;
-	properties?: string[];
+/**
+ * A SetError as one short line: its type, what the server said, and which
+ * properties. It is the server's text, of whatever shape, so nothing about
+ * it is trusted, and it is cut to the length errorFields keeps.
+ */
+function refusalText(err: unknown): string {
+	const e = (err && typeof err === 'object' ? err : {}) as Record<string, unknown>;
+	const what = [e.type, e.description].filter((v) => v != null && v !== '').map(String).join(': ') || 'no reason given';
+	const props = Array.isArray(e.properties) ? ` (${e.properties.map(String).join(', ')})` : '';
+	return `${what}${props}`.slice(0, 300);
 }
 
-/** A SetError as one line: its type, what the server said, and which properties. */
-function refusalText(err: SetError | null | undefined): string {
-	const what = [err?.type, err?.description].filter(Boolean).join(': ') || 'no reason given';
-	return err?.properties?.length ? `${what} (${err.properties.join(', ')})` : what;
+/** What a pass's writes came to, for its one log line. */
+interface WriteOutcome {
+	attempted: number;
+	refused: number;
+	/** The first refusal's reason. */
+	refusal: string | null;
+	/** The first write that got no answer from the server. */
+	unreachable: unknown;
 }
 
 /**
- * Write updates in batches; returns the ids the server refused, each with
- * the server's reason. A refused tab or label never reaches the message,
- * and "refused" alone can't tell a patch the server can't read from a
- * message that's gone, so the reason is kept in the record and the log.
+ * Write updates in batches; returns what to record for each message not
+ * updated. A refused tab or label never reaches the message, and "refused"
+ * alone can't tell a patch the server can't read from a message that's
+ * gone, so the server's reason is kept. A write that got no answer is not a
+ * refusal (after a timeout it may even have landed), and is recorded as such.
  */
 async function writeUpdates(
 	client: JMAPClient,
 	accountId: string,
-	updates: [string, Record<string, unknown>][]
+	updates: [string, Record<string, unknown>][],
+	outcome: WriteOutcome
 ): Promise<Map<string, string>> {
-	const refused = new Map<string, string>();
+	const failed = new Map<string, string>();
+	outcome.attempted += updates.length;
 	for (let i = 0; i < updates.length; i += WRITE_BATCH) {
 		const chunk = updates.slice(i, i + WRITE_BATCH);
+		let notUpdated: unknown;
 		try {
 			const res = await client.request([
 				['Email/set', { accountId, update: Object.fromEntries(chunk) }, '0']
 			]);
-			const result = res.methodResponses[0][1] as { notUpdated?: Record<string, SetError> | null };
-			for (const [id, err] of Object.entries(result.notUpdated ?? {})) refused.set(id, refusalText(err));
+			notUpdated = (res.methodResponses[0][1] as { notUpdated?: unknown }).notUpdated;
 		} catch (err) {
 			if (err instanceof JMAPAuthError) throw err;
-			const reason = err instanceof Error ? err.message : String(err);
-			for (const [id] of chunk) refused.set(id, reason);
+			outcome.unreachable ??= err;
+			const reason = `Couldn’t reach the mail server: ${errorFields(err).error}`;
+			for (const [id] of chunk) failed.set(id, reason);
+			continue;
+		}
+		if (!notUpdated || typeof notUpdated !== 'object') continue;
+		for (const [id, err] of Object.entries(notUpdated)) {
+			const reason = refusalText(err);
+			outcome.refused++;
+			outcome.refusal ??= reason;
+			failed.set(id, `The mail server refused the change: ${reason}`);
 		}
 	}
-	return refused;
+	return failed;
+}
+
+/**
+ * Log a pass's writes once, after all its batches: a pass that keeps
+ * refusing new mail while sorting existing mail fine is still failing, not
+ * recovering, and logging per batch said both every minute.
+ */
+function noteWrites(accountRowId: string, w: WriteOutcome): void {
+	if (w.unreachable) noteFailure('write', accountRowId, 'write_failed', errorFields(w.unreachable));
+	else if (w.refusal) noteFailure('write', accountRowId, 'write_refused', { count: w.refused, error: w.refusal });
+	else if (w.attempted) noteRecovered('write', accountRowId, 'write_recovered');
 }
 
 /** One triage pass for one account: queue arrivals, judge, apply, record. */
@@ -482,7 +515,8 @@ export async function sortNewMail(
 		ruleCtx,
 		// A pinned sender's tab is already decided: Jev isn't asked for it.
 		pins: wantsTabs ? listPins(accountRowId) : [],
-		now
+		now,
+		writes: { attempted: 0, refused: 0, refusal: null, unreachable: null }
 	};
 
 	// Jev can be switched off while a pass runs. Look again before each
@@ -498,6 +532,7 @@ export async function sortNewMail(
 	if (wantsTabs && stillOn()) {
 		await judgeAndApply(batch, listPendingEmailIds(accountRowId, BACKFILL_BATCH, true), [], true, false, false);
 	}
+	noteWrites(accountRowId, batch.writes);
 }
 
 interface Batch {
@@ -512,6 +547,8 @@ interface Batch {
 	ruleCtx: RuleActionCtx;
 	pins: SenderPin[];
 	now: Date;
+	/** Both batches' writes, logged once for the pass. */
+	writes: WriteOutcome;
 }
 
 /** Judge queued emails, apply what follows, and record it. */
@@ -565,10 +602,12 @@ async function judgeAndApply(
 	// Every email that was asked failed: TypeSafe is down, not these emails.
 	// Charging each an attempt would let a few minutes' outage fail them for
 	// good, urgent ones included, so they wait for the next pass instead.
-	// One email alone can't show an outage, though: when TypeSafe refused that
-	// one request, the refusal is charged to it, or a message it keeps
-	// refusing would be sent again every pass for ever.
-	if (asked.length && asked.every((j) => j.error) && !(asked.length === 1 && asked[0].refused)) {
+	// A refusal is not an outage, though: TypeSafe answered, and said no to
+	// these requests (a 4xx about them, not the key, the model or its load).
+	// Every request refused is charged to its email and recorded, or the
+	// same mail would be sent again every pass for ever, none of it ever
+	// getting its tab or its rules' labels, with nothing to say why.
+	if (asked.length && asked.every((j) => j.error) && !asked.every((j) => j.refused)) {
 		noteFailure('typesafe', b.accountRowId, 'typesafe_unavailable', { count: asked.length, error: asked[0].error });
 		return;
 	}
@@ -649,21 +688,15 @@ async function judgeAndApply(
 		const update = outcomeToUpdate({ ...snapshot, ...current }, plan.outcome);
 		if (Object.keys(update).length > 0) updates.push([id, update]);
 	}
-	const refused = await writeUpdates(b.client, b.accountId, updates);
-	if (refused.size) {
-		const [first] = refused.values();
-		noteFailure('write', b.accountRowId, 'write_refused', { count: refused.size, error: first });
-	} else if (updates.length) {
-		noteRecovered('write', b.accountRowId, 'write_recovered');
-	}
+	const notWritten = await writeUpdates(b.client, b.accountId, updates, b.writes);
 
 	// Record.
 	for (const j of judged) {
 		const plan = plans.get(j.email.id);
 		if (!plan || j.error) continue; // failures were recorded above
-		const refusal = refused.get(j.email.id);
-		if (refusal !== undefined) {
-			recordFailure(b.accountRowId, j.email.id, `The mail server refused the change: ${refusal}`, now);
+		const writeError = notWritten.get(j.email.id);
+		if (writeError !== undefined) {
+			recordFailure(b.accountRowId, j.email.id, writeError, now);
 			continue;
 		}
 		const applied = !moved.has(j.email.id);
@@ -714,9 +747,10 @@ const inFlight = new Set<string>();
 // Accounts TypeSafe rate-limited on a recent pass, and until when they wait.
 const rateLimitedUntil = new Map<string, number>();
 
-/** Forget the rate-limit pauses — for tests, which run many passes on one account. */
+/** Forget the rate-limit pauses and the failures logged — for tests, which run many passes on one account. */
 export function forgetRateLimits(): void {
 	rateLimitedUntil.clear();
+	lastFailure.clear();
 }
 
 // The failure last logged, per kind and account: a failing pass is logged
