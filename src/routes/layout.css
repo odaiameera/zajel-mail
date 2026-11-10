@@ -315,8 +315,11 @@ html:not(.light) body {
 	/* Sits just outside the element so it reads on both the bg and surface
 	   layers without the element's own background clipping it. */
 	outline-offset: 2px;
-	/* Rounded elements would otherwise get a square ring. */
-	border-radius: inherit;
+	/* The ring follows the element's own corners (browsers round an outline
+	   to its border-radius and corner-shape). It used to set border-radius:
+	   inherit, which, being outside Tailwind's layers, beat every element's
+	   own radius: a focused field or button took its parent's, mostly
+	   square. */
 }
 
 /*
@@ -606,4 +609,19 @@ html:not(.light) body {
 		color: black !important;
 		background: white !important;
 	}
+}/*
+ * The island's corner, shared with the search above it so the two read as
+ * one set. A squircle (a smoother, continuous curve) where the browser draws
+ * one, Chrome and Edge 139+; it looks tighter than a circular corner of the
+ * same radius, so the radius is larger there, to look the same size as the
+ * plain 12px corner everywhere else.
+ */
+@utility island-corners {
+	border-radius: var(--radius-xl);
+	@supports (corner-shape: squircle) {
+		corner-shape: squircle;
+		border-radius: 20px;
+	}
 }
+
+

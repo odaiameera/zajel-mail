@@ -280,7 +280,7 @@
 			onkeydown={handleKeydown}
 			type="text"
 			{placeholder}
-			class="w-full bg-bg/50 border border-border rounded-lg pl-9 pr-16 py-1.5 text-sm text-text placeholder-text-tertiary
+			class="w-full bg-bg/50 border border-border island-corners pl-9 pr-16 py-1.5 text-sm text-text placeholder-text-tertiary
 				focus:outline-none focus:ring-1 focus:ring-accent/50 focus:border-accent transition-colors
 				{!focused && tokens.length > 0 ? 'text-transparent caret-text' : ''}"
 		/>
