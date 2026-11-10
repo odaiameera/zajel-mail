@@ -22,6 +22,14 @@
 	import { canNotify, showNotification, subscribePush } from '$lib/notifications';
 	import { showToast } from '$lib/stores/toast';
 	import { holdRecheckDelay } from '$lib/inbox-hold';
+	import { browser } from '$app/environment';
+	import {
+		SIDEBAR_WIDTH,
+		listWidth as listPane,
+		nudgeWidth,
+		sidebarWidth as sidebarPane,
+		startWidthDrag
+	} from '$lib/stores/paneWidths';
 	import { loadUserState } from '$lib/stores/userState';
 	import { AI_ASSISTANT_CONTEXT, type AIAssistantContext } from '$lib/types/assistant';
 	import { LABELS_CONTEXT, type LabelsContext } from '$lib/types/labels';
@@ -119,8 +127,30 @@
 	const railCollapsed = $derived(panelKind === 'mail' && sidebarCollapsed && !$sidebarIsDrawer);
 	// Only the mail sidebar collapses to an icon strip; app panels are
 	// always full width.
+	// The mail sidebar's width is yours to drag (its right edge, the side of
+	// the island). The stores live for the whole session; they are filled
+	// from the cookies once, in the browser only, since on the server a
+	// module's store would be shared by every request; the server draws from
+	// the page data instead.
+	if (browser) {
+		untrack(() => {
+			sidebarPane.set(data.paneSidebarWidth);
+			listPane.set(data.paneListWidth);
+		});
+	}
+	const sidebarPx = $derived(browser ? $sidebarPane : data.paneSidebarWidth);
+	let resizingSidebar = $state(false);
+	// Room for the island beside it: the list and a reading pane at their
+	// narrowest, plus the app rail.
+	const sidebarMax = () => Math.min(SIDEBAR_WIDTH.max, window.innerWidth - 52 - 640);
 	const sidebarWidth = $derived(
-		panelKind === 'mail' ? (sidebarCollapsed ? '48px' : '224px') : panelKind === 'app' ? '224px' : '8px'
+		panelKind === 'mail'
+			? sidebarCollapsed
+				? '48px'
+				: `${sidebarPx}px`
+			: panelKind === 'app'
+				? '224px'
+				: '8px'
 	);
 	// Settings on a phone opens on its own section list (/settings), with a
 	// way back to it from every section, so the drawer has nothing to add.
@@ -446,7 +476,8 @@
 	class="app-shell h-[var(--app-height)] overflow-hidden bg-surface grid grid-cols-1 grid-rows-[auto_1fr_auto] md:grid-rows-[auto_1fr] md:[grid-template-columns:8px_minmax(0,1fr)_0px_52px] lg:[grid-template-columns:var(--shell-cols)]
 		pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:pb-[env(safe-area-inset-bottom)]"
 	class:density-compact={data.density === 'compact'}
-	style="--shell-cols: {sidebarWidth} minmax(0, 1fr) 0px 52px; transition: grid-template-columns 0.3s ease;
+	style="--shell-cols: {sidebarWidth} minmax(0, 1fr) 0px 52px; --brand-w: {panelKind === 'mail' && !sidebarCollapsed ? sidebarPx - 32 : 192}px;
+		transition: {resizingSidebar ? 'none' : 'grid-template-columns 0.3s ease'};
 		{accountColor ? `border-top: 2px solid ${accountColor};` : ''}"
 >
 	<!-- Row 1: Full-width header -->
@@ -460,7 +491,7 @@
 		>
 			<Icon name="menu" size={20} />
 		</button>
-		<h1 class="max-md:hidden text-lg font-bold text-text tracking-tight leading-none shrink-0 {railCollapsed ? 'lg:w-4' : 'lg:w-[192px]'} transition-all duration-200 overflow-hidden whitespace-nowrap">
+		<h1 class="max-md:hidden text-lg font-bold text-text tracking-tight leading-none shrink-0 {railCollapsed ? 'lg:w-4' : 'lg:w-(--brand-w)'} transition-all duration-200 overflow-hidden whitespace-nowrap">
 			{railCollapsed ? '' : 'zajel.'}
 		</h1>
 		<SearchInput bind:value={searchQuery} onSubmit={submitSearch} mailboxes={data.mailboxes} />
@@ -559,7 +590,27 @@
 			onpointercancel={onDrawerPointerEnd}
 			onclickcapture={onDrawerClickCapture}
 		>
-			<div class="lg:col-start-1 lg:row-start-2 h-full min-h-0 overflow-hidden">
+			<div class="lg:col-start-1 lg:row-start-2 h-full min-h-0 overflow-hidden relative">
+				{#if panelKind === 'mail' && !sidebarCollapsed && !$sidebarIsDrawer}
+					<!-- The sidebar's edge, against the island: drag it to widen or
+					     narrow the folders. Nothing is drawn, only the cursor
+					     changes over it; a keyboard focus still shows. -->
+					<!-- A focusable separator is ARIA's window splitter: an interactive control. -->
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+					<div
+						role="separator"
+						aria-orientation="vertical"
+						aria-label="Resize the folder list"
+						aria-valuemin={SIDEBAR_WIDTH.min}
+						aria-valuemax={SIDEBAR_WIDTH.max}
+						aria-valuenow={sidebarPx}
+						tabindex="0"
+						class="max-lg:hidden absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize touch-none outline-none focus-visible:bg-accent/40"
+						onpointerdown={(e) => startWidthDrag(e, sidebarPane, { max: sidebarMax, onDragging: (d) => (resizingSidebar = d) })}
+						onkeydown={(e) => nudgeWidth(e, sidebarPane, SIDEBAR_WIDTH, sidebarMax())}
+						ondblclick={() => sidebarPane.reset()}
+					></div>
+				{/if}
 				{#if panelKind === 'mail'}
 					<Sidebar
 						mailboxes={data.mailboxes}

@@ -280,3 +280,43 @@ describe('EmailList reading pane', () => {
 		expect(detailFetches()).toBe(before + 1);
 	});
 });
+
+describe('EmailList divider beside the reading pane', () => {
+	const props = () => ({ emails: [email('m1', 'Dana', 'A')], total: 1, title: 'Inbox', mailboxId: 'A' });
+	const open = () =>
+		render(EmailList, {
+			props: props(),
+			context: new Map<string, unknown>([
+				['labels', []],
+				['readingPane', writable(true)]
+			])
+		});
+	const listColumn = () =>
+		(screen.getByRole('separator', { name: 'Resize the message list' }).previousElementSibling as HTMLElement).style.width;
+
+	afterEach(async () => {
+		(await import('$lib/stores/paneWidths')).listWidth.set(420);
+	});
+
+	it('keeps the width you set when another folder opens a new list', async () => {
+		open();
+		expect(listColumn()).toBe('420px');
+		await fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize the message list' }), { key: 'ArrowRight', shiftKey: true });
+		expect(listColumn()).toBe('484px');
+
+		// Each folder is its own page: the list is replaced, not reused.
+		cleanup();
+		open();
+		expect(listColumn()).toBe('484px');
+		expect(document.cookie).toContain('pane_list_width=484');
+	});
+
+	it('goes back to the default on a double-click', async () => {
+		open();
+		const divider = screen.getByRole('separator', { name: 'Resize the message list' });
+		await fireEvent.keyDown(divider, { key: 'End' });
+		expect(listColumn()).toBe('900px');
+		await fireEvent.dblClick(divider);
+		expect(listColumn()).toBe('420px');
+	});
+});
