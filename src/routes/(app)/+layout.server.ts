@@ -154,8 +154,9 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			// offers its "Why is this here?" chip.
 			jevReads: activeAccount ? getJevSettings(activeAccount.id).jevEnabled : false,
 			// Whether this account's Inbox is split into tabs — the message view
-			// then names the tab a message is in, beside its labels.
-			inboxTabs: activeAccount ? getJevSettings(activeAccount.id).inboxTabs : false,
+			// then names the tab a message is in, beside its labels. Not
+			// `inboxTabs`: the Inbox page's own data has that name, for its tabs.
+			inboxTabsOn: activeAccount ? getJevSettings(activeAccount.id).inboxTabs : false,
 			// "Create event from email" (LLM extraction) only renders when an
 			// Ollama endpoint is configured server-side.
 			aiEnabled: assistantConfigured()

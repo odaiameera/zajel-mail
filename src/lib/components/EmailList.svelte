@@ -342,6 +342,45 @@
 		}
 	}
 
+	// The open message's place (its tab, its labels, read or starred) follows
+	// the list as the list refreshes. The pane holds its own copy, fetched
+	// when the row was clicked, so without this a tab Jev chose a few seconds
+	// later, or a move to another tab, never reached it: the list changed and
+	// the message beside it didn't. A row still in the list carries what is
+	// needed; one that left it (moved to another tab, say) is read again.
+	// Only keywords and mailboxIds are taken, so the body isn't redrawn.
+	type Place = Pick<Email, 'keywords' | 'mailboxIds'>;
+	function takePlace(target: Email, from: Place) {
+		target.keywords = { ...from.keywords };
+		target.mailboxIds = { ...from.mailboxIds };
+	}
+	$effect(() => {
+		const rows = new Map(emails.map((e) => [e.id, e]));
+		untrack(() => {
+			for (const [id, cached] of previewCache) {
+				const row = rows.get(id);
+				if (row) takePlace(cached, row);
+				else if (id !== previewEmail?.id) previewCache.delete(id);
+			}
+			const open = previewEmail;
+			if (!open) return;
+			const row = rows.get(open.id);
+			if (row) {
+				takePlace(open, row);
+				return;
+			}
+			void fetch(`/api/email/${open.id}/detail`)
+				.then((res) => (res.ok ? (res.json() as Promise<Email>) : null))
+				.then((fresh) => {
+					if (fresh?.keywords && fresh.mailboxIds && previewEmail?.id === open.id) {
+						takePlace(previewEmail, fresh);
+						previewCache.set(open.id, fresh);
+					}
+				})
+				.catch(() => {});
+		});
+	});
+
 	// Warm the server-side avatar cache for this page's senders so the
 	// background worker resolves them before the user scrolls. Deduped across
 	// renders so navigating / invalidateAll doesn't re-post the same addresses.

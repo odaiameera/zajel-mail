@@ -411,7 +411,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// needs no chip.
 	const inboxTab = $derived.by(() => {
 		const inbox = mailboxes.find((m) => m.role === 'inbox');
-		if (!page.data.inboxTabs || !inbox || !email.mailboxIds[inbox.id]) return null;
+		if (!page.data.inboxTabsOn || !inbox || !email.mailboxIds[inbox.id]) return null;
 		const key = categoryOf(email.keywords);
 		return key === 'important' ? null : INBOX_CATEGORIES.find((c) => c.key === key) ?? null;
 	});
@@ -1193,13 +1193,14 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 				</h1>
 
 					{#if inboxTab}
-						<!-- The Inbox tab, first among the labels; see `inboxTab`. -->
+						<!-- The Inbox tab, first among the labels; see `inboxTab`. The
+						     hidden words tell a screen reader it is a tab, not a label. -->
 						<span
 							class="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-hover px-2 py-0.5 text-2xs font-medium leading-4 text-text-secondary"
 							title="In the {inboxTab.label} tab"
 						>
 							<Icon name={CATEGORY_ICON[inboxTab.key]} size={12} class="block" />
-							{inboxTab.label}
+							<span><span class="sr-only">In the{' '}</span>{inboxTab.label}<span class="sr-only">{' '}tab</span></span>
 						</span>
 					{/if}
 					<!-- Labels sit with the subject. Each chip's × takes it off; the + adds one. -->
