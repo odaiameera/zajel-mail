@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import type { Email } from '$lib/jmap/types';
 import { LABELS_CONTEXT, type Label } from '$lib/types/labels';
 
@@ -21,6 +22,18 @@ vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
 
 import EmailDetail from './EmailDetail.svelte';
+
+/** Selects the subject's text, or its first `chars` letters. */
+function selectSubject(el: HTMLElement, chars?: number) {
+	const range = document.createRange();
+	if (chars === undefined) range.selectNodeContents(el);
+	else {
+		range.setStart(el.firstChild!, 0);
+		range.setEnd(el.firstChild!, chars);
+	}
+	window.getSelection()!.removeAllRanges();
+	window.getSelection()!.addRange(range);
+}
 
 const PIXEL = 'https://tracker.example/open.gif?u=42';
 
@@ -214,6 +227,7 @@ describe('EmailDetail header', () => {
 		const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
 		toggle.dispatchEvent(space);
 		expect(space.defaultPrevented).toBe(true);
+		await tick();
 		expect(toggle.getAttribute('aria-expanded')).toBe('true');
 		await fireEvent.keyUp(toggle, { key: ' ' });
 		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'));
@@ -252,18 +266,46 @@ describe('EmailDetail header', () => {
 		await fireEvent.click(toggle, { clientX: 60, clientY: 11, detail: 1 });
 		expect(toggle.getAttribute('aria-expanded')).toBe('false');
 
-		// Text selected in the subject (say, a Shift-click extending it).
-		const range = document.createRange();
-		range.selectNodeContents(toggle);
-		window.getSelection()!.removeAllRanges();
-		window.getSelection()!.addRange(range);
-		await fireEvent.click(toggle, { detail: 1 });
+		// A Shift-click extends a selection.
+		await fireEvent.pointerDown(toggle, { pointerType: 'mouse', clientX: 10, clientY: 10, shiftKey: true });
+		await fireEvent.click(toggle, { clientX: 10, clientY: 10, detail: 1, shiftKey: true });
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+		// A touch that leaves text selected in the subject (a long press).
+		selectSubject(toggle);
+		await fireEvent.pointerDown(toggle, { pointerType: 'touch', clientX: 10, clientY: 10 });
+		await fireEvent.click(toggle, { clientX: 10, clientY: 10, detail: 1 });
 		expect(toggle.getAttribute('aria-expanded')).toBe('false');
 		window.getSelection()!.removeAllRanges();
+	});
 
-		// A plain click, with a jitter of a pixel or two, still toggles.
+	it('still toggles when a pixel or two of hand movement selects a letter, and clears it', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		render(EmailDetail, { email: email(), compact: true });
+		const toggle = subject();
+
 		await fireEvent.pointerDown(toggle, { pointerType: 'mouse', clientX: 10, clientY: 10 });
-		await fireEvent.click(toggle, { clientX: 11, clientY: 11, detail: 1 });
+		// Crossing the middle of a letter selects it, as Chromium does.
+		selectSubject(toggle, 1);
+		await fireEvent.click(toggle, { clientX: 12, clientY: 11, detail: 1 });
+		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'));
+		expect(window.getSelection()!.isCollapsed).toBe(true);
+
+		// So does the next click on a word a double-click selected.
+		selectSubject(toggle);
+		await fireEvent.pointerDown(toggle, { pointerType: 'mouse', clientX: 10, clientY: 10 });
+		await fireEvent.click(toggle, { clientX: 10, clientY: 10, detail: 1 });
+		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'));
+	});
+
+	it('ignores a press that was let go elsewhere when a click without one comes later', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		render(EmailDetail, { email: email(), compact: true });
+		const toggle = subject();
+		// Pressed here, released outside: no click on the subject.
+		await fireEvent.pointerDown(toggle, { pointerType: 'mouse', clientX: 10, clientY: 10 });
+		// Then a click from script or assistive tech, far from that press.
+		await fireEvent.click(toggle, { clientX: 300, clientY: 300, detail: 0 });
 		await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'));
 	});
 
@@ -279,6 +321,18 @@ describe('EmailDetail header', () => {
 			await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'));
 			expect(details().className).toContain('hidden');
 		}
+	});
+
+	it('keeps your choice when the same message comes back as a new object', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		const { rerender } = render(EmailDetail, { email: email(), compact: true });
+		await fireEvent.click(subject());
+		await waitFor(() => expect(subject().getAttribute('aria-expanded')).toBe('true'));
+
+		// What a refresh of the page's data does, e.g. after marking it read.
+		await rerender({ email: { ...email(), keywords: { $seen: true, $flagged: true } } as Email });
+		expect(subject().getAttribute('aria-expanded')).toBe('true');
+		expect(details().className).toBe('');
 	});
 
 	it('starts the next message from the default, open on a wide page', async () => {
@@ -298,6 +352,90 @@ describe('EmailDetail header', () => {
 		expect(next.getAttribute('aria-expanded')).toBe('true');
 		expect(details().className).toBe('max-md:hidden');
 	});
+});
+
+describe('EmailDetail header, animated', () => {
+	// jsdom has neither matchMedia nor the Web Animations API, so the tests
+	// above take the reduced-motion path. These stand both in.
+	type Fake = { keyframes: Keyframe[]; cancel: ReturnType<typeof vi.fn>; finish: () => void; finished: Promise<void> };
+	let made: Fake[] = [];
+	const original = Element.prototype.animate;
+	beforeEach(() => {
+		made = [];
+		vi.stubGlobal('matchMedia', (query: string) => ({
+			matches: false,
+			media: query,
+			addEventListener() {},
+			removeEventListener() {}
+		}));
+		Element.prototype.animate = function (keyframes: Keyframe[]) {
+			let finish!: () => void;
+			const fake: Fake = {
+				keyframes,
+				cancel: vi.fn(),
+				finish: () => finish(),
+				finished: new Promise<void>((resolve) => (finish = resolve))
+			};
+			made.push(fake);
+			return fake as unknown as Animation;
+		} as typeof Element.prototype.animate;
+	});
+	afterEach(() => {
+		Element.prototype.animate = original;
+	});
+	const subject = () => screen.getByRole('button', { name: 'Hello' });
+	const fold = () => document.getElementById('message-head-details')!.parentElement!;
+	const below = () => screen.getByTitle('Email content').parentElement!.parentElement!;
+
+	it('moves the fold, holds the message, and tidies up when it lands', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		render(EmailDetail, { email: email(), compact: true });
+		await fireEvent.click(subject());
+		await waitFor(() => expect(made).toHaveLength(4));
+		expect(subject().getAttribute('aria-expanded')).toBe('true');
+		expect(made[0].keyframes.map((k) => 'height' in k)).toEqual([true, true]);
+		expect(fold().style.overflow).toBe('hidden');
+		expect(below().style.flex).not.toBe('');
+
+		for (const a of made) a.finish();
+		await waitFor(() => expect(below().style.flex).toBe(''));
+		expect(fold().style.overflow).toBe('');
+		expect(made.every((a) => a.cancel.mock.calls.length > 0)).toBe(true);
+	});
+
+	it('stops at once when another message comes in mid-way', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		const { rerender } = render(EmailDetail, { email: email(), compact: true });
+		await fireEvent.click(subject());
+		await waitFor(() => expect(made).toHaveLength(4));
+
+		await rerender({ email: { ...email(), id: 'M2', subject: 'Next one' } as Email });
+		expect(made.every((a) => a.cancel.mock.calls.length > 0)).toBe(true);
+		expect(below().style.flex).toBe('');
+		expect(fold().style.overflow).toBe('');
+		const next = screen.getByRole('button', { name: 'Next one' });
+		expect(next.getAttribute('aria-expanded')).toBe('false');
+
+		// The old switch finishing later changes nothing.
+		for (const a of made) a.finish();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(next.getAttribute('aria-expanded')).toBe('false');
+		expect(details().className).toContain('hidden');
+	});
+
+	it('drops a click whose message is replaced in the same moment', async () => {
+		mocks.page.data.autoLoadImages = 'never';
+		const { rerender } = render(EmailDetail, { email: email(), compact: true });
+		subject().dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+		await rerender({ email: { ...email(), id: 'M2', subject: 'Next one' } as Email });
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(made).toHaveLength(0);
+		expect(below().style.flex).toBe('');
+		expect(screen.getByRole('button', { name: 'Next one' }).getAttribute('aria-expanded')).toBe('false');
+		expect(details().className).toContain('hidden');
+	});
+	const details = () => document.getElementById('message-head-details')!;
 });
 
 describe('EmailDetail mark as read', () => {

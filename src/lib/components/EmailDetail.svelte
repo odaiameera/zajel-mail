@@ -265,9 +265,18 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		if (belowEl) belowEl.style.flex = '';
 	}
 
+	// Back to the default when another message comes in, and only then. The
+	// same message arrives again as a new object whenever the page's data is
+	// refreshed (marking it read does that a second after it opens), and
+	// that mustn't fold away the details you just opened.
+	let headerFor: string | undefined;
 	$effect(() => {
-		void email.id;
+		const id = email.id;
 		untrack(() => {
+			if (id === headerFor) return;
+			const first = headerFor === undefined;
+			headerFor = id;
+			if (first) return;
 			stopHeaderMotion();
 			headerClosing = false;
 			headerOpen = null;
@@ -275,6 +284,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	});
 
 	async function toggleHeader() {
+		const forId = email.id;
 		const opening = !headerExpanded;
 		const fold = foldEl;
 		const details = detailsEl;
@@ -312,6 +322,12 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			headerClosing = true;
 		}
 		await tick();
+		// Another message came in with the click; it has started from its
+		// own default, and the switch was for the old one.
+		if (email.id !== forId) {
+			stopHeaderMotion();
+			return;
+		}
 		const toHeight = fold.getBoundingClientRect().height;
 		const toTop = belowBox.top + toHeight - fromHeight;
 		const held = Math.max(belowBox.height, paneBottom - toTop);
@@ -322,12 +338,15 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			`inset(0 0 ${Math.max(0, held - (paneBottom - margin - top))}px 0)`;
 		const timing = { duration: HEADER_MS, easing: HEADER_EASE };
 		// The outgoing line's fade takes the first part of the switch, the
-		// incoming one's the rest; turned round mid-way, each goes on from its
-		// current opacity without waiting.
-		const outgoing = { duration: HEADER_MS * 0.35, easing: 'ease-out', fill: 'forwards' as const };
+		// incoming one's the rest. Turned round mid-way, each goes on from its
+		// current opacity, the outgoing one in the share of its time it has
+		// left, and the incoming one waits for that.
+		const outFrom = opening ? fromSummary : fromDetails;
+		const outMs = HEADER_MS * 0.35 * outFrom;
+		const outgoing = { duration: outMs, easing: 'ease-out', fill: 'forwards' as const };
 		const incoming = {
 			duration: HEADER_MS * 0.7,
-			delay: moving ? 0 : HEADER_MS * 0.3,
+			delay: moving ? outMs * 0.85 : HEADER_MS * 0.3,
 			easing: 'ease-out',
 			fill: 'both' as const
 		};
@@ -356,23 +375,37 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	}
 
 	// A press on the subject that ends a text selection is someone copying
-	// it, not asking for the details. A mouse that moved while held is a
-	// drag; a selection inside the subject is one too, whatever the pointer.
-	let pressAt: { x: number; y: number } | null = null;
+	// it, not asking for the details. With a mouse that is decided by how far
+	// it moved while held, or by Shift (which extends a selection): a hand
+	// moving a pixel or two can cross the middle of a letter, and the
+	// browser then selects that letter, which no one meant, so a short press
+	// still toggles and that stray selection is cleared. A touch or a pen
+	// leaves no such record, and there a selection in the subject decides.
+	let press: { x: number; y: number; mouse: boolean } | null = null;
 	function notePress(e: PointerEvent) {
-		pressAt = e.pointerType === 'mouse' ? { x: e.clientX, y: e.clientY } : null;
+		press = { x: e.clientX, y: e.clientY, mouse: e.pointerType === 'mouse' };
+	}
+	function forgetPress() {
+		press = null;
 	}
 	function selectingText(e: MouseEvent): boolean {
-		const press = pressAt;
-		pressAt = null;
-		if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 4) return true;
-		const selection = window.getSelection();
-		if (!selection || selection.isCollapsed) return false;
+		const pressed = press;
+		press = null;
 		const target = e.currentTarget as Node;
-		for (let i = 0; i < selection.rangeCount; i++) {
-			if (selection.getRangeAt(i).intersectsNode(target)) return true;
+		const selection = window.getSelection();
+		let selected = false;
+		if (selection && !selection.isCollapsed) {
+			for (let i = 0; i < selection.rangeCount; i++) {
+				if (selection.getRangeAt(i).intersectsNode(target)) selected = true;
+			}
 		}
-		return false;
+		// detail 0: not a pointer's click at all (el.click(), assistive tech).
+		if (pressed?.mouse && e.detail > 0) {
+			if (e.shiftKey || Math.hypot(e.clientX - pressed.x, e.clientY - pressed.y) > 4) return true;
+			if (selected) selection?.removeAllRanges();
+			return false;
+		}
+		return selected;
 	}
 
 	// A double-click selects a word, and a triple-click the whole subject, so
@@ -1273,6 +1306,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 						aria-expanded={headerExpanded}
 						aria-controls="message-head-details"
 						onpointerdown={notePress}
+						onpointercancel={forgetPress}
 						onclick={handleSubjectClick}
 						onkeydown={handleSubjectKeydown}
 						onkeyup={handleSubjectKeyup}
@@ -1353,6 +1387,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			<div
 				bind:this={summaryEl}
 				onpointerdown={notePress}
+				onpointercancel={forgetPress}
 				onclick={(e) => {
 					if (e.detail <= 1 && !selectingText(e)) void toggleHeader();
 				}}
