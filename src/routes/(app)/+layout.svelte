@@ -476,49 +476,56 @@
 	class="app-shell h-[var(--app-height)] overflow-hidden bg-surface grid grid-cols-1 grid-rows-[auto_1fr_auto] md:grid-rows-[auto_1fr] md:[grid-template-columns:8px_minmax(0,1fr)_0px_52px] lg:[grid-template-columns:var(--shell-cols)]
 		pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] md:pb-[env(safe-area-inset-bottom)]"
 	class:density-compact={data.density === 'compact'}
-	style="--shell-cols: {sidebarWidth} minmax(0, 1fr) 0px 52px; --brand-w: {panelKind === 'mail' && !sidebarCollapsed ? sidebarPx - 32 : 192}px;
+	style="--shell-cols: {sidebarWidth} minmax(0, 1fr) 0px 52px;
 		transition: {resizingSidebar ? 'none' : 'grid-template-columns 0.3s ease'};
 		{accountColor ? `border-top: 2px solid ${accountColor};` : ''}"
 >
-	<!-- Row 1: Full-width header -->
-	<div class="col-span-full flex items-center h-14 pl-2 md:pl-4 pr-0 gap-2 md:gap-4">
-		<button
-			type="button"
-			onclick={() => { drawerOpen = true; }}
-			class="lg:hidden w-10 h-10 shrink-0 flex items-center justify-center rounded-lg text-text-secondary hover:text-text hover:bg-surface-hover transition-colors cursor-pointer {panelKind === 'none' ? 'invisible' : settingsRoute ? 'max-md:invisible' : ''}"
-			aria-label="Open menu"
-			aria-expanded={drawerOpen}
-		>
-			<Icon name="menu" size={20} />
-		</button>
-		<h1 class="max-md:hidden text-lg font-bold text-text tracking-tight leading-none shrink-0 {railCollapsed ? 'lg:w-4' : 'lg:w-(--brand-w)'} transition-all duration-200 overflow-hidden whitespace-nowrap">
-			{railCollapsed ? '' : 'zajel.'}
-		</h1>
-		<SearchInput bind:value={searchQuery} onSubmit={submitSearch} mailboxes={data.mailboxes} />
-		<!-- On phones the search box takes this space instead. -->
-		<div class="flex-1 max-md:hidden"></div>
-		<!-- 52px wrapper aligns avatar center with the AppRail column below -->
-		<div class="w-[52px] shrink-0 flex items-center justify-center">
+	<!-- Row 1: Full-width header. From `md` it's three columns with the search
+	     in the middle one, so the search stays put, centred, however wide the
+	     sidebar is dragged or whether it's collapsed. On phones it's a row and
+	     the search takes the room between the menu and the avatar. -->
+	<div class="col-span-full flex items-center h-14 pl-2 md:pl-0 pr-0 gap-2 md:gap-4 md:grid md:grid-cols-[minmax(0,1fr)_minmax(240px,520px)_minmax(0,1fr)]">
+		<!-- The header's left padding lives in this column, so both sides of the
+		     search are the same width and it sits on the window's centre. -->
+		<div class="flex items-center gap-2 md:gap-4 md:pl-4 min-w-0">
 			<button
-				onclick={(e) => { e.stopPropagation(); profileOpen = !profileOpen; }}
-				class="w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center text-xs font-semibold select-none shrink-0 cursor-pointer transition-shadow overflow-hidden"
-				style={accountColor
-					? `background-color: ${accountColor}; box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px ${accountColor};`
-					: ''}
-				title="Accounts — {data.userEmail}"
+				type="button"
+				onclick={() => { drawerOpen = true; }}
+				class="lg:hidden w-10 h-10 shrink-0 flex items-center justify-center rounded-lg text-text-secondary hover:text-text hover:bg-surface-hover transition-colors cursor-pointer {panelKind === 'none' ? 'invisible' : settingsRoute ? 'max-md:invisible' : ''}"
+				aria-label="Open menu"
+				aria-expanded={drawerOpen}
 			>
-				{#if $profilePhoto.url}
-					<img
-						src={$profilePhoto.url}
-						alt="Profile"
-						class="w-full h-full object-cover origin-center pointer-events-none select-none"
-						style="transform: translate({$profilePhoto.offsetX * (32 / 80)}px, {$profilePhoto.offsetY * (32 / 80)}px) scale({$profilePhoto.zoom});"
-						draggable="false"
-					/>
-				{:else}
-					{avatarLetter}
-				{/if}
+				<Icon name="menu" size={20} />
 			</button>
+			<h1 class="max-md:hidden text-lg font-bold text-text tracking-tight leading-none shrink-0 overflow-hidden whitespace-nowrap">
+				{railCollapsed ? '' : 'zajel.'}
+			</h1>
+		</div>
+		<SearchInput bind:value={searchQuery} onSubmit={submitSearch} mailboxes={data.mailboxes} />
+		<div class="flex items-center justify-end min-w-0">
+			<!-- 52px wrapper aligns avatar center with the AppRail column below -->
+			<div class="w-[52px] shrink-0 flex items-center justify-center">
+				<button
+					onclick={(e) => { e.stopPropagation(); profileOpen = !profileOpen; }}
+					class="w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center text-xs font-semibold select-none shrink-0 cursor-pointer transition-shadow overflow-hidden"
+					style={accountColor
+						? `background-color: ${accountColor}; box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px ${accountColor};`
+						: ''}
+					title="Accounts — {data.userEmail}"
+				>
+					{#if $profilePhoto.url}
+						<img
+							src={$profilePhoto.url}
+							alt="Profile"
+							class="w-full h-full object-cover origin-center pointer-events-none select-none"
+							style="transform: translate({$profilePhoto.offsetX * (32 / 80)}px, {$profilePhoto.offsetY * (32 / 80)}px) scale({$profilePhoto.zoom});"
+							draggable="false"
+						/>
+					{:else}
+						{avatarLetter}
+					{/if}
+				</button>
+			</div>
 		</div>
 	</div>
 
@@ -542,7 +549,7 @@
 		Only the bottom is inset: left and right already meet the chrome, so the
 		corners alone separate them.
 	-->
-	<main class="row-start-2 md:col-start-2 md:mb-2 overflow-hidden min-w-0 min-h-0 bg-bg md:rounded-xl">
+	<main class="row-start-2 md:col-start-2 md:mb-2 overflow-hidden min-w-0 min-h-0 bg-bg md:island-corners">
 		<!-- What fades when switching apps on a phone; the tray behind it stays. -->
 		<div class="app-content h-full">
 			{@render children()}
