@@ -23,15 +23,26 @@ const tabs = (active: InboxTabsState['active']): InboxTabsState => ({ active, un
 const tab = (label: string) => screen.getByRole('link', { name: new RegExp(`^${label}`) });
 const underlines = () => [...document.querySelectorAll<HTMLElement>('[data-tab-underline]')];
 
-// jsdom lays nothing out, so give each tab's underline a place: tab n
-// starts at 100n and is 60 wide, except Important, which is wider (it
-// keeps its label when the column is narrow).
+// jsdom lays nothing out, so lay the strip out the way a narrow column
+// does: the tabs sit side by side, the one with the underline keeps its
+// label (120 wide) and the others fold to an icon (60 wide). The underline
+// is inset 8px each side of its tab. Read from the DOM as it is when
+// measured, so a measurement after a switch sees the strip reflowed.
 function stubLayout() {
 	vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
 		const link = this.closest('a');
-		const index = link ? [...link.parentElement!.children].indexOf(link) : 0;
-		const width = index === 0 ? 120 : 60;
-		return DOMRect.fromRect({ x: 100 * index, y: 40, width, height: 2 });
+		if (!link) return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
+		let x = 0;
+		for (const sibling of link.parentElement!.children) {
+			const width = sibling.querySelector('[data-tab-underline]') ? 120 : 60;
+			if (sibling === link) {
+				return this === link
+					? DOMRect.fromRect({ x, y: 0, width, height: 40 })
+					: DOMRect.fromRect({ x: x + 8, y: 40, width: width - 16, height: 2 });
+			}
+			x += width;
+		}
+		throw new Error('tab not in its strip');
 	});
 }
 
@@ -71,12 +82,23 @@ describe('InboxTabs underline', () => {
 		expect(underline.closest('a')).toBe(tab('Promotions'));
 		expect(animate).toHaveBeenCalledTimes(1);
 		expect(animate.mock.contexts[0]).toBe(underline);
-		// From Important (x 0, 120 wide) to Promotions (x 300, 60 wide).
+		// From under Important, folded to an icon now (x 8, 44 wide), to
+		// under Promotions (x 188, 104 wide).
 		const [keyframes, options] = animate.mock.calls[0];
-		expect(keyframes[0].transform).toBe('translateX(-300px) scaleX(2)');
+		expect(keyframes[0].transform).toBe(`translateX(-180px) scaleX(${44 / 104})`);
 		expect(keyframes[1].transform).toBe('none');
 		expect(options.duration).toBeGreaterThanOrEqual(200);
 		expect(options.duration).toBeLessThanOrEqual(300);
+	});
+
+	it('leaves from under the old tab where the strip has put it, not where it was', async () => {
+		// Promotions sat at x 180 with its label; once Important takes the
+		// label, Promotions folds and moves to x 240. The underline has to
+		// leave from there, or it starts under a tab it never belonged to.
+		const { rerender } = render(InboxTabs, { tabs: tabs('promotions') });
+		await rerender({ tabs: tabs('important') });
+		const [keyframes] = animate.mock.calls[0];
+		expect(keyframes[0].transform).toBe(`translateX(240px) scaleX(${44 / 104})`);
 	});
 
 	it('stays still when a refresh brings the same tab back', async () => {
@@ -97,16 +119,27 @@ describe('InboxTabs underline', () => {
 		expect(animate).not.toHaveBeenCalled();
 	});
 
-	it('follows a click straight away, before the new tab has loaded', () => {
+	it('stays on the tab the list shows while another one loads', () => {
 		mocks.navigating.to = {
 			url: new URL('http://localhost/inbox?category=promotions'),
 			route: { id: '/(app)/inbox' }
 		};
 		render(InboxTabs, { tabs: tabs('important') });
-		expect(underlines()[0].closest('a')).toBe(tab('Promotions'));
-		// The page is still Important until its replacement arrives.
+		expect(underlines()[0].closest('a')).toBe(tab('Important'));
 		expect(tab('Important').getAttribute('aria-current')).toBe('page');
-		expect(tab('Promotions').getAttribute('aria-current')).toBeNull();
+	});
+
+	it('follows the list when a refresh cuts a tab switch off', async () => {
+		// invalidateAll() during a tab's load aborts that navigation without
+		// clearing `navigating`, so a stale target must not hold the strip.
+		mocks.navigating.to = {
+			url: new URL('http://localhost/inbox?category=updates'),
+			route: { id: '/(app)/inbox' }
+		};
+		const { rerender } = render(InboxTabs, { tabs: tabs('important') });
+		await rerender({ tabs: { active: 'important', unread: { ...unread, important: 3 } } });
+		expect(underlines()[0].closest('a')).toBe(tab('Important'));
+		expect(animate).not.toHaveBeenCalled();
 	});
 
 	it('ignores a navigation that leaves the Inbox', () => {

@@ -1,13 +1,12 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import { untrack } from 'svelte';
-	import { navigating, page } from '$app/state';
+	import { page } from '$app/state';
 	import { moveToCategory } from '$lib/categories/api';
 	import { glideFrom, prefersReducedMotion } from '$lib/transitions';
 	import {
 		INBOX_CATEGORIES,
 		inboxTabHref,
-		parseInboxCategory,
 		type InboxCategory,
 		type InboxTabsState
 	} from '$lib/types/categories';
@@ -15,46 +14,40 @@
 
 	let { tabs }: { tabs: InboxTabsState } = $props();
 
-	// The tab drawn as current. It follows a click at once, while the new
-	// tab's mail is still loading, so the underline answers the click and the
-	// list follows when the mail lands; `tabs.active` is the tab the list
-	// holds, and catches up a moment later. A navigation that leaves this
-	// page doesn't count, and one that fails falls back to `tabs.active`.
-	const shown = $derived.by<InboxCategory>(() => {
-		const to = navigating.to;
-		if (to?.route.id && to.route.id === page.route.id) {
-			return parseInboxCategory(to.url.searchParams.get('category'));
-		}
-		return tabs.active;
-	});
-
-	// The underline glides from the old tab to the new one. Each tab draws
-	// its own with CSS, so at rest it is always exactly under its tab — on
-	// first paint, after a resize, when the labels fold away in a narrow
-	// column — and only the move between two tabs is animated: where the
-	// underline was is read before the DOM moves it, and the new one is slid
-	// over from there.
+	// The underline glides from the old tab to the new one when the new
+	// tab's mail lands, so the strip, the list and the header change
+	// together. (It used to move on the click, following `navigating`, but
+	// that names a tab the list doesn't hold for the whole load, and a
+	// refresh that cuts the load off leaves `navigating` set, which stranded
+	// the underline on a tab whose mail never came.)
+	//
+	// Each tab draws its own underline with CSS, so at rest it is always
+	// exactly under its tab — on first paint, after a resize, when the labels
+	// fold away in a narrow column — and only the move between two tabs is
+	// animated. It leaves from under the old tab as the strip has just laid
+	// it out: in a narrow column the old tab folds to an icon and the tabs
+	// after it shift in the same frame, and starting from where the underline
+	// was before that would start it under a tab it never belonged to.
 	let strip = $state<HTMLElement>();
-	let underlineWas: DOMRect | null = null;
-
-	function underline(): HTMLElement | null {
-		return strip?.querySelector<HTMLElement>('[data-tab-underline]') ?? null;
-	}
-
-	$effect.pre(() => {
-		void shown;
-		untrack(() => {
-			underlineWas = underline()?.getBoundingClientRect() ?? null;
-		});
-	});
+	let previous: InboxCategory | null = null;
 
 	$effect(() => {
-		void shown;
+		const current = tabs.active;
 		untrack(() => {
-			const from = underlineWas;
-			underlineWas = null;
-			const el = underline();
-			if (from && el && !prefersReducedMotion()) glideFrom(el, from);
+			const from = previous;
+			previous = current;
+			if (!from || from === current || !strip || prefersReducedMotion()) return;
+			const underline = strip.querySelector<HTMLElement>('[data-tab-underline]');
+			const fromTab = strip.querySelector<HTMLElement>(`[data-tab="${from}"]`);
+			const toTab = underline?.closest('a');
+			if (!underline || !fromTab || !toTab) return;
+			// The underline's insets within its own tab, applied to the old one.
+			const u = underline.getBoundingClientRect();
+			const t = toTab.getBoundingClientRect();
+			const f = fromTab.getBoundingClientRect();
+			const width = f.width - (t.width - u.width);
+			if (width <= 0) return;
+			glideFrom(underline, DOMRect.fromRect({ x: f.left + (u.left - t.left), y: u.top, width, height: u.height }));
 		});
 	});
 
@@ -113,12 +106,13 @@
 >
 	<div bind:this={strip} class="flex items-stretch gap-0.5 px-2 overflow-x-auto [scrollbar-width:none]">
 		{#each INBOX_CATEGORIES as c (c.key)}
-			{@const active = shown === c.key}
+			{@const active = tabs.active === c.key}
 			{@const unread = tabs.unread[c.key]}
 			<a
 				href={inboxTabHref(page.url, c.key)}
 				title={c.description}
-				aria-current={tabs.active === c.key ? 'page' : undefined}
+				data-tab={c.key}
+				aria-current={active ? 'page' : undefined}
 				ondragover={(e) => onDragOver(e, c.key)}
 				ondragleave={(e) => onDragLeave(e, c.key)}
 				ondrop={(e) => onDrop(e, c.key)}

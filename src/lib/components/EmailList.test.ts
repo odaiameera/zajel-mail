@@ -15,11 +15,10 @@ const mocks = vi.hoisted(() => ({
 			]
 		},
 		url: new URL('http://localhost/folder/A')
-	},
-	navigating: { to: null }
+	}
 }));
 
-vi.mock('$app/state', () => ({ page: mocks.page, navigating: mocks.navigating }));
+vi.mock('$app/state', () => ({ page: mocks.page }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 vi.mock('$app/environment', () => ({ browser: true, dev: false, building: false }));
 
