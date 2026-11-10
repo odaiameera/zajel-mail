@@ -14,15 +14,12 @@
 	<button
 		type="button"
 		onclick={onToggle}
-		class="w-full flex items-center {collapsed ? 'justify-center' : 'gap-2.5 px-3'} h-8 rounded-lg text-sm text-text-tertiary hover:bg-surface-hover hover:text-text transition-colors cursor-pointer"
+		class="{collapsed ? 'w-full' : 'w-8 ml-1'} flex items-center justify-center h-8 rounded-lg text-text-tertiary hover:bg-surface-hover hover:text-text transition-colors cursor-pointer"
 		title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
 		aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
 	>
-		{#if collapsed}
-			<Icon name="expand-sidebar" />
-		{:else}
-			<Icon name="collapse-sidebar" />
-			<span>Collapse</span>
-		{/if}
+		<!-- Icon only: the tooltip and the label name it. In line with the
+		     folder icons above it. -->
+		<Icon name={collapsed ? 'expand-sidebar' : 'collapse-sidebar'} />
 	</button>
 </div>

@@ -533,8 +533,8 @@
 							tabindex={0}
 						></div>
 				</div>
+				<!-- The count is in the pager at the foot of the list. -->
 				<span class="text-sm font-medium text-text">{title}</span>
-				<span class="text-xs text-text-tertiary">{total} messages</span>
 				<div class="flex-1"></div>
 				{#if showFilters}
 					<ListFilterBar />
