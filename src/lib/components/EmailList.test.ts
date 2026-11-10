@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { writable } from 'svelte/store';
 import type { Email } from '$lib/jmap/types';
 import type { InboxCategory } from '$lib/types/categories';
@@ -192,5 +192,91 @@ describe('EmailList switching Inbox tabs', () => {
 		await rerender(inbox('promotions', [email('p1', 'Shop', 'A')]));
 		expect(slides()).toEqual([]);
 		expect(listMotion()).toEqual([[{ opacity: 0 }, { opacity: 1 }]]);
+	});
+});
+
+describe('EmailList reading pane', () => {
+	const data = mocks.page.data as Record<string, unknown>;
+	const saved = { ...data };
+	let server: Record<string, boolean> = {};
+
+	function message(keywords: Record<string, boolean>): Email {
+		return {
+			...email('m1', 'Shop', 'I'),
+			subject: 'Your order shipped',
+			keywords: { $seen: true, ...keywords },
+			attachments: [],
+			htmlBody: [{ partId: '1', type: 'text/html' }],
+			bodyValues: { '1': { value: '<p>Hi</p>' } }
+		} as unknown as Email;
+	}
+
+	const tabs = (active: string) => ({ active, unread: { important: 0, updates: 0, newsletters: 0, promotions: 0 } }) as never;
+	const detailFetches = () => fetchMock.mock.calls.filter(([u]) => String(u) === '/api/email/m1/detail').length;
+
+	async function openInPane(keywords: Record<string, boolean>, active: string) {
+		server = keywords;
+		const view = render(EmailList, {
+			props: { emails: [message(keywords)], total: 1, title: 'Inbox', mailboxId: 'I', inboxTabs: tabs(active) },
+			context: new Map<string, unknown>([
+				['labels', []],
+				['readingPane', writable(true)]
+			])
+		});
+		await fireEvent.click(screen.getByText('Your order shipped').closest('a') as HTMLElement, { button: 0, detail: 1 });
+		await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Your order shipped' })).toBeTruthy());
+		return view;
+	}
+
+	beforeEach(() => {
+		Object.assign(data, {
+			autoLoadImages: 'never',
+			markReadDelay: 0,
+			userEmail: 'me@example.test',
+			inboxTabsOn: true,
+			mailboxes: [{ id: 'I', name: 'Inbox', role: 'inbox', parentId: null, sortOrder: 0, totalEmails: 1, unreadEmails: 0 }]
+		});
+		mocks.page.url = new URL('http://localhost/inbox');
+		fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+			String(input) === '/api/email/m1/detail'
+				? new Response(JSON.stringify(message(server)), { status: 200 })
+				: new Response('{}', { status: 200 })
+		);
+	});
+	afterEach(() => {
+		for (const key of Object.keys(data)) delete data[key];
+		Object.assign(data, saved);
+		mocks.page.url = new URL('http://localhost/folder/A');
+		fetchMock.mockImplementation(async () => new Response('{}', { status: 200 }));
+	});
+
+	it('shows the tab Jev gives the open message once the list refreshes', async () => {
+		const { rerender } = await openInPane({}, 'important');
+		expect(screen.queryByTitle(/^In the .* tab$/)).toBeNull();
+
+		// Jev writes $cat_updates; the push refreshes the Important list, which
+		// no longer has the message.
+		server = { $cat_updates: true };
+		await rerender({ emails: [], total: 0, title: 'Inbox', mailboxId: 'I', inboxTabs: tabs('important') });
+		await waitFor(() => expect(screen.getByTitle('In the Updates tab')).toBeTruthy());
+		expect(screen.getByRole('heading', { level: 1, name: 'Your order shipped' })).toBeTruthy();
+	});
+
+	it('follows the open message to another tab, from its row while the list still has it', async () => {
+		const { rerender } = await openInPane({ $cat_updates: true }, 'updates');
+		await waitFor(() => expect(screen.getByTitle('In the Updates tab')).toBeTruthy());
+		const before = detailFetches();
+
+		// Still in the list: its row says where it is, and nothing is fetched.
+		await rerender({ emails: [message({ $cat_promotions: true })], total: 1, title: 'Inbox', mailboxId: 'I', inboxTabs: tabs('updates') });
+		await waitFor(() => expect(screen.getByTitle('In the Promotions tab')).toBeTruthy());
+		expect(screen.queryByTitle('In the Updates tab')).toBeNull();
+		expect(detailFetches()).toBe(before);
+
+		// Moved to Important: it leaves the list, and is read again.
+		server = {};
+		await rerender({ emails: [], total: 0, title: 'Inbox', mailboxId: 'I', inboxTabs: tabs('updates') });
+		await waitFor(() => expect(screen.queryByTitle(/^In the .* tab$/)).toBeNull());
+		expect(detailFetches()).toBe(before + 1);
 	});
 });
