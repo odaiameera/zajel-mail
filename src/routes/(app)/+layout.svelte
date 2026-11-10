@@ -21,6 +21,7 @@
 	import { calendarNotify } from '$lib/stores/calendarNotify';
 	import { canNotify, showNotification, subscribePush } from '$lib/notifications';
 	import { showToast } from '$lib/stores/toast';
+	import { holdRecheckDelay } from '$lib/inbox-hold';
 	import { loadUserState } from '$lib/stores/userState';
 	import { AI_ASSISTANT_CONTEXT, type AIAssistantContext } from '$lib/types/assistant';
 	import { LABELS_CONTEXT, type LabelsContext } from '$lib/types/labels';
@@ -344,7 +345,7 @@
 	$effect(() => {
 		const endsIn = data.inboxHoldEndsIn;
 		if (endsIn === null || endsIn === undefined) return;
-		const timer = setTimeout(() => void invalidateAll(), endsIn + 1000);
+		const timer = setTimeout(() => void invalidateAll(), holdRecheckDelay(endsIn));
 		return () => clearTimeout(timer);
 	});
 

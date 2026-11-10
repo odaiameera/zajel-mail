@@ -12,7 +12,7 @@ vi.mock('$lib/server/db/queries/jev-settings', () => ({
 	sortingEnabled: (s: { inboxTabs: boolean; jevEnabled: boolean }) => s.inboxTabs && s.jevEnabled
 }));
 
-import { heldInInbox, inboxHoldOn, withInboxHold } from './hold';
+import { applyInboxHold, forgetInboxHolds, heldInInbox, inboxHoldOn, knownInboxId, withInboxHold } from './hold';
 import { heldCondition, holdEndsAt } from '$lib/inbox-hold';
 
 function fakeClient(reply: (call: MethodCall) => Record<string, unknown>) {
@@ -41,6 +41,7 @@ const mailbox = (id: string, role: string | null, unreadEmails: number): Mailbox
 beforeEach(() => {
 	jev.mode = 'live';
 	jev.settings = { inboxTabs: true, jevEnabled: true };
+	forgetInboxHolds();
 });
 
 describe('inboxHoldOn', () => {
@@ -82,17 +83,37 @@ describe('withInboxHold', () => {
 		const { mailboxes, releaseAt } = await withInboxHold(
 			client,
 			'acc',
+			'acct-1',
 			[mailbox('inbox', 'inbox', 5), mailbox('work', null, 3)],
 			NOW
 		);
 		expect(mailboxes.map((m) => m.unreadEmails)).toEqual([3, 3]);
 		expect(releaseAt).toBe(holdEndsAt(RECEIVED));
+		expect(knownInboxId('acct-1')).toBe('inbox');
 	});
 
-	it('keeps the count as it was when the hold can’t be read', async () => {
+	it('keeps the mail server’s count when the hold can’t be read and nothing was shown before', async () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const client = { request: () => Promise.reject(new Error('down')) } as unknown as JMAPClient;
 		const list = [mailbox('inbox', 'inbox', 5)];
-		expect(await withInboxHold(client, 'acc', list, NOW)).toEqual({ mailboxes: list, releaseAt: null });
+		expect(await withInboxHold(client, 'acc', 'acct-1', list, NOW)).toEqual({ mailboxes: list, releaseAt: null });
+	});
+});
+
+describe('applyInboxHold', () => {
+	it('doesn’t raise the count for held mail on a load where the hold can’t be read', () => {
+		// Shown: 5 unread, 2 of them held, so 3.
+		applyInboxHold('acct-1', [mailbox('inbox', 'inbox', 5)], { unread: 2, releaseAt: null });
+		// The hold can't be read: the count stays at 3 rather than jumping to
+		// 5 and back, which would raise the new-mail alert twice.
+		const failed = applyInboxHold('acct-1', [mailbox('inbox', 'inbox', 5)], null);
+		expect(failed.mailboxes[0].unreadEmails).toBe(3);
+		// Mail read meanwhile still brings it down.
+		expect(applyInboxHold('acct-1', [mailbox('inbox', 'inbox', 2)], null).mailboxes[0].unreadEmails).toBe(2);
+	});
+
+	it('keeps accounts apart', () => {
+		applyInboxHold('acct-1', [mailbox('inbox', 'inbox', 5)], { unread: 5, releaseAt: null });
+		expect(applyInboxHold('acct-2', [mailbox('inbox', 'inbox', 5)], null).mailboxes[0].unreadEmails).toBe(5);
 	});
 });

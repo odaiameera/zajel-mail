@@ -16,8 +16,14 @@
  * in the Inbox disappears. Search, All Mail and every other view show held
  * mail as usual; only the Inbox tabs wait.
  *
- * Stalwart stamps receivedAt to the second, so the boundary is a whole
- * second and "held" and "shown" split every message exactly one way.
+ * Only mail dated between INBOX_HOLD_MS ago and INBOX_HOLD_MS ahead is
+ * held. A message stamped far in the future (an import, an APPEND, a sender
+ * or server with a wrong clock) would otherwise wait until that date.
+ *
+ * Stalwart stamps receivedAt to the second, so both bounds are whole
+ * seconds, and "held" is written as NOT "shown" so the two queries split
+ * every message exactly one way, however the server reads `before` and
+ * `after` at the boundary.
  */
 
 /** Set on a message once Jev is done with it. Lowercase and `$`-prefixed, like the tab keywords. */
@@ -35,24 +41,31 @@ export function holdBoundary(now: number): number {
 	return Math.ceil((now - INBOX_HOLD_MS) / 1000) * 1000;
 }
 
+/** The latest receivedAt still held at `now`, in ms: a whole second. */
+export function holdCeiling(now: number): number {
+	return Math.floor((now + INBOX_HOLD_MS) / 1000) * 1000;
+}
+
 /** JMAP UTCDate without milliseconds, the form Stalwart stores. */
 function utcDate(ms: number): string {
 	return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+/** Dated outside the hold window: older than the hold, or too far ahead. */
+function outsideWindow(now: number): Record<string, unknown>[] {
+	return [{ before: utcDate(holdBoundary(now)) }, { after: utcDate(holdCeiling(now)) }];
+}
+
 /** Email/query condition for Inbox mail the hold lets through at `now` (AND it with the Inbox). */
 export function shownCondition(now: number): Record<string, unknown> {
-	return {
-		operator: 'OR',
-		conditions: [{ hasKeyword: JEV_SORTED_KEYWORD }, { before: utcDate(holdBoundary(now)) }]
-	};
+	return { operator: 'OR', conditions: [{ hasKeyword: JEV_SORTED_KEYWORD }, ...outsideWindow(now)] };
 }
 
 /** Email/query condition for Inbox mail still held at `now`: the exact complement of shownCondition. */
 export function heldCondition(now: number): Record<string, unknown> {
 	return {
 		operator: 'AND',
-		conditions: [{ notKeyword: JEV_SORTED_KEYWORD }, { after: utcDate(holdBoundary(now) - 1000) }]
+		conditions: [{ notKeyword: JEV_SORTED_KEYWORD }, { operator: 'NOT', conditions: outsideWindow(now) }]
 	};
 }
 
@@ -64,12 +77,22 @@ interface HoldFields {
 /** Whether a message in the Inbox is still held at `now`. */
 export function isHeld(email: HoldFields, now: number): boolean {
 	if (email.keywords?.[JEV_SORTED_KEYWORD]) return false;
-	return Date.parse(email.receivedAt) >= holdBoundary(now);
+	const at = Date.parse(email.receivedAt);
+	return at >= holdBoundary(now) && at <= holdCeiling(now);
 }
 
 /** When a message received at `receivedAt` stops being held, if Jev never marks it. */
 export function holdEndsAt(receivedAt: string): number {
 	return Date.parse(receivedAt) + INBOX_HOLD_MS + 1;
+}
+
+/**
+ * How long to wait before looking again for held mail that is let through
+ * `endsIn` ms from now: never longer than a hold, so a wrong date can't
+ * set a timer for weeks (or overflow one into firing at once, over and over).
+ */
+export function holdRecheckDelay(endsIn: number): number {
+	return Math.min(Math.max(0, endsIn), INBOX_HOLD_MS) + 1000;
 }
 
 /**

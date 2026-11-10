@@ -15,7 +15,7 @@ vi.mock('$lib/server/db/queries/jev-settings', () => ({
 }));
 vi.mock('./client', () => ({ jevMode: () => accounts.mode }));
 
-import { startJevWatchers, stopJevWatchers } from './stream';
+import { refreshJevWatchers, startJevWatchers, stopJevWatchers } from './stream';
 
 /** An event stream the test writes to, as the mail server would. */
 function openStream() {
@@ -59,7 +59,7 @@ describe('Jev’s event streams', () => {
 		expect(fetchMock.mock.calls[0][0]).toBe('https://mail.example/jmap/a/eventsource/?types=Email&closeafter=no&ping=60');
 		// Mail may have landed while no stream was open.
 		await vi.waitFor(() => expect(runPass).toHaveBeenCalledTimes(1), { timeout: 3000 });
-		expect(runPass).toHaveBeenCalledWith('a', 'a@example.test', accounts.list[0].auth);
+		expect(runPass).toHaveBeenCalledWith('a', 'a@example.test', accounts.list[0].auth, { fromStream: true });
 
 		stream.push(': ping\n\n');
 		stream.push('event: state\ndata: {"@type":"StateChange","changed":{"acc":{"Email":"s2"}}}\n\n');
@@ -83,5 +83,45 @@ describe('Jev’s event streams', () => {
 		startJevWatchers(vi.fn());
 
 		await vi.waitFor(() => expect(accounts.reauth).toHaveBeenCalledWith('a'));
+	});
+
+	it('opens a new stream for an account linked again after its password was refused', async () => {
+		let calls = 0;
+		const fetchMock = vi.fn(async () => (++calls === 1 ? new Response('', { status: 401 }) : openStream().response));
+		vi.stubGlobal('fetch', fetchMock);
+		startJevWatchers(vi.fn(async () => {}));
+		await vi.waitFor(() => expect(accounts.reauth).toHaveBeenCalledWith('a'));
+
+		// Linked again before the next reconcile: the account is schedulable.
+		refreshJevWatchers();
+
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+	});
+
+	it('gives up on a stream that goes silent, and opens another', async () => {
+		vi.useFakeTimers();
+		try {
+			// A stream that never sends a byte, not even a ping, and ends when aborted.
+			const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						init?.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')));
+					}
+				});
+				return new Response(body, { status: 200 });
+			});
+			vi.stubGlobal('fetch', fetchMock);
+			startJevWatchers(vi.fn(async () => {}));
+			await vi.advanceTimersByTimeAsync(10);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+
+			// Three missed pings, then the first backoff.
+			await vi.advanceTimersByTimeAsync(3 * 60_000 + 5_000 + 10);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
+		} finally {
+			stopJevWatchers();
+			vi.useRealTimers();
+		}
 	});
 });

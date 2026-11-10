@@ -51,6 +51,7 @@ import { errorFields, logEvent } from '$lib/server/log';
 import { isHeld, JEV_SORTED_KEYWORD } from '$lib/inbox-hold';
 import type { JevQuestion, JevResponse } from './types';
 import { startJevWatchers } from './stream';
+import { applyRulesNow } from '$lib/server/rules-scheduler';
 
 /**
  * Jev triaging new Inbox mail a beat after it lands: within seconds, from
@@ -401,15 +402,30 @@ function noteWrites(accountRowId: string, w: WriteOutcome): void {
 	else if (w.attempted) noteRecovered('write', accountRowId, 'write_recovered');
 }
 
+export interface PassOptions {
+	/**
+	 * Asked for by the account's push stream (see stream.ts), on any change
+	 * to its mail, Jev's own writes included. Such a pass judges new mail
+	 * only, leaving mail already in the Inbox to the once-a-minute run, or
+	 * each write of a batch would set off the next one. And while TypeSafe
+	 * is failing it does nothing at all, until the next scheduled pass.
+	 */
+	fromStream?: boolean;
+}
+
 /** One triage pass for one account: queue arrivals, judge, apply, record. */
 export async function sortNewMail(
 	accountRowId: string,
 	accountEmail: string,
 	auth: AuthState,
-	now = new Date()
+	now = new Date(),
+	opts: PassOptions = {}
 ): Promise<void> {
 	const settings = getJevSettings(accountRowId);
 	if (!settings.jevEnabled || jevMode() === 'off') return;
+	if (opts.fromStream && typesafeFailing.has(accountRowId)) return;
+	// A scheduled pass tries TypeSafe again; if it still fails, it says so.
+	if (!opts.fromStream) typesafeFailing.delete(accountRowId);
 	if (!settings.sortCursor) {
 		updateJevSettings(accountRowId, { sortCursor: now.toISOString() }, now);
 		return;
@@ -427,6 +443,19 @@ export async function sortNewMail(
 		// rule on later doesn't reach back into mail from before.
 		advanceSortCursor(accountRowId, settings.sortCursor, now.toISOString(), now);
 		return;
+	}
+
+	// The Inbox holds new mail until Jev marks it (see inbox-hold). Rules
+	// Jev doesn't judge are the rules scheduler's, so they run first: a tab
+	// or move they make lands before the mark, not after it is showing.
+	// They don't wait on TypeSafe, so they keep working while it is down.
+	if (wantsTabs && !handlesRules && enabledRules.length > 0) {
+		try {
+			await applyRulesNow(auth, accountEmail, accountRowId);
+		} catch (err) {
+			if (err instanceof JMAPAuthError) throw err;
+			console.error('[jev] rules before sorting failed', accountEmail, err);
+		}
 	}
 
 	const client = createClient(auth);
@@ -532,7 +561,7 @@ export async function sortNewMail(
 
 	// 3. Then mail that was already in the Inbox when you asked Jev to sort
 	// it: its tab only — rules and spam checks apply to new mail only.
-	if (wantsTabs && stillOn()) {
+	if (wantsTabs && !opts.fromStream && stillOn()) {
 		await judgeAndApply(batch, listPendingEmailIds(accountRowId, BACKFILL_BATCH, true), [], true, false, false);
 	}
 	noteWrites(accountRowId, batch.writes);
@@ -599,6 +628,7 @@ async function judgeAndApply(
 	// queue waits a few minutes instead of knocking again every pass.
 	if (asked.length && asked.every((j) => j.errorStatus === 429)) {
 		rateLimitedUntil.set(b.accountRowId, now + RATE_LIMIT_PAUSE_MS);
+		typesafeFailing.add(b.accountRowId);
 		noteFailure('typesafe', b.accountRowId, 'typesafe_rate_limited', { count: asked.length, error: asked[0].error });
 		return;
 	}
@@ -611,6 +641,7 @@ async function judgeAndApply(
 	// same mail would be sent again every pass for ever, none of it ever
 	// getting its tab or its rules' labels, with nothing to say why.
 	if (asked.length && asked.every((j) => j.error) && !asked.every((j) => j.refused)) {
+		typesafeFailing.add(b.accountRowId);
 		noteFailure('typesafe', b.accountRowId, 'typesafe_unavailable', { count: asked.length, error: asked[0].error });
 		return;
 	}
@@ -763,14 +794,25 @@ let started = false;
 const inFlight = new Set<string>();
 // A pass asked for while one was running: run once more when it ends, as
 // the running one may have read the Inbox before the mail that asked.
-const rerun = new Map<string, { accountEmail: string; auth: AuthState }>();
+const rerun = new Map<string, PassRequest>();
+
+interface PassRequest {
+	accountEmail: string;
+	auth: AuthState;
+	opts: PassOptions;
+}
 
 // Accounts TypeSafe rate-limited on a recent pass, and until when they wait.
 const rateLimitedUntil = new Map<string, number>();
 
+// Accounts whose last pass found TypeSafe down or rate-limiting: until a
+// scheduled pass gets through, a change to their mail doesn't call again.
+const typesafeFailing = new Set<string>();
+
 /** Forget the rate-limit pauses and the failures logged — for tests, which run many passes on one account. */
 export function forgetRateLimits(): void {
 	rateLimitedUntil.clear();
+	typesafeFailing.clear();
 	lastFailure.clear();
 }
 
@@ -793,23 +835,27 @@ function noteRecovered(kind: string, accountRowId: string, event: string): void 
 
 /**
  * One account's pass, never throwing. Passes don't overlap: one asked for
- * while another runs is run once, straight after it.
+ * while another runs is run once, straight after it (as a full pass if any
+ * of those asking wanted one).
  */
 export async function sortNewMailSafe(
 	accountRowId: string,
 	accountEmail: string,
-	auth: AuthState
+	auth: AuthState,
+	opts: PassOptions = {}
 ): Promise<void> {
 	if (inFlight.has(accountRowId)) {
-		rerun.set(accountRowId, { accountEmail, auth });
+		const queued = rerun.get(accountRowId);
+		const fromStream = !!opts.fromStream && (queued ? !!queued.opts.fromStream : true);
+		rerun.set(accountRowId, { accountEmail, auth, opts: { fromStream } });
 		return;
 	}
 	inFlight.add(accountRowId);
 	try {
-		for (let next: { accountEmail: string; auth: AuthState } | undefined = { accountEmail, auth }; next; ) {
+		for (let next: PassRequest | undefined = { accountEmail, auth, opts }; next; ) {
 			rerun.delete(accountRowId);
 			try {
-				await sortNewMail(accountRowId, next.accountEmail, next.auth);
+				await sortNewMail(accountRowId, next.accountEmail, next.auth, new Date(), next.opts);
 				noteRecovered('pass', accountRowId, 'pass_recovered');
 			} catch (err) {
 				// A 401 is logged, and sent to Telegram, by markNeedsReauth.

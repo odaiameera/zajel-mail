@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	heldCondition,
 	holdEndsAt,
+	holdRecheckDelay,
 	INBOX_HOLD_MS,
 	isHeld,
 	JEV_SORTED_KEYWORD,
@@ -15,18 +16,23 @@ interface Msg {
 	mailboxIds?: Record<string, boolean>;
 }
 
-/** Just the JMAP filter conditions the hold uses, evaluated as a server would. */
-function matches(filter: Record<string, unknown>, email: Msg): boolean {
+/**
+ * Just the JMAP filter conditions the hold uses, evaluated as a server
+ * would. RFC 8621 makes `after` inclusive; Stalwart has been seen to treat
+ * it as strict, so both are tried.
+ */
+function matches(filter: Record<string, unknown>, email: Msg, inclusiveAfter = false): boolean {
 	const op = filter.operator as string | undefined;
 	const conditions = filter.conditions as Record<string, unknown>[] | undefined;
-	if (op === 'AND') return conditions!.every((c) => matches(c, email));
-	if (op === 'OR') return conditions!.some((c) => matches(c, email));
-	if (op === 'NOT') return !conditions!.some((c) => matches(c, email));
+	const each = (c: Record<string, unknown>) => matches(c, email, inclusiveAfter);
+	if (op === 'AND') return conditions!.every(each);
+	if (op === 'OR') return conditions!.some(each);
+	if (op === 'NOT') return !conditions!.some(each);
 	const at = Date.parse(email.receivedAt);
 	if (typeof filter.hasKeyword === 'string') return !!email.keywords[filter.hasKeyword];
 	if (typeof filter.notKeyword === 'string') return !email.keywords[filter.notKeyword];
 	if (typeof filter.before === 'string') return at < Date.parse(filter.before);
-	if (typeof filter.after === 'string') return at > Date.parse(filter.after);
+	if (typeof filter.after === 'string') return inclusiveAfter ? at >= Date.parse(filter.after) : at > Date.parse(filter.after);
 	throw new Error(`unexpected condition ${JSON.stringify(filter)}`);
 }
 
@@ -52,15 +58,35 @@ describe('the Inbox hold', () => {
 	});
 
 	it('splits every message one way between the shown and held queries, as isHeld does', () => {
-		for (let s = 0; s <= INBOX_HOLD_MS / 1000 + 3; s++) {
+		const window = INBOX_HOLD_MS / 1000;
+		for (let s = -window - 3; s <= window + 3; s++) {
 			for (const keywords of [{}, { [JEV_SORTED_KEYWORD]: true }] as Record<string, boolean>[]) {
 				const email = { keywords, receivedAt: secondsAgo(s) };
-				const shown = matches(shownCondition(NOW), email);
-				const held = matches(heldCondition(NOW), email);
-				expect(shown).toBe(!held);
-				expect(held).toBe(isHeld(email, NOW));
+				for (const inclusiveAfter of [false, true]) {
+					const shown = matches(shownCondition(NOW), email, inclusiveAfter);
+					const held = matches(heldCondition(NOW), email, inclusiveAfter);
+					expect(shown).toBe(!held);
+				}
+				// Stalwart's strict `after`, which isHeld follows to the second.
+				expect(matches(heldCondition(NOW), email)).toBe(isHeld(email, NOW));
 			}
 		}
+	});
+
+	it('never holds mail dated past the hold window, however far ahead', () => {
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-60) }, NOW)).toBe(true);
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-(INBOX_HOLD_MS / 1000) - 1) }, NOW)).toBe(false);
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-30 * 86_400) }, NOW)).toBe(false);
+		const farAhead = { keywords: {}, receivedAt: secondsAgo(-30 * 86_400) };
+		expect(matches(heldCondition(NOW), farAhead)).toBe(false);
+		expect(matches(shownCondition(NOW), farAhead)).toBe(true);
+	});
+
+	it('looks again within one hold at most, whatever the date says', () => {
+		expect(holdRecheckDelay(5000)).toBe(6000);
+		expect(holdRecheckDelay(-5000)).toBe(1000);
+		// 30 days: past setTimeout's 24.8-day limit, which would fire at once.
+		expect(holdRecheckDelay(30 * 86_400_000)).toBe(INBOX_HOLD_MS + 1000);
 	});
 
 	it('writes whole-second dates, the form the mail server stores', () => {

@@ -45,9 +45,10 @@ vi.mock('$lib/jmap/auth', () => ({
 						.map((e) => e.id);
 					done.push([name, { ids }, tag]);
 				} else {
-					const ref = args['#ids'] as { resultOf: string };
-					const ids = done.find((d) => d[2] === ref.resultOf)![1].ids as string[];
-					done.push([name, { list: ids.map((id) => structuredClone(mail.emails.get(id))) }, tag]);
+					const ref = args['#ids'] as { resultOf: string } | undefined;
+					const ids = ref ? (done.find((d) => d[2] === ref.resultOf)![1].ids as string[]) : (args.ids as string[]);
+					const found = ids.filter((id) => mail.emails.has(id));
+					done.push([name, { list: found.map((id) => structuredClone(mail.emails.get(id))) }, tag]);
 				}
 			}
 			return { methodResponses: done, sessionState: '' };
@@ -197,5 +198,46 @@ describe('push for new mail while Jev sorts the Inbox', () => {
 		sortedByJev('held');
 		await inner().checkOnce();
 		expect(announced()).toEqual(['held']);
+	});
+
+	it('announces a message dated in the future at once, and never sets a timer past one hold', async () => {
+		await startWatching();
+		// An import, an APPEND or a wrong clock: dated 30 days ahead.
+		add('future', 30 * 86_400);
+		vi.setSystemTime(NOW + 2000);
+		const timers = vi.spyOn(globalThis, 'setTimeout');
+
+		await inner().checkOnce();
+
+		expect(announced()).toEqual(['future']);
+		const delays = timers.mock.calls.map((call) => call[1] ?? 0);
+		expect(Math.max(0, ...delays)).toBeLessThanOrEqual(INBOX_HOLD_MS + 1000);
+	});
+
+	it('still announces a held message when twenty newer ones arrive during its hold', async () => {
+		await startWatching();
+		add('held', 1);
+		for (let i = 0; i < 20; i++) add(`n${i}`, 2 + i, { keywords: { [JEV_SORTED_KEYWORD]: true } });
+		vi.setSystemTime(NOW + 30_000);
+		await inner().checkOnce();
+		expect(announced()).not.toContain('held');
+
+		vi.setSystemTime(NOW + INBOX_HOLD_MS + 5000);
+		await inner().checkOnce();
+		expect(announced().filter((t) => t === 'held')).toHaveLength(1);
+	});
+
+	it('looks again by itself when the hold runs out, with no event from the server', async () => {
+		vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+		vi.setSystemTime(NOW);
+		await startWatching();
+		add('news', 1);
+		vi.setSystemTime(NOW + 2000);
+		await inner().checkOnce();
+		expect(announced()).toEqual([]);
+
+		// The release timer, then the check's own short debounce.
+		await vi.advanceTimersByTimeAsync(INBOX_HOLD_MS + 5000);
+		expect(announced()).toEqual(['news']);
 	});
 });

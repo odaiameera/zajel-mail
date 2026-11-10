@@ -22,7 +22,7 @@ This page keeps what is not built yet, and the rules any new Jev work has to kee
 5. **What Jev sees is fixed:** sender, recipients, subject, list headers, the facts our code works out (in their own fields, so the email can't pose as one), and the first 2,000 characters of the plain-text body without quoted replies. `jev_decisions` keeps answers and probabilities, never the email text.
 6. **Opt-in for each linked account**, since that account's mail is what leaves the server.
 7. **Every decision explains itself** in the message view.
-8. **Holding new mail for Jev is short, and never hides it.** While Jev sorts an account's tabs, the Inbox tabs, their counts and new-mail notifications wait for a message until Jev marks it `$jev_sorted`, whatever the outcome. They wait no longer than `INBOX_HOLD_MS` (two minutes) after it arrived ([inbox-hold.ts](../src/lib/inbox-hold.ts)). Mail is never parked in a holding folder, so mail is still delivered and visible elsewhere when the app is down.
+8. **Holding new mail for Jev is short, and never hides it.** While Jev sorts an account's tabs, the Inbox tabs, their counts and new-mail notifications wait for a message until Jev marks it `$jev_sorted`, whatever the outcome. They wait no longer than `INBOX_HOLD_MS` (two minutes) after it arrived, and never for mail dated further ahead than that ([inbox-hold.ts](../src/lib/inbox-hold.ts)). Rules Jev doesn't judge run before the mark is written, so their moves and tabs are in place when the message shows; they never wait on TypeSafe. Mail is never parked in a holding folder, so mail is still delivered and visible elsewhere when the app is down.
 
 ---
 
@@ -31,7 +31,8 @@ This page keeps what is not built yet, and the rules any new Jev work has to kee
 - **Non-English mail** is more likely to get low confidence. That is safe, because it ends up in Important or is left to Stalwart, but it is less useful.
 - **TypeSafe's default retention** isn't documented, and zero data retention is enterprise-only. Recheck before turning Jev on for a sensitive account.
 - **Thresholds belong to a model version.** Revisit them before moving the pin from `jev-1.13.0`.
-- **Some mail waits the whole two minutes.** Mail Jev has already judged elsewhere, such as a message from Junk you mark Not spam right after it arrived, gets no mark, so the Inbox holds it until its two minutes are up. So does every new message while TypeSafe is down or rate-limiting.
+- **Some mail waits the whole two minutes.** Mail Jev judged before it could be marked gets no mark, so the Inbox holds it until its two minutes are up. That covers mail judged while the tabs were off and then switched on, mail from Junk you mark Not spam right after it arrived (with spam checks on), and mail moved back into the Inbox within two minutes of arriving. So does every new message while TypeSafe is down or rate-limiting.
+- **Mail let through unsorted can still move later.** After an outage, a message that waited its two minutes shows in Important, and when Jev answers on a retry it moves to its tab. That one move is the price of never hiding mail.
 - **An email can argue with Jev.** Its text can only move probabilities on fixed questions; facts sit in separate fields, moves need high confidence, contacts are never sent to Junk, and the worst automatic result can be undone.
 
 ---

@@ -5,7 +5,10 @@ const state = vi.hoisted(() => ({
 	emails: [] as Record<string, unknown>[],
 	cursor: null as string | null,
 	setCursors: [] as string[],
-	rules: [] as unknown[]
+	rules: [] as unknown[],
+	sets: [] as Record<string, unknown>[],
+	gate: null as Promise<void> | null,
+	queried: () => {}
 }));
 
 vi.mock('$lib/jmap/auth', () => ({
@@ -21,15 +24,19 @@ vi.mock('$lib/jmap/auth', () => ({
 				};
 			}
 			if (name === 'Email/query') {
+				const listed = state.emails;
+				state.queried();
+				if (state.gate) await state.gate;
 				return {
 					methodResponses: [
-						['Email/query', { ids: state.emails.map((e) => e.id) }, 'q'],
-						['Email/get', { list: state.emails }, 'g']
+						['Email/query', { ids: listed.map((e) => e.id) }, 'q'],
+						['Email/get', { list: listed }, 'g']
 					],
 					sessionState: ''
 				};
 			}
 			if (name === 'Email/set') {
+				state.sets.push(calls[0][1].update as Record<string, unknown>);
 				return { methodResponses: [['Email/set', { updated: {} }, '0']], sessionState: '' };
 			}
 			throw new Error(`unexpected ${name}`);
@@ -45,7 +52,7 @@ vi.mock('./db/queries/rules', () => ({
 vi.mock('./jev/rules', () => ({ jevHandlesRules: () => false }));
 
 import type { AuthState } from '$lib/jmap/types';
-import { applyRulesForUser } from './rules-scheduler';
+import { applyRulesForUser, applyRulesNow } from './rules-scheduler';
 
 const auth = { accountId: 'jmap' } as AuthState;
 
@@ -79,6 +86,9 @@ beforeEach(() => {
 	state.cursor = '2026-10-20T06:00:00.000Z';
 	state.setCursors = [];
 	state.rules = [markRead];
+	state.sets = [];
+	state.gate = null;
+	state.queried = () => {};
 });
 
 describe('the auto-apply cursor', () => {
@@ -95,10 +105,45 @@ describe('the auto-apply cursor', () => {
 		expect(state.setCursors).toEqual(['2026-10-20T07:00:00Z']);
 	});
 
-	it('jumps to now after a partial page', async () => {
+	it('jumps to the second before now after a partial page', async () => {
 		state.emails = page(3, () => '2026-10-20T07:00:00Z');
 		const before = Date.now();
 		await applyRulesForUser(auth, 'me@example.test', 'acct');
-		expect(Date.parse(state.setCursors[0])).toBeGreaterThanOrEqual(before);
+		// Mail landing later in this run's second, after its query, is read next time.
+		expect(Date.parse(state.setCursors[0])).toBe(Math.floor(before / 1000) * 1000 - 1000);
+	});
+
+	it('reads its own second again without acting twice on what it already handled', async () => {
+		const user = 'twice@example.test';
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		await applyRulesForUser(auth, user, 'acct');
+		expect(state.sets).toHaveLength(1);
+
+		// The second message of that second landed after the first run's query.
+		state.emails = [...page(2, () => '2026-10-20T07:00:00Z'), ...page(3, () => '2026-10-20T07:00:00Z').slice(2)];
+		await applyRulesForUser(auth, user, 'acct');
+		expect(Object.keys(state.sets[1])).toEqual(['m2']);
+	});
+});
+
+describe('applyRulesNow', () => {
+	it('waits out a run already going, then runs again for mail it may have missed', async () => {
+		const user = 'now@example.test';
+		let release!: () => void;
+		state.gate = new Promise<void>((resolve) => (release = resolve));
+		state.emails = page(1, () => '2026-10-20T07:00:00Z');
+		const queried = new Promise<void>((resolve) => (state.queried = resolve));
+		const first = applyRulesForUser(auth, user, 'acct');
+		await queried;
+
+		// Mail lands just after the first run read the Inbox.
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		const now = applyRulesNow(auth, user, 'acct');
+		release();
+		state.gate = null;
+		await first;
+		await now;
+
+		expect(state.sets.map((u) => Object.keys(u))).toEqual([['m0'], ['m1']]);
 	});
 });

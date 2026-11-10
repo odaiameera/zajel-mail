@@ -14,7 +14,9 @@ import { jevMode } from './client';
  * stream that is down.
  *
  * Jev's own writes are Email changes too, so a pass that sorted something
- * is followed by one that finds nothing new and writes nothing, which ends it.
+ * is followed by one that finds nothing new and writes nothing, which ends
+ * it. That is also why these passes judge new mail only, and why they stop
+ * calling TypeSafe while it is failing (see the worker's PassOptions).
  */
 
 /** Gathers a burst of changes (a delivery, then the server's own filing) into one pass. */
@@ -26,7 +28,13 @@ const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
 const RECONCILE_MS = 60_000;
 
-export type RunPass = (accountRowId: string, accountEmail: string, auth: AuthState) => Promise<void>;
+/** The worker's pass, told it was asked for by the stream (new mail only, see the worker). */
+export type RunPass = (
+	accountRowId: string,
+	accountEmail: string,
+	auth: AuthState,
+	opts: { fromStream: true }
+) => Promise<void>;
 
 interface Target {
 	id: string;
@@ -48,6 +56,10 @@ class Watcher {
 		private runPass: RunPass
 	) {}
 
+	get isStopped(): boolean {
+		return this.stopped;
+	}
+
 	start(): void {
 		void this.run();
 	}
@@ -65,7 +77,7 @@ class Watcher {
 			this.debounce = null;
 			const { id, email, auth } = this.target;
 			// The pass never throws; this is only a guard.
-			this.runPass(id, email, auth).catch(() => {});
+			this.runPass(id, email, auth, { fromStream: true }).catch(() => {});
 		}, PASS_DEBOUNCE_MS);
 		this.debounce.unref?.();
 	}
@@ -168,7 +180,9 @@ export function refreshJevWatchers(): void {
 		const desired = desiredTargets();
 		for (const [id, watcher] of s.watchers) {
 			const next = desired.get(id);
-			if (!next) {
+			// A watcher that gave up (its password was refused) is replaced,
+			// so an account linked again gets its stream back.
+			if (!next || watcher.isStopped) {
 				watcher.stop();
 				s.watchers.delete(id);
 			} else {

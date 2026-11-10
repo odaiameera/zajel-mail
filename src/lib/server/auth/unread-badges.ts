@@ -32,7 +32,7 @@ export async function unreadBadges(
 					const client = createClient(auth);
 					let mailboxes = await getMailboxes(client, auth.accountId);
 					// Mail the Inbox is still holding for Jev isn't counted yet.
-					if (inboxHoldOn(account.id)) ({ mailboxes } = await withInboxHold(client, auth.accountId, mailboxes));
+					if (inboxHoldOn(account.id)) ({ mailboxes } = await withInboxHold(client, auth.accountId, account.id, mailboxes));
 					const unread = mailboxes.find((m) => m.role === 'inbox')?.unreadEmails ?? 0;
 					cache.set(account.id, { at: Date.now(), unread });
 					out[account.id] = unread;
