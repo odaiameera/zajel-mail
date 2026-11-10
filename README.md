@@ -203,6 +203,8 @@ Otherwise it runs on **any Ollama-compatible endpoint**: Ollama Cloud, or a mode
 
 A confident pick is applied. Anything else stays in **Important**, so nothing is hidden because Jev was unsure. The message view shows **why** a message landed where it did.
 
+New mail appears **already in its tab**. The server listens to the mail server's push channel and asks Jev within seconds of delivery. Until Jev is done with a message, the Inbox tabs, their unread counts, the Inbox badge and new-mail notifications leave it out. That way it never shows in Important and then moves. The wait is **two minutes at most**: if Jev is slow, down, rate-limited or stops answering, the message appears in Important when that time is up. Search, All Mail and other mail apps show it straight away. Only mail that arrived in the last two minutes is ever held back, and none at all while tabs or Jev are off for the account.
+
 Jev learns from you:
 - **It never moves mail you've put in a tab yourself**, Important included.
 - **Your moves teach it.** When you move a message, that's passed to Jev with that sender's next email.

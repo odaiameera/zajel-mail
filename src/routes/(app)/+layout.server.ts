@@ -13,6 +13,7 @@ import { loadRules } from '$lib/server/rules-store';
 import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
+import { inboxHoldOn, withInboxHold } from '$lib/server/jev/hold';
 import { parseMarkReadDelay } from '$lib/mail-prefs';
 
 export const load: LayoutServerLoad = async ({ locals, cookies }) => {
@@ -82,8 +83,14 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 		// These hit the mail server independently — run them concurrently so
 		// every navigation costs one round-trip's latency, not the sum of
 		// three. This load re-runs on each invalidateAll(), so it's hot.
-		const [mailboxes, labels, accountUnread] = await Promise.all([
-			getMailboxes(client, locals.auth.accountId),
+		// While Jev sorts the Inbox tabs, the Inbox's unread count leaves out
+		// new mail it hasn't finished with, as the tabs do (see inbox-hold).
+		const holdOn = inboxHoldOn(locals.activeAccountId);
+		const accountId = locals.auth.accountId;
+		const [{ mailboxes, releaseAt: inboxHoldEndsAt }, labels, accountUnread] = await Promise.all([
+			getMailboxes(client, accountId).then((list) =>
+				holdOn ? withInboxHold(client, accountId, list) : { mailboxes: list, releaseAt: null }
+			),
 			listLabels(client, locals.auth.accountId, userEmail),
 			// Inbox unread counts for the other accounts' switcher badges.
 			// Cached server-side (30s) so navigations stay cheap.
@@ -122,6 +129,10 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 
 		return {
 			mailboxes,
+			// How long until the first message the Inbox is holding shows
+			// anyway (ms from now), so the page refreshes for it even when Jev
+			// never answers and nothing else changes; null when none is held.
+			inboxHoldEndsIn: inboxHoldEndsAt === null ? null : Math.max(0, inboxHoldEndsAt - Date.now()),
 			accountId: locals.auth.accountId,
 			userEmail,
 			accounts,

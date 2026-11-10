@@ -46,7 +46,7 @@ import { setRules } from '$lib/server/db/queries/rules';
 import { recordSenderMoves, setPin } from '$lib/server/db/queries/jev-learning';
 import type { AuthState, MethodCall } from '$lib/jmap/types';
 import type { Rule } from '$lib/types/rules';
-import { forgetRateLimits, sortNewMail } from './worker';
+import { forgetRateLimits, sortNewMail, sortNewMailSafe } from './worker';
 import { jevHandlesRules } from './rules';
 
 const ACCT = 'acct-1';
@@ -809,5 +809,125 @@ describe('sortNewMail', () => {
 			await sortNewMail(ACCT, ME, auth, at(10));
 			expect(getDecision(ACCT, 'wronglyJunked')).toBeNull();
 		});
+	});
+});
+
+describe('the Inbox’s hold on new mail', () => {
+	// Thirty seconds before the pass: still young enough for the Inbox to hold.
+	const JUST_NOW = 9.5;
+	const SORTED = '$jev_sorted';
+
+	it('marks new mail done whatever Jev made of it, so the Inbox shows it in its tab at once', async () => {
+		fake.add('news', JUST_NOW, { 'header:list-unsubscribe': ' <x>', subject: 'Issue 212' });
+		fake.add('person', JUST_NOW, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+		// You put this in a tab before Jev got to it: Jev isn't even asked.
+		fake.add('yours', JUST_NOW, { keywords: { $cat_updates: true } });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('pinned', JUST_NOW, { from: [{ name: 'LinkedIn', email: 'jobs@linkedin.com' }] });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('news')!.keywords).toEqual({ $cat_newsletters: true, [SORTED]: true });
+		// Staying in Important is an outcome too: the hold lets it go now.
+		expect(fake.emails.get('person')!.keywords).toEqual({ [SORTED]: true });
+		expect(fake.emails.get('yours')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		expect(fake.emails.get('pinned')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+	});
+
+	it('leaves mail unmarked while Jev hasn’t answered, so the hold’s own timeout lets it through', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 500 })));
+		fake.add('news', JUST_NOW, { 'header:list-unsubscribe': ' <x>' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('news')!.keywords).toEqual({});
+		expect(getDecision(ACCT, 'news')?.status).toBe('pending');
+	});
+
+	it('spends no write on mail too old to be held', async () => {
+		fake.add('person', 1, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+		const sets: MethodCall[] = [];
+		const realRequest = fake.request.bind(fake);
+		fake.request = async (calls: MethodCall[]) => {
+			sets.push(...calls.filter(([name]) => name === 'Email/set'));
+			return realRequest(calls);
+		};
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('person')!.keywords).toEqual({});
+		expect(sets).toEqual([]);
+	});
+
+	it('marks mail put in another tab while Jev was judging, without writing over your tab', async () => {
+		fake.add('news', JUST_NOW, { 'header:list-unsubscribe': ' <x>' });
+		const realRequest = fake.request.bind(fake);
+		let meanwhile = false;
+		fake.request = async (calls: MethodCall[]) => {
+			const result = await realRequest(calls);
+			if (!meanwhile && calls[0][0] === 'Email/get' && (calls[0][1].properties as string[]).includes('textBody')) {
+				meanwhile = true;
+				fake.emails.get('news')!.keywords = { $cat_promotions: true };
+			}
+			return result;
+		};
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('news')!.keywords).toEqual({ $cat_promotions: true, [SORTED]: true });
+		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'done', applied: null });
+	});
+
+	it('marks mail brought back from Junk, but not mail it sends there', async () => {
+		updateJevSettings(ACCT, { spamMode: 'active' });
+		fake.add('toFriend', -100, { mailboxIds: { sent: true }, to: [{ name: null, email: 'friend@pal.example' }] });
+		fake.add('spammy', JUST_NOW, { 'header:x-spam-status:asText': 'Yes, score=8.1', subject: 'Cheap watches' });
+		fake.add('wronglyJunked', JUST_NOW, {
+			mailboxIds: { junk: true },
+			subject: 'Your receipt',
+			'header:authentication-results:asText:all': ['mx.example.test; spf=pass; dkim=pass; dmarc=pass']
+		});
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true });
+		expect(fake.emails.get('spammy')!.keywords).toEqual({});
+		expect(fake.emails.get('wronglyJunked')!.mailboxIds).toEqual({ inbox: true });
+		expect(fake.emails.get('wronglyJunked')!.keywords).toEqual({ [SORTED]: true });
+	});
+
+	it('writes no mark while the Inbox has no tabs, as nothing is held then', async () => {
+		updateJevSettings(ACCT, { inboxTabs: false, spamMode: 'watch' });
+		fake.add('person', JUST_NOW, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(getDecision(ACCT, 'person')?.status).toBe('done');
+		expect(fake.emails.get('person')!.keywords).toEqual({});
+	});
+
+	it('runs a pass asked for while one is running once it ends, so new mail isn’t left to the next minute', async () => {
+		fake.add('first', JUST_NOW, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
+		const realRequest = fake.request.bind(fake);
+		let second: Promise<void> | null = null;
+		fake.request = async (calls: MethodCall[]) => {
+			// Mail lands, and its push asks for a pass, while the first pass is judging.
+			if (!second && calls[0][0] === 'Email/get' && (calls[0][1].properties as string[]).includes('textBody')) {
+				fake.add('second', JUST_NOW + 0.1, { from: [{ name: 'Ana', email: 'ana@example.com' }] });
+				second = sortNewMailSafe(ACCT, ME, auth);
+			}
+			return realRequest(calls);
+		};
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(at(10));
+
+		await sortNewMailSafe(ACCT, ME, auth);
+		await second;
+
+		expect(getDecision(ACCT, 'first')?.status).toBe('done');
+		expect(getDecision(ACCT, 'second')?.status).toBe('done');
 	});
 });

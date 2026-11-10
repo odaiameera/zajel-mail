@@ -9,7 +9,7 @@
 	import ToastContainer from '$lib/components/ToastContainer.svelte';
 	import StepUpDialog from '$lib/components/StepUpDialog.svelte';
 	import SearchInput from '$lib/components/SearchInput.svelte';
-	import { goto, afterNavigate, onNavigate } from '$app/navigation';
+	import { goto, afterNavigate, invalidateAll, onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { PHONE_QUERY, sidebarIsDrawer } from '$lib/stores/viewport';
 	import { composer, setMode } from '$lib/stores/compose';
@@ -334,6 +334,18 @@
 		} else {
 			calendarNotify.stop();
 		}
+	});
+
+	// New mail the Inbox is holding for Jev (see inbox-hold) normally shows
+	// when Jev marks it, which the mail server's push brings here. If Jev
+	// never answers, nothing changes on the server when the hold runs out,
+	// so the page refreshes itself then, and the message (with its unread
+	// count and alert below) appears in Important.
+	$effect(() => {
+		const endsIn = data.inboxHoldEndsIn;
+		if (endsIn === null || endsIn === undefined) return;
+		const timer = setTimeout(() => void invalidateAll(), endsIn + 1000);
+		return () => clearTimeout(timer);
 	});
 
 	// Watch the inbox unread count for new mail. Kept as a plain `let`

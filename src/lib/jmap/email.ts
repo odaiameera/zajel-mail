@@ -77,12 +77,15 @@ export async function queryAndFetchEmails(
 
 /**
  * Unread count for each Inbox tab, in one request: four `limit: 0` queries
- * the server answers with a total and no ids.
+ * the server answers with a total and no ids. `extra`, when given, is ANDed
+ * into each: the Inbox's hold on new mail Jev hasn't sorted yet, so a tab's
+ * count rises when its message appears and not before.
  */
 export async function countUnreadByCategory(
 	client: JMAPClient,
 	accountId: string,
-	inboxId: string
+	inboxId: string,
+	extra: Record<string, unknown> | null = null
 ): Promise<Record<InboxCategory, number>> {
 	const response = await client.request(
 		INBOX_CATEGORIES.map(({ key }): MethodCall => [
@@ -94,7 +97,8 @@ export async function countUnreadByCategory(
 					conditions: [
 						{ inMailbox: inboxId },
 						{ notKeyword: '$seen' },
-						categoryCondition(key)
+						categoryCondition(key),
+						...(extra ? [extra] : [])
 					]
 				},
 				calculateTotal: true,

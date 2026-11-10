@@ -1,7 +1,7 @@
 import { JMAPAuthError } from '$lib/jmap/client';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
-import type { AuthState, Email } from '$lib/jmap/types';
+import type { AuthState, Email, MethodCall } from '$lib/jmap/types';
 import {
 	authStateForAccount,
 	listAccounts,
@@ -11,6 +11,8 @@ import {
 import { getPrefs } from '../db/queries/app-prefs';
 import { usersWithPushSubscriptions } from '../db/queries/push';
 import { upcomingReminders } from '../calendar/service';
+import { inboxHoldOn } from '../jev/hold';
+import { heldCondition, splitHeld } from '$lib/inbox-hold';
 import { sendPushToUser, type PushPayload } from './send';
 
 /**
@@ -22,7 +24,10 @@ import { sendPushToUser, type PushPayload } from './send';
  * Mail: one JMAP event stream per watched account (the same push channel
  * the open app listens to through /api/events). Each Email state change
  * runs one query for unread mail in the folders picked under Settings →
- * Notifications that arrived since the last check.
+ * Notifications that arrived since the last check. While Jev sorts the
+ * Inbox tabs, a new Inbox message is announced once Jev has sorted it (or
+ * the Inbox's two-minute hold runs out, see `$lib/inbox-hold`), as that is
+ * when it appears; mail Jev moves to Junk meanwhile is never announced.
  *
  * Reminders: every few minutes the next window's VALARMs are fetched and
  * each gets a timer, the way the open app schedules them locally.
@@ -78,10 +83,13 @@ function senderOf(email: Email): string {
 	return from?.name?.trim() || from?.email || 'New message';
 }
 
-class MailWatcher {
+/** Exported for tests; the worker below runs one per watched account. */
+export class MailWatcher {
 	private stopped = false;
 	private abort: AbortController | null = null;
 	private debounce: ReturnType<typeof setTimeout> | null = null;
+	/** A check for when the Inbox lets go of mail Jev hasn't sorted. */
+	private release: { at: number; timer: ReturnType<typeof setTimeout> } | null = null;
 	private checking = false;
 	private again = false;
 	/** receivedAt cut-off for the next query; set from the server's own newest mail. */
@@ -99,6 +107,23 @@ class MailWatcher {
 		this.stopped = true;
 		this.abort?.abort();
 		if (this.debounce) clearTimeout(this.debounce);
+		if (this.release) clearTimeout(this.release.timer);
+	}
+
+	/**
+	 * Check again when held mail is let through: if Jev never sorts it,
+	 * nothing changes on the server then, so no event would bring it.
+	 */
+	private scheduleRelease(at: number | null): void {
+		if (at === null || this.stopped) return;
+		if (this.release && this.release.at <= at) return;
+		if (this.release) clearTimeout(this.release.timer);
+		const timer = setTimeout(() => {
+			this.release = null;
+			this.scheduleCheck();
+		}, Math.max(0, at - Date.now()) + 1000);
+		timer.unref?.();
+		this.release = { at, timer };
 	}
 
 	private auth(): AuthState | null {
@@ -243,6 +268,8 @@ class MailWatcher {
 			this.since = new Date().toISOString();
 			return;
 		}
+		const now = Date.now();
+		const holdOn = inboxHoldOn(this.target.account.id);
 		const res = await createClient(auth).request([
 			[
 				'Email/query',
@@ -262,11 +289,72 @@ class MailWatcher {
 					properties: ['id', 'receivedAt']
 				},
 				'g'
-			]
+			],
+			// Mail the Inbox is still holding for Jev hasn't been announced
+			// yet: it is, once it appears.
+			...(holdOn && this.mailboxes?.inbox
+				? ([
+						[
+							'Email/query',
+							{
+								accountId: auth.accountId,
+								filter: { operator: 'AND', conditions: [{ inMailbox: this.mailboxes.inbox }, heldCondition(now)] },
+								sort: [{ property: 'receivedAt', isAscending: true }],
+								limit: 1
+							},
+							'hq'
+						],
+						[
+							'Email/get',
+							{
+								accountId: auth.accountId,
+								'#ids': { resultOf: 'hq', name: 'Email/query', path: '/ids' },
+								properties: ['id', 'receivedAt']
+							},
+							'hg'
+						]
+					] satisfies MethodCall[])
+				: [])
 		]);
 		const newest = (res.methodResponses[1][1] as { list?: Email[] }).list?.[0];
-		if (newest) this.remember([newest.id]);
+		const oldestHeld = (res.methodResponses[3]?.[1] as { list?: Email[] } | undefined)?.list?.[0];
 		this.since = newest?.receivedAt ?? new Date().toISOString();
+		if (oldestHeld && oldestHeld.receivedAt < this.since) {
+			// Start from the oldest held message instead; what is newer and
+			// already showing was announced before this watcher started.
+			await this.rememberShownSince(auth, folders, oldestHeld.receivedAt, now);
+			this.since = oldestHeld.receivedAt;
+		} else if (newest && newest.id !== oldestHeld?.id) {
+			this.remember([newest.id]);
+		}
+	}
+
+	/** Remember, as already announced, mail from `since` on that the Inbox isn't holding. */
+	private async rememberShownSince(auth: AuthState, folders: string[], since: string, now: number): Promise<void> {
+		const after = new Date(Date.parse(since) - 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+		const res = await createClient(auth).request([
+			[
+				'Email/query',
+				{
+					accountId: auth.accountId,
+					filter: this.filterFor(folders, [{ after }]),
+					sort: [{ property: 'receivedAt', isAscending: false }],
+					limit: NOTIFIED_MEMORY
+				},
+				'q'
+			],
+			[
+				'Email/get',
+				{
+					accountId: auth.accountId,
+					'#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
+					properties: ['id', 'receivedAt', 'keywords', 'mailboxIds']
+				},
+				'g'
+			]
+		]);
+		const list = (res.methodResponses[1][1] as { list?: Email[] }).list ?? [];
+		this.remember(splitHeld(list, this.mailboxes?.inbox ?? null, now).ready.map((e) => e.id));
 	}
 
 	private remember(ids: string[]): void {
@@ -300,17 +388,24 @@ class MailWatcher {
 				{
 					accountId: auth.accountId,
 					'#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
-					properties: ['id', 'from', 'subject', 'receivedAt']
+					properties: ['id', 'from', 'subject', 'receivedAt', 'keywords', 'mailboxIds']
 				},
 				'g'
 			]
 		]);
 		const list = (res.methodResponses[1][1] as { list?: Email[] }).list ?? [];
-		const fresh = list.filter((e) => !this.notified.includes(e.id));
+		const unseen = list.filter((e) => !this.notified.includes(e.id));
+		// Inbox mail Jev hasn't sorted waits for it, and the next check reads
+		// from the oldest of it again, so a later message can't skip past it.
+		const { ready: fresh, held, releaseAt } = inboxHoldOn(this.target.account.id)
+			? splitHeld(unseen, this.mailboxes?.inbox ?? null, Date.now())
+			: { ready: unseen, held: [], releaseAt: null };
+		this.scheduleRelease(releaseAt);
+		const oldestHeld = held.reduce<string | null>((min, e) => (min === null || e.receivedAt < min ? e.receivedAt : min), null);
 		if (fresh.length === 0) return;
 		this.remember(fresh.map((e) => e.id));
 		const newest = fresh.reduce((max, e) => (e.receivedAt > max ? e.receivedAt : max), this.since);
-		this.since = newest;
+		this.since = oldestHeld && oldestHeld < newest ? oldestHeld : newest;
 
 		const { account, userId, multiAccount } = this.target;
 		// With several linked accounts the app opens on whichever was used

@@ -48,13 +48,16 @@ import { decideSpam, SPAM_QUESTIONS, spamAnswers, type SpamAction } from './spam
 import { isUrgent, URGENT_QUESTION, URGENT_QUESTION_ID } from '$lib/server/telegram/urgent';
 import { flushAlerts, queueUrgent, urgentAlertsWanted } from '$lib/server/telegram/notifier';
 import { errorFields, logEvent } from '$lib/server/log';
+import { isHeld, JEV_SORTED_KEYWORD } from '$lib/inbox-hold';
 import type { JevQuestion, JevResponse } from './types';
+import { startJevWatchers } from './stream';
 
 /**
- * Jev triaging new Inbox mail a beat after it lands — the same shape as the
- * rules scheduler: every minute, plus a catch-up for whoever is using the
- * app. Only accounts that let Jev read their mail are touched, and only mail
- * that arrived after that was switched on.
+ * Jev triaging new Inbox mail a beat after it lands: within seconds, from
+ * each account's push stream (see stream.ts), and as a fallback the same
+ * shape as the rules scheduler — every minute, plus a catch-up for whoever
+ * is using the app. Only accounts that let Jev read their mail are touched,
+ * and only mail that arrived after that was switched on.
  *
  * Each email gets one Jev call holding everything there is to ask: the
  * Inbox tab (when tabs are on) and every rule condition written for Jev
@@ -629,6 +632,17 @@ async function judgeAndApply(
 		}
 	}
 
+	// Done with: the Inbox can stop holding it (see inbox-hold), whatever
+	// came of it, Important included. Only mail young enough to be held
+	// needs the mark, which spares a write on everything else.
+	if (wantsTabs) {
+		for (const [id, plan] of plans) {
+			const email = fetched.get(id)!;
+			const staysInInbox = plan.outcome.addMailboxIds.has(b.inboxId) || (!inJunk(email) && !toJunk.has(id));
+			if (staysInInbox && isHeld(email, now)) plan.outcome.keywords[JEV_SORTED_KEYWORD] = true;
+		}
+	}
+
 	// Apply. The snapshot judged above is minutes old by now: read where each
 	// message is, and which tab it has, again, and write only what differs
 	// from that, so nothing done to it meanwhile is written over. One that
@@ -644,6 +658,10 @@ async function judgeAndApply(
 		const home = inJunk(snapshot) && b.junkId ? b.junkId : b.inboxId;
 		if (!current?.mailboxIds[home] || categoryOf(current.keywords) !== categoryOf(snapshot.keywords)) {
 			moved.add(id);
+			// Still done with, so a message put in a tab meanwhile isn't held.
+			if (plan.outcome.keywords[JEV_SORTED_KEYWORD] && current?.mailboxIds[b.inboxId]) {
+				updates.push([id, { [`keywords/${JEV_SORTED_KEYWORD}`]: true }]);
+			}
 			continue;
 		}
 		const update = outcomeToUpdate({ ...snapshot, ...current }, plan.outcome);
@@ -710,6 +728,9 @@ async function judgeAndApply(
 
 let started = false;
 const inFlight = new Set<string>();
+// A pass asked for while one was running: run once more when it ends, as
+// the running one may have read the Inbox before the mail that asked.
+const rerun = new Map<string, { accountEmail: string; auth: AuthState }>();
 
 // Accounts TypeSafe rate-limited on a recent pass, and until when they wait.
 const rateLimitedUntil = new Map<string, number>();
@@ -736,25 +757,39 @@ function noteRecovered(kind: string, accountRowId: string, event: string): void 
 	if (lastFailure.delete(`${kind}:${accountRowId}`)) logEvent('info', 'jev', event, { account: accountRowId });
 }
 
-/** One account's pass, never throwing; overlapping passes are skipped. */
+/**
+ * One account's pass, never throwing. Passes don't overlap: one asked for
+ * while another runs is run once, straight after it.
+ */
 export async function sortNewMailSafe(
 	accountRowId: string,
 	accountEmail: string,
 	auth: AuthState
 ): Promise<void> {
-	if (inFlight.has(accountRowId)) return;
+	if (inFlight.has(accountRowId)) {
+		rerun.set(accountRowId, { accountEmail, auth });
+		return;
+	}
 	inFlight.add(accountRowId);
 	try {
-		await sortNewMail(accountRowId, accountEmail, auth);
-		noteRecovered('pass', accountRowId, 'pass_recovered');
-	} catch (err) {
-		// A 401 is logged, and sent to Telegram, by markNeedsReauth.
-		if (err instanceof JMAPAuthError) markNeedsReauth(accountRowId);
-		else {
-			console.error('[jev] sorting failed', accountEmail, err);
-			noteFailure('pass', accountRowId, 'pass_failed', errorFields(err));
+		for (let next: { accountEmail: string; auth: AuthState } | undefined = { accountEmail, auth }; next; ) {
+			rerun.delete(accountRowId);
+			try {
+				await sortNewMail(accountRowId, next.accountEmail, next.auth);
+				noteRecovered('pass', accountRowId, 'pass_recovered');
+			} catch (err) {
+				// A 401 is logged, and sent to Telegram, by markNeedsReauth.
+				if (err instanceof JMAPAuthError) {
+					markNeedsReauth(accountRowId);
+					break;
+				}
+				console.error('[jev] sorting failed', next.accountEmail, err);
+				noteFailure('pass', accountRowId, 'pass_failed', errorFields(err));
+			}
+			next = rerun.get(accountRowId);
 		}
 	} finally {
+		rerun.delete(accountRowId);
 		inFlight.delete(accountRowId);
 	}
 }
@@ -762,6 +797,8 @@ export async function sortNewMailSafe(
 export function startJevScheduler(): void {
 	if (started) return;
 	started = true;
+	// Judge new mail as it lands, not only on the minute.
+	startJevWatchers(sortNewMailSafe);
 	cron.schedule('* * * * *', async () => {
 		for (const { account, auth } of listSchedulableAuths()) {
 			await sortNewMailSafe(account.id, account.email, auth);
