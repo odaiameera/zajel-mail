@@ -624,15 +624,17 @@ describe('runAgentTurn', () => {
 				id, receivedAt: '2026-11-02T08:00:00Z', from: [{ email: 'news@shop.example' }], subject: id, mailboxIds: { IN: true }, keywords, preview: ''
 			});
 			mocks.searchEmails.mockResolvedValueOnce({
-				emails: [inbox('sorted', { $cat_updates: true }), inbox('unsure', {}), inbox('movedBack', {})],
-				total: 3
+				emails: [inbox('sorted', { $cat_updates: true }), inbox('unsure', {}), inbox('movedBack', {}), inbox('pinned', { $cat_newsletters: true })],
+				total: 4
 			});
 			mocks.decisions = {
 				sorted: { status: 'done', category: 'updates', confidence: 0.85, applied: 'updates' },
 				// Below the confidence a tab needs: Jev left it in Important.
 				unsure: { status: 'done', category: 'updates', confidence: 0.3, applied: null },
 				// Jev sorted it; you moved it back to Important.
-				movedBack: { status: 'done', category: 'updates', confidence: 0.9, applied: 'updates', correctedTo: 'important' }
+				movedBack: { status: 'done', category: 'updates', confidence: 0.9, applied: 'updates', correctedTo: 'important' },
+				// Your pin chose the tab; Jev wasn't asked.
+				pinned: { status: 'done', category: 'newsletters', confidence: null, applied: 'newsletters', pinnedBy: '@shop.example', model: null }
 			};
 			mocks.create
 				.mockResolvedValueOnce(reply([toolUse('t1', 'inbox_triage', { limit: 10, unread_only: false })]))
@@ -643,6 +645,7 @@ describe('runAgentTurn', () => {
 			// A pick that never reached the message, or no longer stands, isn't Jev's verdict.
 			expect(lines.find((l) => l.includes('id=unsure'))).toMatch(/tab=important \|.* \| jev=none/);
 			expect(lines.find((l) => l.includes('id=movedBack'))).toMatch(/tab=important \|.* \| jev=none/);
+			expect(lines.find((l) => l.includes('id=pinned'))).toMatch(/tab=newsletters \|.* \| jev=pinned:newsletters/);
 		});
 	});
 
