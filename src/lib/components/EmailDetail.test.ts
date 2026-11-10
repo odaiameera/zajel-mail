@@ -199,16 +199,17 @@ describe('EmailDetail Inbox tab', () => {
 			{ id: 'inbox', name: 'Inbox', role: 'inbox', parentId: null },
 			{ id: 'archive', name: 'Archive', role: 'archive', parentId: null }
 		];
-		data.inboxTabs = true;
+		data.inboxTabsOn = true;
 	});
 	afterEach(() => {
 		data.mailboxes = [];
-		delete data.inboxTabs;
+		delete data.inboxTabsOn;
 	});
 
 	it('shows the tab a sorted message is in beside its labels', () => {
 		render(EmailDetail, { email: inTab({ $cat_updates: true }) });
-		expect(screen.getByTitle('In the Updates tab').textContent).toContain('Updates');
+		// Said in words, not only in a tooltip, so it can't pass for a label.
+		expect(screen.getByTitle('In the Updates tab').textContent?.replace(/\s+/g, ' ').trim()).toBe('In the Updates tab');
 	});
 
 	it('shows none for Important, outside the Inbox, or while tabs are off', () => {
@@ -220,7 +221,7 @@ describe('EmailDetail Inbox tab', () => {
 		expect(screen.queryByTitle(/ tab$/)).toBeNull();
 		cleanup();
 
-		data.inboxTabs = false;
+		data.inboxTabsOn = false;
 		render(EmailDetail, { email: inTab({ $cat_promotions: true }) });
 		expect(screen.queryByTitle(/ tab$/)).toBeNull();
 	});
