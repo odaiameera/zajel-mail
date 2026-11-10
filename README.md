@@ -315,7 +315,7 @@ Zajel Mail holds the keys to your mail, so security comes first.
 - **Active sessions** are listed in Settings → Security, where you can sign them out.
 - **Brute-force protection.** After 10 failed sign-ins in 15 minutes, sign-in locks for 15 minutes.
 - **Session cookies** are `HttpOnly`, `Secure` and `SameSite=Strict`. SvelteKit's origin check (`ORIGIN`) guards every form post, and the server refuses any write whose `Origin` is another site.
-- **Links from other sites open signed in.** A browser leaves a Strict cookie off a page load another site started, so such a page load gets one reload from this site, which carries it. That applies to the app's pages only; the API keeps Strict.
+- **Links from other sites open signed in.** A browser leaves a Strict cookie off a page load another site started, so such a page load gets one reload from this site, which carries it. That applies to the app's pages only, which also send `Cross-Origin-Opener-Policy: same-origin` so the other site keeps no handle on the window; the API keeps Strict.
 
 **Your mail credentials**
 - **Linked mail-account passwords are encrypted at rest** with **AES-256-GCM**, using a key derived (HKDF) from `WEBMAIL_SECRET`.

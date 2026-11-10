@@ -114,14 +114,29 @@ describe('a navigation another site started', () => {
 	const CROSS_SITE = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', 'sec-fetch-site': 'cross-site' };
 	const tag = (target: string) => createHash('sha256').update(target).digest('base64url').slice(0, 22);
 
+	/**
+	 * The route SvelteKit would match, roughly: it decodes the path first, and
+	 * static files, the build's assets and `//...` match none.
+	 */
+	function routeFor(pathname: string): string | null {
+		const decoded = decodeURIComponent(pathname);
+		if (pathname.startsWith('//') || decoded.startsWith('/_app/')) return null;
+		if (decoded.slice(decoded.lastIndexOf('/') + 1).includes('.')) return null;
+		return decoded;
+	}
+
 	/** A GET with these cookies (the session cookie only if given). */
 	async function navigate(path: string, headers: Record<string, string>, jar: Record<string, string> = {}) {
 		mocks.session = jar.session ? { id: jar.session, user_id: 'u1' } : null;
 		const url = new URL(`http://localhost${path}`);
 		const cookies = { get: (name: string) => jar[name], set: vi.fn(), delete: vi.fn() };
-		const event = { url, request: new Request(url, { headers }), cookies, locals: {} } as unknown as Parameters<
-			typeof handle
-		>[0]['event'];
+		const event = {
+			url,
+			route: { id: routeFor(url.pathname) },
+			request: new Request(url, { headers }),
+			cookies,
+			locals: {}
+		} as unknown as Parameters<typeof handle>[0]['event'];
 		const resolve = vi.fn(async () => new Response('page'));
 		const res = await handle({ event, resolve });
 		return { res, resolved: resolve.mock.calls.length > 0, cookies };
@@ -147,9 +162,9 @@ describe('a navigation another site started', () => {
 	});
 
 	it('names an address on this site only, with nothing from the request able to leave the attribute', async () => {
-		const evil = await (await navigate('//evil.example/x', CROSS_SITE)).res.text();
-		expect(evil).toContain('content="0;url=/evil.example/x"');
-		expect(evil).not.toContain('//evil');
+		// `//...` would name another host as a reload target; it matches no
+		// route, so it is served as it is.
+		expect((await navigate('//evil.example/x', CROSS_SITE)).resolved).toBe(true);
 
 		const html = await (await navigate('/login?next="><script>alert(1)</script>\'', CROSS_SITE)).res.text();
 		expect(html).not.toContain('<script');
@@ -184,6 +199,11 @@ describe('a navigation another site started', () => {
 			'/api/auth/sessions',
 			'/api/avatar?email=a%40b.test',
 			'/api/image-proxy?url=http%3A%2F%2F127.0.0.1',
+			// Spellings SvelteKit still routes to the API, or that a reload
+			// with the slashes collapsed would.
+			'//api/auth/sessions',
+			'/%61pi/accounts',
+			'/api',
 			'/_app/immutable/entry/start.js',
 			'/manifest.webmanifest',
 			'/offline.html'
@@ -206,6 +226,23 @@ describe('a navigation another site started', () => {
 		expect((await navigate('/inbox', { ...CROSS_SITE, 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' })).resolved).toBe(true);
 	});
 
+	it("keeps another site's handle off the window of a page it opened", async () => {
+		mocks.session = { id: 's1', user_id: 'u1' };
+		const { event } = stubEvent('/inbox', { method: 'GET' });
+		const page = await handle({ event, resolve: async () => new Response('<p>', { headers: { 'content-type': 'text/html' } }) });
+		expect(page.headers.get('cross-origin-opener-policy')).toBe('same-origin');
+		const json = await handle({ event, resolve: async () => Response.json({}) });
+		expect(json.headers.get('cross-origin-opener-policy')).toBeNull();
+		// Headers passed through from a fetch() can't be changed; that's no error.
+		const passedThrough = new Response('<p>', { headers: { 'content-type': 'text/html' } });
+		Object.defineProperty(passedThrough.headers, 'set', {
+			value: () => {
+				throw new TypeError('immutable');
+			}
+		});
+		expect((await handle({ event, resolve: async () => passedThrough })).status).toBe(200);
+	});
+
 	it('comes after the first-run gate, which still sends everything to /setup', async () => {
 		// The gate remembers once it has seen the master user, so this needs a
 		// module that hasn't yet.
@@ -216,6 +253,7 @@ describe('a navigation another site started', () => {
 			const url = new URL(`http://localhost${path}`);
 			const event = {
 				url,
+				route: { id: path },
 				request: new Request(url, { headers: CROSS_SITE }),
 				cookies: { get: () => undefined, set: vi.fn(), delete: vi.fn() },
 				locals: {}

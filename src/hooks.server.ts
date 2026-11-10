@@ -111,20 +111,23 @@ function crossSiteNavigation(request: Request): boolean {
 }
 
 // The app's pages, as against the API, the build's assets and static files.
-// The API stays Strict; and the service worker caches some of it (avatars),
-// where a cached reload page would reload itself forever.
-function isAppPage(pathname: string): boolean {
-	if (pathname.startsWith('/api/') || pathname === '/api' || pathname.startsWith('/_app/')) return false;
-	return !pathname.slice(pathname.lastIndexOf('/') + 1).includes('.');
+// Decided on the route SvelteKit matched, not on the address as typed: it
+// decodes the path before matching, so `/%61pi/...` is the API too. An
+// address starting `//` matches no route and is served as it is (a reload to
+// it would name another host). The API stays Strict; and the service worker
+// caches some of it (avatars), where a cached reload page would reload itself
+// forever.
+function isAppPage(event: Parameters<Handle>[0]['event']): boolean {
+	const id = event.route.id;
+	return id !== null && id !== '/api' && !id.startsWith('/api/') && !event.url.pathname.startsWith('//');
 }
 
-// Where the reload goes: this address, path and query only. A leading `//`
-// would name another host, so it is cut to one slash (no route starts so).
-// The fragment never reaches the server, and leaving it out is what makes the
-// refresh a real load: to the same address with its #fragment, the browser
-// would only scroll.
+// Where the reload goes: this address, path and query only. The fragment
+// never reaches the server, and leaving it out is what makes the refresh a
+// real load: to the same address with its #fragment, the browser would only
+// scroll.
 function retryTarget(url: URL): string {
-	return url.pathname.replace(/^\/+/, '/') + url.search;
+	return url.pathname + url.search;
 }
 
 // The retry cookie names the address it was set for, so it only stops a
@@ -249,7 +252,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const tag = event.cookies.get(RETRY_COOKIE);
 	const reloaded = tag !== undefined && tag === retryTag(retryTarget(event.url));
 	if (reloaded) event.cookies.delete(RETRY_COOKIE, { path: '/' });
-	if (!sessionId && !reloaded && crossSiteNavigation(event.request) && isAppPage(pathname)) {
+	if (!sessionId && !reloaded && crossSiteNavigation(event.request) && isAppPage(event)) {
 		return sameSiteRetry(retryTarget(event.url));
 	}
 	if (sessionId) {
@@ -315,7 +318,18 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	if (!event.locals.user && tooLargeForSignedOut(event.request)) return PAYLOAD_TOO_LARGE();
-	return resolve(event);
+	const response = await resolve(event);
+	// A page another site opens now loads signed in (see sameSiteRetry), so it
+	// must not keep a handle on the window: through one it could count the
+	// open message's frames or navigate it under the reader's next click.
+	if (response.headers.get('content-type')?.startsWith('text/html')) {
+		try {
+			response.headers.set('cross-origin-opener-policy', 'same-origin');
+		} catch {
+			// A response passed through from a fetch() keeps immutable headers.
+		}
+	}
+	return response;
 };
 
 // SvelteKit's own handler only prints to the console; this keeps that and
