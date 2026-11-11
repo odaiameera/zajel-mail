@@ -4,6 +4,8 @@ Jev is TypeSafe's decision model. Zajel Mail uses it to sort the Inbox into tabs
 
 This page keeps what is not built yet, and the rules any new Jev work has to keep.
 
+A redesign of how rules, folders, labels and Jev fit together is planned in [organising-mail-plan.md](organising-mail-plan.md): Jev keeps the four tabs, and rules go back to exact matches that file into folders and labels.
+
 ---
 
 ## Still to build
