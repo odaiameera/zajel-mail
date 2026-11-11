@@ -96,7 +96,7 @@ Next migration number is 028. Old tables stay until the last stage, so an interr
   - Surviving actions: move, label, mark read, star (renamed from "mark important", which clashed with the Important tab), stop. "Delete" becomes a move to Trash.
   - A rule with several targets becomes adjacent rows, one per target.
   - **Rules with a Jev condition** are disabled and listed under "Needs your attention", never silently dropped.
-  - **Rules that only set a tab** become sender pins when they are a simple sender match; otherwise they are listed for attention.
+  - **Rules that only set a tab** become sender pins when they are a simple sender match, and stay listed as a note saying which pin they became until the owner dismisses it; otherwise they are listed for attention, with the reason and, where they name a sender, a one-click pin. No conversion is silent.
   - Deleting a folder or label deletes its rules (the confirmation says how many).
 - **`auto_reply_sent`** (with stage 4, numbered in order of shipping): account, sender address, day. One row per reply, so a sender gets at most one a day; pruned after a week.
 - **029 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).

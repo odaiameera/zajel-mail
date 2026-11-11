@@ -30,8 +30,10 @@ export interface JevSettings {
 	/**
 	 * ISO receivedAt new mail has been queued up to by the sorting pass.
 	 * Switching Jev off clears it, and switching it on sets it to that
-	 * moment, so Jev is never sent mail from before. With Jev off the pass
-	 * keeps one only while there are sender pins to apply (see the worker).
+	 * moment, so Jev is never sent mail from before. With Jev off (or not
+	 * configured) the pass keeps one only while there are sender pins to
+	 * apply, never further back than the Inbox's hold, and clears it when
+	 * there is nothing to sort (see the worker).
 	 */
 	sortCursor: string | null;
 	/** Jev as the spam layer; only acted on while `jevEnabled`. */

@@ -10,7 +10,8 @@
 		needsRewrite,
 		type LegacyRule,
 		type Rule,
-		type RuleAction
+		type RuleAction,
+		type TabNote
 	} from '$lib/types/rules';
 	import { INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
@@ -138,9 +139,36 @@
 		const r = localRules.find((x) => x.id === id);
 		if (!r) return;
 		if (!confirm(`Delete rule "${r.name}"? This cannot be undone.`)) return;
+		await removeRule(id);
+	}
+
+	/** Take a rule out of the list and save. Unasked for what is left of a rule that became a pin. */
+	async function removeRule(id: string) {
 		localRules = localRules.filter((x) => x.id !== id);
 		if (selectedId === id) selectedId = localRules[0]?.id ?? null;
 		await persistAll();
+	}
+
+	/**
+	 * Make the pin a flagged tab rule names (its sender, to the rule's tab),
+	 * and remove the rule: the pin does what it did. The pin is saved first,
+	 * so a failure leaves the rule where it is.
+	 */
+	async function pinInstead(id: string) {
+		const pin = localRules.find((r) => r.id === id)?.tabNote?.pin;
+		if (!pin) return;
+		deployError = '';
+		const res = await fetch('/api/jev/pins', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ sender: pin.sender, category: pin.category })
+		}).catch(() => null);
+		if (!res?.ok) {
+			const body = await res?.json().catch(() => null);
+			deployError = body?.error ?? 'Couldn’t save the pin. Try again.';
+			return;
+		}
+		await removeRule(id);
 	}
 
 	// --- Rules that need attention ---
@@ -183,6 +211,48 @@
 		return label ? `the ${label} tab` : null;
 	}
 
+	const tabName = (key: string | undefined) => INBOX_CATEGORIES.find((c) => c.key === key)?.label ?? 'an Inbox tab';
+
+	/** The mail a sender pin acts on, in words: a pin matches a whole address or a whole domain, nothing looser. */
+	function pinReach(sender: string): string {
+		return sender.startsWith('@')
+			? `any address at ${sender.slice(1)} (the part after the @ has to be exactly that, so not its subdomains)`
+			: `exactly the address ${sender}`;
+	}
+
+	/** Where a pin and the rule it stands in for differ, for the rule's owner to check. */
+	function pinDifference(note: TabNote): string {
+		const what = note.pin?.sender.startsWith('@') ? 'that domain' : 'that address';
+		if (note.op === 'contains') {
+			return `The rule matched any sender containing “${note.said}”; the pin matches only ${what}. Mail it doesn’t match stays in Important.`;
+		}
+		if (note.op === 'ends_with') {
+			return `The rule matched any sender whose address ended with “${note.said}”. The pin matches only ${what}.`;
+		}
+		if (note.op === 'is') {
+			return 'The rule matched this address only when the sender showed no name. The pin matches it with or without one.';
+		}
+		return '';
+	}
+
+	/** Why the upgrade left a rule that only set a tab switched off instead of making it a pin. */
+	function whyNotPinned(note: TabNote | undefined): string {
+		switch (note?.why) {
+			case 'switched_off':
+				return `This rule put mail in ${tabName(note.tab)}. It was switched off, so no pin was made.`;
+			case 'after_stop':
+				return 'An earlier rule stops processing, so this rule may never have run. No pin was made.';
+			case 'pinned_elsewhere':
+				return note.kept
+					? `${note.kept.sender} is already pinned to ${tabName(note.kept.category)}, which was kept. This rule’s tab (${tabName(note.tab)}) is no longer applied.`
+					: 'Rules can’t set a tab any more. This one can’t be turned into a sender pin automatically.';
+			case 'no_account':
+				return 'No mail account was found for these rules.';
+			default:
+				return 'Rules can’t set a tab any more. This one can’t be turned into a sender pin automatically.';
+		}
+	}
+
 	/** Enough of a rule to run: something to match on, and something to do. */
 	function canRunAsExact(rule: Rule): boolean {
 		return rule.conditions.some(isUsableCondition) && rule.actions.length > 0;
@@ -195,7 +265,7 @@
 	async function saveAsExactRule(id: string) {
 		const idx = localRules.findIndex((r) => r.id === id);
 		if (idx < 0) return;
-		const { attention: _attention, legacy: _legacy, ...rule } = $state.snapshot(localRules[idx]) as Rule;
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as Rule;
 		localRules[idx] = { ...rule, enabled: true };
 		await saveOnly();
 	}
@@ -204,7 +274,7 @@
 	async function dismissAttention(id: string) {
 		const idx = localRules.findIndex((r) => r.id === id);
 		if (idx < 0) return;
-		const { attention: _attention, legacy: _legacy, ...rule } = $state.snapshot(localRules[idx]) as Rule;
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as Rule;
 		localRules[idx] = rule;
 		await persistAll();
 	}
@@ -262,7 +332,7 @@
 		if (selectedIdx < 0) return;
 		// A rule being rewritten is counted as it reads now, without its flag:
 		// the server counts nothing for a rule that is still switched off.
-		const { attention: _attention, legacy: _legacy, ...rule } = $state.snapshot(localRules[selectedIdx]) as Rule;
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[selectedIdx]) as Rule;
 		previewLoading = true;
 		previewError = '';
 		try {
@@ -547,13 +617,11 @@
 					{:else if rule.attention === 'tab_rule'}
 						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
 							<p class="text-sm font-medium text-text">This rule is switched off</p>
+							<p class="text-xs text-text">{whyNotPinned(rule.tabNote)}</p>
 							<p class="text-xs text-text-secondary">
 								All it did was move mail to {legacyTab(rule) ?? 'an Inbox tab'}, and rules no longer
-								put mail in a tab: sender pins do that now, whether Jev is on or off. It wasn’t turned
-								into a pin for you: a pin is one sender or one <span class="font-mono">@domain</span>,
-								and only a rule that was switched on and matched just that becomes one.
-								{rule.legacy?.enabled === false ? 'This one was switched off.' : ''}
-								It matched mail like this:
+								put mail in a tab: sender pins do that now, whether Jev is on or off. It matched mail
+								like this:
 							</p>
 							{#if rule.legacy}
 								<ul class="text-xs text-text list-disc pl-5 flex flex-col gap-0.5">
@@ -567,16 +635,63 @@
 									</p>
 								{/if}
 							{/if}
+							{#if rule.tabNote?.pin}
+								{@const pin = rule.tabNote.pin}
+								<p class="text-xs text-text-secondary">
+									A pin can do this instead. It would act on new mail from {pinReach(pin.sender)}.
+									{pinDifference(rule.tabNote)}
+								</p>
+								<button onclick={() => pinInstead(rule.id)} disabled={saving} class="btn btn-primary self-start">
+									{rule.tabNote.kept?.sender === pin.sender
+										? `Pin to ${tabName(pin.category)} instead`
+										: `Pin ${pin.sender} to ${tabName(pin.category)}`}
+								</button>
+								<p class="text-xs text-text-secondary">
+									That makes the pin and removes this rule. Or give the rule something else to do
+									below, a label or a folder, and press <span class="text-text">Save as exact rule</span>.
+								</p>
+							{:else}
+								<p class="text-xs text-text-secondary">
+									To keep those senders in their tab, pin them under
+									<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a> and delete
+									this rule. Or give it something else to do below, a label or a folder, and press
+									<span class="text-text">Save as exact rule</span>.
+								</p>
+							{/if}
+						</div>
+					{:else if rule.attention === 'tab_pinned'}
+						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
+							{#if rule.tabNote?.pin}
+								{@const pin = rule.tabNote.pin}
+								<p class="text-sm font-medium text-text">
+									{rule.tabNote.existing
+										? `${pin.sender} was already pinned to ${tabName(pin.category)}.`
+										: `This rule became a sender pin: ${pin.sender} → ${tabName(pin.category)}.`}
+								</p>
+								<p class="text-xs text-text-secondary">
+									{rule.tabNote.existing
+										? 'All it did was move mail to that tab, and you had already pinned this sender there, so your pin does its work now.'
+										: 'All it did was move mail to that tab. Rules no longer do that; a pin does, whether Jev is on or off.'}
+									The pin acts on new mail from {pinReach(pin.sender)}.
+									{pinDifference(rule.tabNote)}
+								</p>
+							{:else}
+								<p class="text-sm font-medium text-text">This rule became a sender pin</p>
+							{/if}
 							<p class="text-xs text-text-secondary">
-								To keep those senders in their tab, pin them under
-								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a> and delete
-								this rule. Or give it something else to do below, a label or a folder, and press
-								<span class="text-text">Save as exact rule</span>.
+								You can change or remove the pin under
+								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a>. The rule is
+								switched off and has nothing left to do; it stays here only until you have seen this.
 							</p>
+							<button onclick={() => removeRule(rule.id)} disabled={saving} class="btn btn-secondary self-start">
+								Got it
+							</button>
 						</div>
 					{:else if rule.attention === 'tab_removed'}
 						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
-							<p class="text-sm font-medium text-text">This rule no longer sets a tab</p>
+							<p class="text-sm font-medium text-text">
+								This rule no longer puts mail in {legacyTab(rule) ?? 'an Inbox tab'}.
+							</p>
 							<p class="text-xs text-text-secondary">
 								It used to move mail to {legacyTab(rule) ?? 'an Inbox tab'} as well. Rules no longer
 								put mail in a tab, so that part was removed; the rest of the rule runs as before. To
@@ -589,6 +704,8 @@
 						</div>
 					{/if}
 
+					<!-- What is left of a rule that became a pin is only its note: there is nothing to edit. -->
+					{#if rule.attention !== 'tab_pinned'}
 					<!-- Name -->
 					<div class="flex flex-col gap-1.5">
 						<label for="rule-name" class="text-xs font-semibold text-text-tertiary uppercase tracking-wide">Name</label>
@@ -779,6 +896,7 @@
 							</button>
 						{/if}
 					</div>
+					{/if}
 				</div>
 			{/if}
 		</section>

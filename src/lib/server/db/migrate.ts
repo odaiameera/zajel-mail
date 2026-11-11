@@ -26,10 +26,17 @@ const MIGRATION_SOURCES = import.meta.glob('./migrations/*.sql', {
  */
 const DATA_STEPS: { name: string; needs: string[]; run: () => void }[] = [
 	// Rules are exact-match only: rules with a condition Jev judged are
-	// switched off and flagged for their owner (see rules-upgrade.ts).
-	{ name: 'data/rules_exact_only', needs: ['004_rules.sql'], run: retireStoredJevConditions },
+	// switched off and flagged for their owner (see rules-upgrade.ts). The
+	// accounts that had one also get the mail the Jev worker still had
+	// queued put back in front of the rules scheduler.
+	{
+		name: 'data/rules_exact_only',
+		needs: ['004_rules.sql', '006_auth.sql', '015_jev_backfill.sql'],
+		run: () => retireStoredJevConditions()
+	},
 	// Tabs belong to Jev and to sender pins: no rule sets one any more. A
-	// rule that only did that for one sender becomes that account's pin.
+	// rule that only did that for one sender becomes that account's pin,
+	// and stays in the list as a note saying so.
 	{
 		name: 'data/rule_tabs_to_pins',
 		needs: ['004_rules.sql', '006_auth.sql', '014_jev_learning.sql'],

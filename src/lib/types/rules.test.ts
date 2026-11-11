@@ -83,7 +83,8 @@ describe('isRunnable', () => {
 	});
 
 	it('is never a rule waiting to be rewritten, even switched back on', () => {
-		for (const attention of ['jev_condition', 'tab_rule'] as const) {
+		// Rewritten, or (for one that became a pin) dismissed, but never run.
+		for (const attention of ['jev_condition', 'tab_rule', 'tab_pinned'] as const) {
 			const flagged = rule({ attention, enabled: true });
 			expect(needsRewrite(flagged)).toBe(true);
 			expect(isRunnable(flagged)).toBe(false);
@@ -101,5 +102,8 @@ describe('isRunnable', () => {
 		expect(isRunnable(rule({ conditions: [from(), jev] }))).toBe(false);
 		// Rules are stored as a browser sent them: not even a list of conditions is a given.
 		expect(isRunnable(rule({ conditions: undefined as unknown as RuleCondition[] }))).toBe(false);
+		// Nor that an entry is a rule.
+		expect(isRunnable(null as unknown as Rule)).toBe(false);
+		expect(isRunnable('rule' as unknown as Rule)).toBe(false);
 	});
 });

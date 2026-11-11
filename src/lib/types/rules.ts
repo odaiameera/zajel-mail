@@ -1,3 +1,5 @@
+import type { InboxCategory } from './categories';
+
 /**
  * A rule matches mail exactly: by sender, recipient, subject, body, size or
  * attachment, and files it: into a folder, under a label, read, flagged or
@@ -49,13 +51,60 @@ export interface RuleAction {
  *   rewritten it with exact conditions: without the Jev condition it would
  *   match more mail than it was written for.
  * - `tab_rule`: all it did was put mail in an Inbox tab, which rules no
- *   longer do, and it couldn't be turned into a sender pin. It is switched
- *   off too: with its only action gone there is nothing for it to do.
+ *   longer do, and the upgrade didn't turn it into a sender pin (`TabNote`
+ *   says why). It is switched off too: with its only action gone there is
+ *   nothing for it to do.
+ * - `tab_pinned`: all it did was put one sender's mail in a tab, and it
+ *   became that sender's pin. What is left is a switched-off stub that says
+ *   so, with exactly what the pin matches, until the owner dismisses it.
  * - `tab_removed`: it put mail in a tab beside something else (a label,
  *   say). The tab part is gone and the rest still runs; this is only a note
  *   for the owner, who can dismiss it.
+ *
+ * No conversion is silent: every rule an upgrade changes in a way its owner
+ * could notice carries one of these until they have seen it.
  */
-export type RuleAttention = 'jev_condition' | 'tab_rule' | 'tab_removed';
+export type RuleAttention = 'jev_condition' | 'tab_rule' | 'tab_pinned' | 'tab_removed';
+
+/** A sender pin: an address or `@domain`, and the tab its new mail goes to. */
+export interface RulePin {
+	sender: string;
+	category: InboxCategory;
+}
+
+/**
+ * Why the upgrade left a rule that only set a tab as a rule (`tab_rule`)
+ * instead of making it a pin:
+ *
+ * - `not_one_sender`: its conditions don't single out one sender.
+ * - `switched_off`: it was off, and a pin would start what it wasn't doing.
+ * - `no_account`: no mail account was found to keep the pin for.
+ * - `after_stop`: an earlier rule stops processing, so this one didn't see
+ *   all of the sender's mail, and a pin would.
+ * - `pinned_elsewhere`: a pin of yours already decides this sender's mail
+ *   differently (`kept`). The rule used to win; the pin was kept.
+ */
+export type TabRuleReason = 'not_one_sender' | 'switched_off' | 'no_account' | 'after_stop' | 'pinned_elsewhere';
+
+/** What became of a rule that only put mail in a tab, for its owner to read. */
+export interface TabNote {
+	/** The tab the rule put mail in. */
+	tab: InboxCategory;
+	/**
+	 * `tab_pinned`: the pin the rule became. `tab_rule`: the pin one click
+	 * would make of it, when its one condition names a sender.
+	 */
+	pin?: RulePin;
+	/** How the rule matched that sender, and the text it matched on, as written. */
+	op?: string;
+	said?: string;
+	/** `tab_pinned`: the sender was pinned to this tab already, by you. */
+	existing?: boolean;
+	/** `tab_rule`: why it wasn't made a pin. */
+	why?: TabRuleReason;
+	/** `pinned_elsewhere`: your pin that was kept. */
+	kept?: RulePin;
+}
 
 /**
  * A rule as it was before an upgrade changed it, kept so its owner can read
@@ -81,6 +130,8 @@ export interface Rule {
 	attention?: RuleAttention;
 	/** The rule as it was before that upgrade. */
 	legacy?: LegacyRule;
+	/** For `tab_rule` and `tab_pinned`: what became of the rule's tab. */
+	tabNote?: TabNote;
 }
 
 /**
@@ -114,9 +165,13 @@ export function hasOnlyKnownConditions(rule: Pick<Rule, 'conditions'>): boolean 
 	return Array.isArray(rule.conditions) && rule.conditions.every((c) => CONDITION_FIELDS.has(c?.field));
 }
 
-/** Whether the rule is switched off until its owner rewrites it. */
+/**
+ * Whether an upgrade switched the rule off for good: it never runs again as
+ * it is. Its owner rewrites it, deletes it or, for a rule that became a
+ * pin, just dismisses what is left of it.
+ */
 export function needsRewrite(rule: Pick<Rule, 'attention'>): boolean {
-	return rule.attention === 'jev_condition' || rule.attention === 'tab_rule';
+	return rule.attention === 'jev_condition' || rule.attention === 'tab_rule' || rule.attention === 'tab_pinned';
 }
 
 /**
@@ -125,7 +180,9 @@ export function needsRewrite(rule: Pick<Rule, 'attention'>): boolean {
  * so), and made only of conditions this version can match.
  */
 export function isRunnable(rule: Rule): boolean {
-	return rule.enabled && !needsRewrite(rule) && hasOnlyKnownConditions(rule);
+	// Stored rules are whatever a browser sent: an entry may not be a rule at all.
+	if (!rule || typeof rule !== 'object') return false;
+	return !!rule.enabled && !needsRewrite(rule) && hasOnlyKnownConditions(rule);
 }
 
 /** Whether one condition holds, given whether it matched: NOT flips it. */

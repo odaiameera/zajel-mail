@@ -138,6 +138,10 @@ function prepareStmts() {
 			`UPDATE jev_decisions SET status = 'skipped', decided_at = ?
 			 WHERE account_id = ? AND status = 'pending'`
 		),
+		dropNewArrivals: db.prepare(
+			`UPDATE jev_decisions SET status = 'skipped', decided_at = ?
+			 WHERE account_id = ? AND status = 'pending' AND backfill = 0`
+		),
 		done: db.prepare(
 			`UPDATE jev_decisions SET
 			   status = 'done', last_error = NULL, attempts = attempts + 1,
@@ -294,6 +298,15 @@ export function cancelBackfill(accountId: string, now = Date.now()): void {
  */
 export function dropQueue(accountId: string, now = Date.now()): void {
 	stmts().dropQueue.run(now, accountId);
+}
+
+/**
+ * Withdraw the new arrivals still queued, leaving a queued sort of existing
+ * mail where it is. For a pass that starts over from the present: what was
+ * queued before it is older than it may reach back to.
+ */
+export function dropNewArrivals(accountId: string, now = Date.now()): void {
+	stmts().dropNewArrivals.run(now, accountId);
 }
 
 export function recordDecision(

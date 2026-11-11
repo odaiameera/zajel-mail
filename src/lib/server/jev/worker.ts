@@ -17,6 +17,7 @@ import { listPins, pinFor, senderHistory, type SenderPin } from '$lib/server/db/
 import {
 	addUsage,
 	correctedEmailIds,
+	dropNewArrivals,
 	enqueueEmails,
 	listPendingEmailIds,
 	markSkipped,
@@ -408,23 +409,36 @@ export async function sortNewMail(
 	// mail in its tab whether Jev is on, off or can't be reached. (The Inbox
 	// holds new mail for exactly these passes: see inboxHoldOn.)
 	const pins = wantsTabs ? listPins(accountRowId) : [];
-	if (!jevOn && pins.length === 0) return;
+	if (!jevOn && pins.length === 0) {
+		// Nothing sorts this account's new mail. Forget how far sorting had
+		// got: whatever starts it again (a pin, the tabs, Jev, a key on the
+		// server) starts from that moment, never from where this left off.
+		if (settings.sortCursor) updateJevSettings(accountRowId, { sortCursor: null }, now);
+		return;
+	}
 	if (jevOn && opts.fromStream && typesafeFailing.has(accountRowId)) return;
 	// A scheduled pass tries TypeSafe again; if it still fails, it says so.
 	if (!opts.fromStream) typesafeFailing.delete(accountRowId);
 
 	let cursor = settings.sortCursor;
-	if (!cursor) {
-		if (jevOn) {
-			// Jev reads only what arrives from here on.
-			updateJevSettings(accountRowId, { sortCursor: now.toISOString() }, now);
-			return;
+	if (!jevOn) {
+		// Pins only. Such a pass never reaches further back than the mail the
+		// Inbox may still be holding for it (see inbox-hold), whatever cursor
+		// is stored: one left from when Jev last read this account, or from
+		// before the pins or the tabs were last switched off, can be days old.
+		// Following it would leave the message that just arrived waiting behind
+		// a backlog, past its hold, and move old mail around unasked. What was
+		// queued back then is withdrawn for the same reason.
+		const earliest = now.getTime() - INBOX_HOLD_MS;
+		if (!cursor || !(Date.parse(cursor) >= earliest)) {
+			cursor = new Date(earliest).toISOString();
+			updateJevSettings(accountRowId, { sortCursor: cursor }, now);
+			dropNewArrivals(accountRowId, now.getTime());
 		}
-		// Pins only, so nothing leaves the server: start with the mail the
-		// Inbox may be holding back for this very pass (see inbox-hold), and
-		// none of it waits out the hold for nothing.
-		cursor = new Date(now.getTime() - INBOX_HOLD_MS).toISOString();
-		updateJevSettings(accountRowId, { sortCursor: cursor }, now);
+	} else if (!cursor) {
+		// Jev reads only what arrives from here on.
+		updateJevSettings(accountRowId, { sortCursor: now.toISOString() }, now);
+		return;
 	}
 
 	// With Jev off there is nothing to ask, about spam or anything else.

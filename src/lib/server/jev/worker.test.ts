@@ -128,7 +128,7 @@ class FakeJmap {
 				case 'Email/query': {
 					const f = args.filter as { operator?: string; conditions?: Record<string, string>[] } & Record<string, string>;
 					const conds = f.operator ? f.conditions! : [f];
-					const ids = [...this.emails.values()]
+					const matching = [...this.emails.values()]
 						.filter((e) =>
 							conds.every(
 								(c) =>
@@ -139,7 +139,9 @@ class FakeJmap {
 						)
 						.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt))
 						.map((e) => e.id);
-					result = { ids, total: ids.length };
+					// A page at a time, as a server answers; the total is of every match.
+					const ids = matching.slice(0, typeof args.limit === 'number' ? args.limit : undefined);
+					result = { ids, total: matching.length };
 					break;
 				}
 				case 'Email/get': {
@@ -1403,5 +1405,206 @@ describe('sender pins, with Jev off or out of reach', () => {
 
 		expect(fake.emails.get('spoof')!.mailboxIds).toEqual({ junk: true });
 		expect(fake.emails.get('spoof')!.keywords).toEqual({});
+	});
+
+	it('checks no spam with Jev off, whatever spam mode is stored for the account', async () => {
+		const fetchMock = noTypeSafe();
+		// Active spam checks, left on when Jev was switched off.
+		updateJevSettings(ACCT, { spamMode: 'active' });
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('spammy', JUST_NOW, { 'header:x-spam-status:asText': 'Yes, score=8.1', subject: 'Cheap watches' });
+		fake.add('junked', JUST_NOW, { mailboxIds: { junk: true }, subject: 'Your receipt' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		// Nothing is judged, so nothing goes to Junk, and Junk isn't even read.
+		expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ inbox: true });
+		expect(fake.emails.get('spammy')!.keywords).toEqual({ [SORTED]: true });
+		expect(getDecision(ACCT, 'spammy')).toMatchObject({ status: 'skipped', spam: null, spamAction: null });
+		expect(getDecision(ACCT, 'junked')).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('carries on when the rules run before it fails, as long as the mail server still knows us', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		setRules(ME, [
+			{
+				id: 'r',
+				name: 'r',
+				enabled: true,
+				logic: 'allof',
+				conditions: [{ id: 'c', field: 'subject', op: 'contains', value: 'x', negate: false }],
+				actions: [{ type: 'markRead' }],
+				createdAt: 0
+			}
+		]);
+		setRulesCursor(ME, at(0).toISOString());
+		fake.add('jobs', JUST_NOW, linkedIn);
+		// The rules scheduler's first request fails; the pass's own go through.
+		const realRequest = fake.request.bind(fake);
+		let failed = false;
+		fake.request = async (calls: MethodCall[]) => {
+			if (!failed) {
+				failed = true;
+				throw new Error('mail server hiccup');
+			}
+			return realRequest(calls);
+		};
+		const complaints = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(failed).toBe(true);
+		expect(complaints).toHaveBeenCalledWith('[jev] rules before sorting failed', ME, expect.any(Error));
+		expect(fake.emails.get('jobs')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+	});
+
+	it('stops, for the caller to flag the account, when the rules run finds its sign-in refused', async () => {
+		const { JMAPAuthError } = await import('$lib/jmap/client');
+		setRules(ME, [
+			{
+				id: 'r',
+				name: 'r',
+				enabled: true,
+				logic: 'allof',
+				conditions: [{ id: 'c', field: 'subject', op: 'contains', value: 'x', negate: false }],
+				actions: [{ type: 'markRead' }],
+				createdAt: 0
+			}
+		]);
+		setRulesCursor(ME, at(0).toISOString());
+		// Only the rules run is refused: were that swallowed, the pass would go on and finish.
+		const realRequest = fake.request.bind(fake);
+		let refused = false;
+		fake.request = async (calls: MethodCall[]) => {
+			if (!refused) {
+				refused = true;
+				throw new JMAPAuthError('Authentication failed');
+			}
+			return realRequest(calls);
+		};
+		await expect(sortNewMail(ACCT, ME, auth, at(10))).rejects.toBeInstanceOf(JMAPAuthError);
+	});
+
+	it('sorts on when a stored rule is not a rule at all', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		// Rules are stored as a browser sent them.
+		setRules(ME, [null, 'text', { id: 'half' }] as unknown as Rule[]);
+		fake.add('jobs', JUST_NOW, linkedIn);
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('jobs')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+	});
+});
+
+describe('a pins-only pass never reaches back past the Inbox’s hold', () => {
+	const SORTED = '$jev_sorted';
+	const DAY = 24 * 60;
+	const linkedIn = { from: [{ name: 'LinkedIn', email: 'jobs@linkedin.com' }], subject: 'New jobs for you' };
+	/** Three days of Inbox mail that nothing sorted, a third of it from the sender pinned later. */
+	const threeQuietDays = () => {
+		for (let i = 0; i < 300; i++) fake.add(`old${i}`, 20 + i * 14, i % 3 === 0 ? linkedIn : {});
+	};
+	const oldMailInATab = () => [...fake.emails.values()].filter((e) => e.id.startsWith('old') && Object.keys(e.keywords).length > 0).map((e) => e.id);
+	const queued = () =>
+		(getDb().prepare(`SELECT COUNT(*) AS n FROM jev_decisions WHERE status = 'pending'`).get() as { n: number }).n;
+	/** The message that has just arrived is in its tab and showing, on the first pass, and nothing older was touched. */
+	const expectOnlyTheNewMessageSorted = () => {
+		expect(fake.emails.get('fresh')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		expect(getDecision(ACCT, 'fresh')).toMatchObject({ status: 'done', pinnedBy: '@linkedin.com' });
+		expect(oldMailInATab()).toEqual([]);
+		expect(queued()).toBe(0);
+	};
+
+	it('after the last pin was removed and another added days later', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@other.example', 'updates');
+		await sortNewMail(ACCT, ME, auth, at(10));
+		expect(getJevSettings(ACCT).sortCursor).not.toBeNull();
+
+		// No pins: nothing sorts this Inbox, and the pass forgets where it was.
+		getDb().prepare('DELETE FROM jev_sender_pins').run();
+		threeQuietDays();
+		await sortNewMail(ACCT, ME, auth, at(2 * DAY));
+		expect(getJevSettings(ACCT).sortCursor).toBeNull();
+
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('fresh', 3 * DAY + 0.5, linkedIn);
+		await sortNewMail(ACCT, ME, auth, at(3 * DAY + 1));
+
+		expectOnlyTheNewMessageSorted();
+	});
+
+	it('after the tabs were switched off and on again days later', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		updateJevSettings(ACCT, { inboxTabs: false });
+		threeQuietDays();
+		await sortNewMail(ACCT, ME, auth, at(2 * DAY));
+		expect(getJevSettings(ACCT).sortCursor).toBeNull();
+
+		updateJevSettings(ACCT, { inboxTabs: true });
+		fake.add('fresh', 3 * DAY + 0.5, linkedIn);
+		await sortNewMail(ACCT, ME, auth, at(3 * DAY + 1));
+
+		expectOnlyTheNewMessageSorted();
+	});
+
+	it('when Jev is enabled for the account but not configured on the server, whatever cursor it left', async () => {
+		// jev_enabled = 1 and a cursor from when it was switched on (T0), but no
+		// key and no mock: jevMode() is 'off'. The upgrade's own tab-rule
+		// conversion can give such an account its first pin.
+		delete env.JEV_MOCK;
+		threeQuietDays();
+		// And something the Jev worker had queued back then, never judged.
+		enqueueEmails(ACCT, ['old0'], at(21).getTime());
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('fresh', 3 * DAY + 0.5, linkedIn);
+
+		await sortNewMail(ACCT, ME, auth, at(3 * DAY + 1));
+
+		expectOnlyTheNewMessageSorted();
+		// What was queued long ago is withdrawn, not sorted three days late.
+		expect(getDecision(ACCT, 'old0')?.status).toBe('skipped');
+		// Two minutes back at the furthest, then on as any pass.
+		expect(Date.parse(getJevSettings(ACCT).sortCursor!)).toBeGreaterThanOrEqual(at(3 * DAY - 1).getTime());
+
+		// When the key comes back, Jev starts from then, as when it is switched
+		// on: the days in between are not sent to it.
+		env.JEV_MOCK = '1';
+		fake.add('later', 3 * DAY + 1.5, { 'header:list-unsubscribe': ' <x>' });
+		await sortNewMail(ACCT, ME, auth, at(3 * DAY + 2));
+		expect(getDecision(ACCT, 'later')).toMatchObject({ status: 'done', applied: 'newsletters' });
+		expect(oldMailInATab()).toEqual([]);
+	});
+
+	it('forgets the cursor of an account Jev can’t be asked about and that has no pins, so Jev starts from now when it can', async () => {
+		delete env.JEV_MOCK;
+		threeQuietDays();
+		await sortNewMail(ACCT, ME, auth, at(3 * DAY));
+		expect(getJevSettings(ACCT).sortCursor).toBeNull();
+
+		env.JEV_MOCK = '1';
+		await sortNewMail(ACCT, ME, auth, at(3 * DAY + 1)); // starts the clock
+		fake.add('later', 3 * DAY + 1.5, { 'header:list-unsubscribe': ' <x>' });
+		await sortNewMail(ACCT, ME, auth, at(3 * DAY + 2));
+		expect(getDecision(ACCT, 'later')?.status).toBe('done');
+		expect(oldMailInATab()).toEqual([]);
+		expect(getDecision(ACCT, 'old299')).toBeNull();
+	});
+
+	it('leaves a queued sort of existing mail queued, for when Jev is back', async () => {
+		delete env.JEV_MOCK;
+		fake.add('existing', -60, { 'header:list-unsubscribe': ' <x>' });
+		enqueueEmails(ACCT, ['existing'], T0.getTime(), true);
+		setPin(ACCT, '@linkedin.com', 'updates');
+		await sortNewMail(ACCT, ME, auth, at(3 * DAY));
+		expect(getDecision(ACCT, 'existing')?.status).toBe('pending');
 	});
 });
