@@ -136,7 +136,7 @@ const mailboxes = [
 	{ id: 'LBLS', name: 'Labels', role: null, parentId: null },
 	{ id: 'WORK', name: 'Work', role: null, parentId: 'LBLS' }
 ] as unknown as Mailbox[];
-const labels = [{ id: 'WORK', name: 'Work', color: '#000', createdAt: 0 }];
+const labels = [{ id: 'WORK', name: 'Work', color: '#000' }];
 
 /** A small rules API: the page's requests, answered from `server.rules`, and recorded. */
 const server = {

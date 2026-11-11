@@ -57,6 +57,7 @@ vi.mock('$lib/server/jev/hold', async (orig) => ({
 import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import { forgetInboxHolds } from '$lib/server/jev/hold';
+import { setMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
 import { INBOX_HOLD_MS } from '$lib/inbox-hold';
 import { load } from './+layout.server';
 
@@ -126,5 +127,24 @@ describe('the layout and the Inbox hold', () => {
 		state.mailboxGate = null;
 		expect(unread(await loading)).toEqual({ in1: 5, mb1: 3 });
 		expect(holdQueries()).toHaveLength(1);
+	});
+});
+
+describe('the layout and folder and label metadata', () => {
+	it('provides the active account’s colours and icons, by mailbox id', async () => {
+		state.hold = false;
+		getDb().exec(`
+			INSERT OR IGNORE INTO mail_accounts (id, user_id, email, server_url, jmap_account_id, secret_enc)
+				VALUES ('acct-hold', 'hold-u1', 'hold-u1@example.test', 'https://mail.example', 'j1', 'x');
+			INSERT INTO mail_accounts (id, user_id, email, server_url, jmap_account_id, secret_enc)
+				VALUES ('acct-other', 'hold-u1', 'other@example.test', 'https://mail.example', 'j2', 'x');
+		`);
+		setMailboxMeta('acct-hold', 'mb1', { color: '#ff0000', icon: 'star' });
+		setMailboxMeta('acct-other', 'mb9', { color: '#00ff00' });
+
+		const data = (await run()) as unknown as { mailboxMeta: Record<string, { color: string; icon: string; iconNode: unknown }> };
+		expect(Object.keys(data.mailboxMeta)).toEqual(['mb1']);
+		expect(data.mailboxMeta.mb1).toMatchObject({ color: '#ff0000', icon: 'star', displayName: null });
+		expect(Array.isArray(data.mailboxMeta.mb1.iconNode)).toBe(true);
 	});
 });

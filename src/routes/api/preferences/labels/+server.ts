@@ -8,58 +8,47 @@ import {
 	deleteLabelMailbox,
 	renameLabelMailbox
 } from '$lib/jmap/labels';
-import {
-	getLabelMeta,
-	listLabels,
-	removeLabelMeta,
-	updateLabelMeta
-} from '$lib/server/labels';
-import { userEmailFromAuth } from '$lib/server/user';
-import { DEFAULT_LABEL_COLOR } from '$lib/types/labels';
+import { listLabels } from '$lib/server/labels';
+import { deleteMailboxMeta, setMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
 
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.auth) return json({ error: 'Not authenticated' }, { status: 401 });
-	const email = userEmailFromAuth(locals.auth);
 	const client = createClient(locals.auth);
-	const labels = await listLabels(client, locals.auth.accountId, email);
+	const labels = await listLabels(client, locals.auth.accountId, locals.activeAccountId);
 	return json({ labels });
 };
 
+/**
+ * Create, rename and delete labels. Colour and icon are set through
+ * PATCH /api/mailboxes/[id]/meta; a colour sent with a create is kept for
+ * clients that still send one.
+ */
 type CreateBody = { action: 'create'; name: string; color?: string };
 type RenameBody = { action: 'rename'; id: string; name: string };
 type DeleteBody = { action: 'delete'; id: string };
-type UpdateColorBody = { action: 'updateColor'; id: string; color: string };
-type Body = CreateBody | RenameBody | DeleteBody | UpdateColorBody;
+type Body = CreateBody | RenameBody | DeleteBody;
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.auth) return json({ error: 'Not authenticated' }, { status: 401 });
 
-	const email = userEmailFromAuth(locals.auth);
 	const body = (await request.json()) as Body;
 	const client = createClient(locals.auth);
 	const accountId = locals.auth.accountId;
+	const accountRowId = locals.activeAccountId;
 
 	switch (body.action) {
 		case 'create': {
 			const name = body.name?.trim();
 			if (!name) return json({ error: 'Name required' }, { status: 400 });
-			const color = body.color || DEFAULT_LABEL_COLOR;
-
-			// If a mailbox with the same slug already exists, reuse its id so
-			// the create is effectively idempotent from the user's POV.
-			const existing = getLabelMeta(email);
 			const result = await createLabelMailbox(client, accountId, name);
 			if ('error' in result) {
 				return json({ success: false, error: result.error }, { status: 400 });
 			}
+			if (accountRowId && typeof body.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.color)) {
+				setMailboxMeta(accountRowId, result.id, { color: body.color });
+			}
 
-			updateLabelMeta(email, result.id, {
-				color,
-				displayName: name,
-				createdAt: existing[result.id]?.createdAt ?? Date.now()
-			});
-
-			const labels = await listLabels(client, accountId, email);
+			const labels = await listLabels(client, accountId, accountRowId);
 			return json({ success: true, id: result.id, labels });
 		}
 
@@ -71,9 +60,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			if (!result.success) {
 				return json({ success: false, error: result.error }, { status: 400 });
 			}
-			updateLabelMeta(email, body.id, { displayName: name });
+			// The label's own name is its name now; an older display name would hide it.
+			if (accountRowId) setMailboxMeta(accountRowId, body.id, { displayName: null });
 
-			const labels = await listLabels(client, accountId, email);
+			const labels = await listLabels(client, accountId, accountRowId);
 			return json({ success: true, labels });
 		}
 
@@ -87,23 +77,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			if (!result.success) {
 				return json({ success: false, error: result.error }, { status: 400 });
 			}
-			removeLabelMeta(email, body.id);
+			if (accountRowId) deleteMailboxMeta(accountRowId, body.id);
 			// The rules that only filed into it go with it; one that also marks
 			// read, stars or stops later rules stays, filing nowhere.
 			const { deleted: rulesDeleted, kept: rulesKept } = locals.activeAccountId
 				? deleteRulesForMailbox(locals.activeAccountId, body.id)
 				: { deleted: 0, kept: 0 };
 
-			const labels = await listLabels(client, accountId, email);
+			const labels = await listLabels(client, accountId, accountRowId);
 			return json({ success: true, labels, rulesDeleted, rulesKept });
-		}
-
-		case 'updateColor': {
-			if (!body.id || !body.color) return json({ error: 'id and color required' }, { status: 400 });
-			updateLabelMeta(email, body.id, { color: body.color });
-
-			const labels = await listLabels(client, accountId, email);
-			return json({ success: true, labels });
 		}
 
 		default:

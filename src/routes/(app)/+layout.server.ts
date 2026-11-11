@@ -8,6 +8,7 @@ import { JMAPAuthError } from '$lib/jmap/client';
 import { listAccounts, markNeedsReauth } from '$lib/server/auth/accounts';
 import { unreadBadges } from '$lib/server/auth/unread-badges';
 import { listLabels, migrateKeywordLabelsIfNeeded } from '$lib/server/labels';
+import { mailboxMetaFor } from '$lib/server/mailbox-meta';
 import { syncIdentities } from '$lib/server/db/queries/identities';
 import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
@@ -53,7 +54,7 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 		// One-shot migration from keyword-based labels to JMAP mailbox labels.
 		// Idempotent; the marker cookie makes subsequent loads a no-op. Must
 		// finish before the label fetch below sees the mailboxes it creates.
-		await migrateKeywordLabelsIfNeeded(client, locals.auth.accountId, userEmail, cookies);
+		await migrateKeywordLabelsIfNeeded(client, locals.auth.accountId, locals.activeAccountId, cookies);
 
 		// Refresh the identity cache on every navigation. Single Identity/get
 		// round-trip; the user picked "always refresh" over stale-while-
@@ -93,7 +94,7 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 		const holdInbox = holdAccount ? knownInboxId(holdAccount) : undefined;
 		const [mailboxList, labels, accountUnread, earlyHold] = await Promise.all([
 			getMailboxes(client, accountId),
-			listLabels(client, locals.auth.accountId, userEmail),
+			listLabels(client, locals.auth.accountId, locals.activeAccountId),
 			// Inbox unread counts for the other accounts' switcher badges.
 			// Cached server-side (30s) so navigations stay cheap.
 			unreadBadges(listAccounts(locals.user.id), locals.activeAccountId),
@@ -156,6 +157,9 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			density,
 			displayName,
 			labels,
+			// Colour, icon and display name of the active account's folders and
+			// labels, by mailbox id (mailbox_meta).
+			mailboxMeta: mailboxMetaFor(locals.activeAccountId),
 			folderExpanded,
 			notificationsEnabled,
 			notifyCalendarEvents,

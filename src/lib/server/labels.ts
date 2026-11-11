@@ -8,21 +8,8 @@ import {
 } from '$lib/types/labels';
 import { createLabelMailbox, listLabelMailboxes } from '$lib/jmap/labels';
 import { autoLabelColor } from '$lib/constants/colors';
-import {
-	deleteLabelMeta,
-	getLabelsForUser,
-	upsertLabelMeta
-} from '$lib/server/db/queries/label-meta';
+import { listMailboxMeta, setMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
 import { lucideNode } from '$lib/server/lucide-icons';
-
-export interface LabelMetaEntry {
-	color: string;
-	displayName: string;
-	icon: string | null;
-	createdAt: number;
-}
-
-export type LabelMeta = Record<string, LabelMetaEntry>;
 
 const COOKIE_BASE = {
 	path: '/',
@@ -32,49 +19,19 @@ const COOKIE_BASE = {
 	secure: true
 } as const;
 
-/** Hydrate the per-user label metadata into the `Record<id, …>` shape the
- *  rest of the server code expects. The data lives in SQLite; this reshapes it. */
-export function getLabelMeta(userEmail: string): LabelMeta {
-	const rows = getLabelsForUser(userEmail);
-	const out: LabelMeta = {};
-	for (const r of rows) {
-		out[r.mailboxId] = {
-			color: r.color,
-			displayName: r.displayName,
-			icon: r.icon,
-			createdAt: r.createdAt
-		};
-	}
-	return out;
-}
-
-export function updateLabelMeta(
-	userEmail: string,
-	id: string,
-	patch: Partial<LabelMetaEntry>
-): void {
-	upsertLabelMeta(userEmail, id, {
-		displayName: patch.displayName ?? null,
-		color: patch.color ?? null
-	});
-}
-
-export function removeLabelMeta(userEmail: string, id: string): void {
-	deleteLabelMeta(userEmail, id);
-}
-
 /**
  * Merge the JMAP label mailboxes (children of the "Labels" container) with
- * SQLite-backed color meta into the Label[] shape the UI consumes. The
- * mailbox's own name is the display name; SQLite only overrides color (and an
- * optional renamed display name kept in sync on rename).
+ * their colour and icon (mailbox_meta, kept by the mail account `accountRowId`)
+ * into the Label[] shape the UI consumes. The mailbox's own name is the
+ * label's name unless a display name was stored.
  */
 export async function listLabels(
 	client: JMAPClient,
 	accountId: string,
-	userEmail: string
+	accountRowId: string | null | undefined
 ): Promise<Label[]> {
-	const [mailboxes, meta] = [await listLabelMailboxes(client, accountId), getLabelMeta(userEmail)];
+	const mailboxes = await listLabelMailboxes(client, accountId);
+	const meta = Object.fromEntries((accountRowId ? listMailboxMeta(accountRowId) : []).map((row) => [row.mailboxId, row]));
 
 	// Labels nobody has coloured used to all fall back to the same blue, so
 	// colour told them apart not at all. Give each its own from the automatic
@@ -99,8 +56,7 @@ export async function listLabels(
 			name: entry?.displayName?.trim() || m.name,
 			color: entry?.color ?? autoColors.get(m.id) ?? DEFAULT_LABEL_COLOR,
 			icon: entry?.icon || null,
-			iconNode: lucideNode(entry?.icon),
-			createdAt: entry?.createdAt ?? 0
+			iconNode: lucideNode(entry?.icon)
 		};
 	});
 
@@ -119,7 +75,7 @@ export async function listLabels(
 export async function migrateKeywordLabelsIfNeeded(
 	client: JMAPClient,
 	accountId: string,
-	userEmail: string,
+	accountRowId: string | null | undefined,
 	cookies: Cookies
 ): Promise<void> {
 	if (cookies.get(LABEL_MIGRATION_COOKIE) === 'v1') return;
@@ -160,10 +116,7 @@ export async function migrateKeywordLabelsIfNeeded(
 				newId = result.id;
 			}
 
-			upsertLabelMeta(userEmail, newId, {
-				displayName: old.name,
-				color: old.color || DEFAULT_LABEL_COLOR
-			});
+			if (accountRowId) setMailboxMeta(accountRowId, newId, { color: old.color || DEFAULT_LABEL_COLOR });
 
 			await migrateEmailsForLabel(client, accountId, old.id, newId);
 		} catch {

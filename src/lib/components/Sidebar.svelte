@@ -15,7 +15,7 @@
 	import type { Mailbox } from '$lib/jmap/types';
 	import type { Label } from '$lib/types/labels';
 	import { findLabelsParentId } from '$lib/types/labels';
-	import { userState } from '$lib/stores/userState';
+	import type { MailboxMetaMap } from '$lib/types/mailbox-meta';
 	import { showToast } from '$lib/stores/toast';
 	import { isScheduledMailbox } from '$lib/jmap/mailbox';
 	import { canMoveInto, mailboxKind } from '$lib/mailboxes';
@@ -45,6 +45,10 @@
 	} = $props();
 
 	const expanded = createFolderExpandedStore(folderExpanded);
+
+	// Colour and icon of each folder, from the page (mailbox_meta). Labels
+	// carry theirs in `labels`, built from the same table.
+	const meta = $derived((page.data.mailboxMeta ?? {}) as MailboxMetaMap);
 
 	// --- Mailbox classification ---
 
@@ -368,7 +372,7 @@
 							? 'bg-accent/10 text-accent-fg'
 							: 'text-text/85 hover:bg-surface-hover hover:text-text'}"
 				>
-					<span class="w-4 h-4 shrink-0 flex items-center justify-center text-current"><MailboxIcon node={$userState.folders.get(mailbox.id)?.iconNode} fallback="folder" color={$userState.folders.get(mailbox.id)?.color ?? null} /></span>
+					<span class="w-4 h-4 shrink-0 flex items-center justify-center text-current"><MailboxIcon node={meta[mailbox.id]?.iconNode} fallback="folder" color={meta[mailbox.id]?.color ?? null} /></span>
 				</a>
 			{/each}
 
@@ -545,10 +549,8 @@
 			>
 				<span
 					class="w-4 h-4 shrink-0 flex items-center justify-center"
-					style={$userState.folders.get(node.id)?.color
-						? `color: ${$userState.folders.get(node.id)?.color}`
-						: ''}
-				><MailboxIcon node={$userState.folders.get(node.id)?.iconNode} fallback="folder" /></span>
+					style={meta[node.id]?.color ? `color: ${meta[node.id]?.color}` : ''}
+				><MailboxIcon node={meta[node.id]?.iconNode} fallback="folder" /></span>
 				<span class="flex-1 truncate">{node.name}</span>
 				{#if node.unreadEmails > 0}
 					<span class="text-xs font-medium bg-accent/15 text-accent-fg px-1.5 py-0.5 rounded-full shrink-0">{node.unreadEmails}</span>

@@ -5,7 +5,8 @@
 	import type { Mailbox } from '$lib/jmap/types';
 	import type { Label } from '$lib/types/labels';
 	import type { IconNode } from '$lib/types/icon-node';
-	import { userState } from '$lib/stores/userState';
+	import { page } from '$app/state';
+	import type { MailboxMetaMap } from '$lib/types/mailbox-meta';
 	import MailboxIcon from '$lib/components/MailboxIcon.svelte';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
 
@@ -253,7 +254,7 @@
 					{#if item.kind === 'label'}
 						<span class="w-3.5 h-3.5 shrink-0 flex items-center justify-center"><MailboxIcon node={item.iconNode} fallback="dot" color={item.color ?? '#0969da'} size={14} /></span>
 					{:else if item.kind === 'folder'}
-						<span class="w-3.5 h-3.5 shrink-0 flex items-center justify-center text-current"><MailboxIcon node={$userState.folders.get(item.id)?.iconNode} fallback="folder" size={14} /></span>
+						<span class="w-3.5 h-3.5 shrink-0 flex items-center justify-center text-current"><MailboxIcon node={((page.data.mailboxMeta ?? {}) as MailboxMetaMap)[item.id]?.iconNode} fallback="folder" size={14} /></span>
 					{:else}
 						<span class="w-3.5 h-3.5 shrink-0 flex items-center justify-center text-current"><Icon name={iconFor(item)} size={14} /></span>
 					{/if}

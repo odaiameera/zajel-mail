@@ -156,7 +156,7 @@ describe('EmailDetail header', () => {
 	const subject = () => screen.getByRole('button', { name: 'Hello' });
 	/** Who and when, the line just before the details. */
 	const quietLine = () => details().previousElementSibling as HTMLElement;
-	const labels: Label[] = [{ id: 'L1', name: 'Work', color: '#4493f8', createdAt: 0 }];
+	const labels: Label[] = [{ id: 'L1', name: 'Work', color: '#4493f8' }];
 	function withLabel(): Email {
 		const e = email();
 		e.mailboxIds = { inbox: true, L1: true };

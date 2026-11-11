@@ -14,7 +14,7 @@
 	type EditingMailbox = {
 		id: string;
 		name: string;
-		color: LabelColor;
+		color: LabelColor | null;
 		icon?: string | null;
 		parentId?: string | null;
 	};

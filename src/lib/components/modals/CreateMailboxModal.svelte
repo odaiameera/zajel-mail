@@ -10,7 +10,6 @@
 		colorByHex,
 		type LabelColor
 	} from '$lib/constants/colors';
-	import { setFolderMeta, setLabelMeta } from '$lib/stores/userState';
 	import ColorGrid from './ColorGrid.svelte';
 	import FolderLocationPicker from './FolderLocationPicker.svelte';
 	import IconPicker from '$lib/components/IconPicker.svelte';
@@ -18,7 +17,8 @@
 	export type EditingMailbox = {
 		id: string;
 		name: string;
-		color: LabelColor;
+		/** null when none was chosen. */
+		color: LabelColor | null;
 		/** A Lucide icon name, or null for the plain folder / colour dot. */
 		icon?: string | null;
 		parentId?: string | null;
@@ -42,7 +42,8 @@
 	const existingLabels: Label[] = $derived(labelsContext?.current ?? []);
 
 	let name = $state('');
-	let color = $state<LabelColor>(DEFAULT_LABEL_COLOR);
+	/** null: no colour of its own (a folder's plain icon, a label's automatic colour). */
+	let color = $state<LabelColor | null>(DEFAULT_LABEL_COLOR);
 	let icon = $state<string | null>(null);
 	let parentId = $state<string | null>(null);
 	let saving = $state(false);
@@ -125,35 +126,32 @@
 		}
 	}
 
-	async function saveCreate(trimmed: string) {
-		if (kind === 'folder') {
-			const res = await postJson('/api/folders', {
-				action: 'create',
-				name: trimmed,
-				parentId
-			});
-			if (!res.ok) throw new Error(res.error);
-			const id: string | undefined = res.data?.id;
-			if (id) {
-				await setFolderMeta(id, { displayName: trimmed, color: color.hex, icon });
-			}
-		} else {
-			const res = await postJson('/api/preferences/labels', {
-				action: 'create',
-				name: trimmed,
-				color: color.hex
-			});
-			if (!res.ok) throw new Error(res.error);
-			const id: string | undefined = res.data?.id;
-			if (id) {
-				await setLabelMeta(id, { displayName: trimmed, color: color.hex, icon });
-			}
+	/** Colour and icon, written once, for a folder or a label alike. */
+	async function saveMeta(id: string) {
+		const res = await fetch(`/api/mailboxes/${encodeURIComponent(id)}/meta`, {
+			method: 'PATCH',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ color: color?.hex ?? null, icon })
+		});
+		if (!res.ok) {
+			const data = await res.json().catch(() => ({}));
+			throw new Error(data?.error ?? 'The colour and icon could not be saved');
 		}
+	}
+
+	async function saveCreate(trimmed: string) {
+		const res =
+			kind === 'folder'
+				? await postJson('/api/folders', { action: 'create', name: trimmed, parentId })
+				: await postJson('/api/preferences/labels', { action: 'create', name: trimmed });
+		if (!res.ok) throw new Error(res.error);
+		const id: string | undefined = res.data?.id;
+		if (id && (color || icon)) await saveMeta(id);
 	}
 
 	async function saveEdit(target: EditingMailbox, trimmed: string) {
 		const nameChanged = trimmed !== target.name;
-		const colorChanged = color.hex.toLowerCase() !== target.color.hex.toLowerCase();
+		const colorChanged = (color?.hex.toLowerCase() ?? null) !== (target.color?.hex.toLowerCase() ?? null);
 		const iconChanged = icon !== (target.icon ?? null);
 		const parentChanged =
 			kind === 'folder' && (parentId ?? null) !== (target.parentId ?? null);
@@ -171,9 +169,6 @@
 				});
 				if (!r.ok) throw new Error(r.error);
 			}
-			if (nameChanged || colorChanged || iconChanged) {
-				await setFolderMeta(target.id, { displayName: trimmed, color: color.hex, icon });
-			}
 		} else {
 			if (nameChanged) {
 				const r = await postJson('/api/preferences/labels', {
@@ -183,18 +178,8 @@
 				});
 				if (!r.ok) throw new Error(r.error);
 			}
-			if (colorChanged) {
-				const r = await postJson('/api/preferences/labels', {
-					action: 'updateColor',
-					id: target.id,
-					color: color.hex
-				});
-				if (!r.ok) throw new Error(r.error);
-			}
-			if (nameChanged || colorChanged || iconChanged) {
-				await setLabelMeta(target.id, { displayName: trimmed, color: color.hex, icon });
-			}
 		}
+		if (colorChanged || iconChanged) await saveMeta(target.id);
 	}
 
 	function handleCancel() {
@@ -212,7 +197,7 @@
 		}
 	}
 
-	const colorName = $derived(colorByHex(color.hex).name);
+	const colorName = $derived(color ? colorByHex(color.hex).name : 'None');
 </script>
 
 {#if open}
@@ -278,6 +263,16 @@
 					<div class="flex items-baseline gap-2 mb-3">
 						<span class="text-sm font-medium text-text">Color:</span>
 						<span class="text-sm text-text-secondary">{colorName}</span>
+						<button
+							type="button"
+							class="ml-auto text-xs text-text-tertiary hover:text-text transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+							disabled={!color}
+							aria-label="No color"
+							title={kind === 'folder' ? 'The folder keeps its plain look' : 'The label gets a color of its own automatically'}
+							onclick={() => (color = null)}
+						>
+							No color
+						</button>
 					</div>
 					<ColorGrid value={color} onChange={(c) => (color = c)} />
 				</div>
@@ -286,7 +281,7 @@
 					<span class="block text-sm font-medium text-text mb-2">Icon</span>
 					<IconPicker
 						value={icon}
-						color={color.hex}
+						color={color?.hex ?? null}
 						fallback={kind === 'folder' ? 'folder' : 'dot'}
 						onPick={(name) => (icon = name)}
 					/>
