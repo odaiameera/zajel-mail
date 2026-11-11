@@ -70,7 +70,7 @@ const shopNewsletter = {
 	keywords: {},
 	hasAttachment: false
 } as unknown as Email;
-const ctx = { inboxId: 'inbox', trashId: 'trash', validMailboxIds: new Set(['inbox', 'trash', 'receipts']) };
+const ctx = { inboxId: 'inbox', trashId: 'trash', validMailboxIds: new Set(['inbox', 'trash', 'receipts']), mailboxes: [] };
 
 beforeAll(() => {
 	runMigrations();

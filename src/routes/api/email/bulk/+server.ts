@@ -1,19 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
-import {
-	markEmail,
-	trashEmail,
-	archiveEmail,
-	moveEmails,
-	markManyAsSpam,
-	markManyAsNotSpam,
-	destroyEmail,
-	emailsInMailbox
-} from '$lib/jmap/email';
-import { getMailboxes, ensureArchiveMailbox } from '$lib/jmap/mailbox';
+import { markEmail, destroyEmail, emailsInMailbox } from '$lib/jmap/email';
+import { getMailboxes } from '$lib/jmap/mailbox';
 import { isInboxCategory } from '$lib/types/categories';
-import { labelMailboxIds } from '$lib/types/labels';
+import { FilingError, fileInto, markNotSpam, markSpam, moveToArchive, moveToTrash } from '$lib/server/filing';
 import { recordSpamCorrections } from '$lib/server/db/queries/jev-decisions';
 import { setTab } from '$lib/server/jev/tab';
 
@@ -23,7 +14,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await request.json();
 	const ids = body.ids as string[];
 	const action = body.action as string;
-	const sourceMailboxId = body.sourceMailboxId as string | undefined;
+	// The folder the list was showing. Moves no longer read it (they go by
+	// where each message really is); Trash reads it only to know that it was
+	// pressed in Trash, where it deletes for good.
+	const viewMailboxId = body.sourceMailboxId as string | undefined;
 
 	if (!ids?.length) return json({ error: 'No email IDs provided' }, { status: 400 });
 
@@ -31,12 +25,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const client = createClient(locals.auth);
 		const { accountId } = locals.auth;
 
-		// Batched Email/set actions: moveTo, spam, notSpam — one round trip.
+		// Batched Email/set actions: moveTo, spam, notSpam, archive: one write each.
 		if (action === 'moveTo') {
 			const target = body.targetMailboxId as string | undefined;
 			if (!target) return json({ error: 'targetMailboxId required' }, { status: 400 });
-			const labelIds = labelMailboxIds(await getMailboxes(client, accountId));
-			await moveEmails(client, accountId, ids, target, sourceMailboxId, labelIds);
+			// A label adds the label; a folder is a move; anything else is refused.
+			await fileInto(client, accountId, ids, target);
 			return json({ success: true });
 		}
 
@@ -54,21 +48,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		}
 
 		if (action === 'spam') {
-			const mailboxes = await getMailboxes(client, accountId);
-			const junk = mailboxes.find((m) => m.role === 'junk');
-			if (!junk) return json({ error: 'Junk folder not found' }, { status: 500 });
-			await markManyAsSpam(client, accountId, ids, junk.id, labelMailboxIds(mailboxes));
+			await markSpam(client, accountId, ids);
 			if (locals.activeAccountId) recordSpamCorrections(locals.activeAccountId, ids, 'spam');
 			return json({ success: true });
 		}
 
 		if (action === 'notSpam') {
-			const mailboxes = await getMailboxes(client, accountId);
-			const junk = mailboxes.find((m) => m.role === 'junk');
-			const inbox = mailboxes.find((m) => m.role === 'inbox');
-			if (!junk || !inbox) return json({ error: 'Inbox or Junk missing' }, { status: 500 });
-			await markManyAsNotSpam(client, accountId, ids, junk.id, inbox.id);
+			await markNotSpam(client, accountId, ids);
 			if (locals.activeAccountId) recordSpamCorrections(locals.activeAccountId, ids, 'ham');
+			return json({ success: true });
+		}
+
+		if (action === 'archive') {
+			await moveToArchive(client, accountId, ids);
 			return json({ success: true });
 		}
 
@@ -76,30 +68,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const mailboxes = await getMailboxes(client, accountId);
 			const trash = mailboxes.find((m) => m.role === 'trash');
 			if (!trash) return json({ error: 'Trash folder not found' }, { status: 500 });
-			const labelIds = labelMailboxIds(mailboxes);
 
 			// Trash in Trash destroys, but only what is really in Trash. Ids from
 			// anywhere else (a selection carried over from another folder) are
 			// moved there instead.
 			const inTrash =
-				sourceMailboxId === trash.id
+				viewMailboxId === trash.id
 					? await emailsInMailbox(client, accountId, ids, trash.id)
 					: new Set<string>();
-			await Promise.all(
-				ids.map((id) =>
-					inTrash.has(id)
-						? destroyEmail(client, accountId, id)
-						: trashEmail(client, accountId, id, trash.id, labelIds)
-				)
-			);
+			await Promise.all(ids.filter((id) => inTrash.has(id)).map((id) => destroyEmail(client, accountId, id)));
+			await moveToTrash(client, accountId, ids.filter((id) => !inTrash.has(id)), { mailboxes });
 			return json({ success: true });
-		}
-
-		let targetMailboxId: string | undefined;
-		let labelIds: ReadonlySet<string> = new Set();
-		if (action === 'archive') {
-			targetMailboxId = await ensureArchiveMailbox(client, accountId);
-			labelIds = labelMailboxIds(await getMailboxes(client, accountId));
 		}
 
 		await Promise.all(
@@ -109,8 +88,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 						return markEmail(client, accountId, id, true);
 					case 'markUnread':
 						return markEmail(client, accountId, id, false);
-					case 'archive':
-						return archiveEmail(client, accountId, id, targetMailboxId!, labelIds);
 					default:
 						throw new Error(`Unknown action: ${action}`);
 				}
@@ -119,6 +96,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 		return json({ success: true });
 	} catch (err) {
+		if (err instanceof FilingError) return json({ error: err.message }, { status: err.status });
 		return json({ error: err instanceof Error ? err.message : 'Bulk action failed' }, { status: 500 });
 	}
 };

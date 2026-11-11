@@ -2,7 +2,8 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { emailMailboxMembership, EmailUpdateError, updateEmailMailboxes } from '$lib/jmap/email';
-import { getMailboxes, REMIND_ME_LATER_NAME } from '$lib/jmap/mailbox';
+import { getMailboxes } from '$lib/jmap/mailbox';
+import { isRemindMeLaterMailbox } from '$lib/mailboxes';
 import { userEmailFromAuth } from '$lib/server/user';
 import { deleteReminder, getReminder } from '$lib/server/db/queries/reminders';
 
@@ -28,7 +29,7 @@ export const DELETE: RequestHandler = async ({ locals, params }) => {
 		const client = createClient(locals.auth);
 		const { accountId } = locals.auth;
 		const mailboxes = await getMailboxes(client, accountId);
-		const rml = mailboxes.find((m) => m.name === REMIND_ME_LATER_NAME && m.parentId === null);
+		const rml = mailboxes.find(isRemindMeLaterMailbox);
 		const target =
 			mailboxes.find((m) => m.id === row.original_mailbox_id) ?? mailboxes.find((m) => m.role === 'inbox');
 

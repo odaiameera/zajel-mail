@@ -1,4 +1,5 @@
 import type { Email, Mailbox } from '$lib/jmap/types';
+import { nextMailboxIds, sameMailboxIds } from '$lib/mailboxes';
 import { isRunnable, isUsableCondition, ruleHolds, type Rule, type RuleCondition, type RuleRole } from '$lib/types/rules';
 
 export interface RuleActionCtx {
@@ -12,17 +13,22 @@ export interface RuleActionCtx {
 	 * mailbox ids and the whole update for that email silently fails.
 	 */
 	validMailboxIds?: Set<string>;
+	/** Every mailbox on the account: a move keeps a message's labels and leaves everything else. */
+	mailboxes: RuleMailbox[];
 }
 
+type RuleMailbox = Pick<Mailbox, 'id' | 'role' | 'name' | 'parentId'>;
+
 /** Where a rule's targets are on this account: its Inbox, the folders with a role, and every mailbox there is. */
-export function ruleContext(mailboxes: Pick<Mailbox, 'id' | 'role'>[]): RuleActionCtx {
+export function ruleContext(mailboxes: RuleMailbox[]): RuleActionCtx {
 	const role = (r: string) => mailboxes.find((m) => m.role === r)?.id;
 	return {
 		inboxId: role('inbox'),
 		trashId: role('trash'),
 		archiveId: role('archive'),
 		junkId: role('junk'),
-		validMailboxIds: new Set(mailboxes.map((m) => m.id))
+		validMailboxIds: new Set(mailboxes.map((m) => m.id)),
+		mailboxes
 	};
 }
 
@@ -101,21 +107,23 @@ function matchesRule(email: Email, rule: Rule, bodyText: string): boolean {
 }
 
 /**
- * Semantic result of running rule actions over one email — what to add,
- * remove, and which keywords to flip. Converted to a JMAP update by
- * {@link outcomeToUpdate}; keeping this layer semantic (not raw patches)
- * lets the writer choose a wire format every Stalwart version accepts.
+ * Semantic result of running rule actions over one email: the folder it
+ * moves to, the labels it gains, and which keywords to flip. Converted to a
+ * JMAP update by {@link outcomeToUpdate}, which applies the filing rules of
+ * `$lib/mailboxes` to where the message is when it is written.
  */
 export interface RuleOutcome {
-	addMailboxIds: Set<string>;
-	removeMailboxIds: Set<string>;
+	/** The folder the message moves to: it leaves every other folder and keeps its labels. */
+	moveTo: string | null;
+	/** Labels to add. */
+	labels: Set<string>;
 	keywords: Record<string, boolean>;
 	/** Ids of the rules that matched, in order. */
 	firedRuleIds: string[];
 }
 
 export function emptyOutcome(): RuleOutcome {
-	return { addMailboxIds: new Set(), removeMailboxIds: new Set(), keywords: {}, firedRuleIds: [] };
+	return { moveTo: null, labels: new Set(), keywords: {}, firedRuleIds: [] };
 }
 
 /**
@@ -137,20 +145,15 @@ export function evaluateRulesForEmail(
 	bodyText: string
 ): RuleOutcome {
 	const outcome = emptyOutcome();
-	let moved = false;
 	for (const rule of enabledRules) {
 		if (!isRunnable(rule) || !matchesRule(email, rule, bodyText)) continue;
 		outcome.firedRuleIds.push(rule.id);
 		const t = rule.target;
 		if (t.kind === 'label') {
-			if (targetExists(ctx, t.mailboxId)) outcome.addMailboxIds.add(t.mailboxId);
-		} else if (t.kind !== 'none' && !moved) {
+			if (targetExists(ctx, t.mailboxId)) outcome.labels.add(t.mailboxId);
+		} else if (t.kind !== 'none' && outcome.moveTo === null) {
 			const id = t.kind === 'folder' ? t.mailboxId : roleMailboxId(ctx, t.kind);
-			if (id && targetExists(ctx, id)) {
-				moved = true;
-				outcome.addMailboxIds.add(id);
-				if (ctx.inboxId && id !== ctx.inboxId) outcome.removeMailboxIds.add(ctx.inboxId);
-			}
+			if (id && targetExists(ctx, id)) outcome.moveTo = id;
 		}
 		if (rule.markRead) outcome.keywords['$seen'] = true;
 		if (rule.star) outcome.keywords['$flagged'] = true;
@@ -193,7 +196,7 @@ export function updatesForEmails(
 		const outcome = evaluateRulesForEmail(email, enabledRules, ctx, needBody ? extractBodyText(email) : '');
 		if (outcome.firedRuleIds.length === 0) continue;
 		matched++;
-		const emailUpdate = outcomeToUpdate(email, outcome);
+		const emailUpdate = outcomeToUpdate(email, outcome, ctx.mailboxes);
 		if (Object.keys(emailUpdate).length > 0) update[email.id] = emailUpdate;
 	}
 	return { matched, update };
@@ -202,32 +205,31 @@ export function updatesForEmails(
 /**
  * Turn an outcome into a JMAP Email/set update object.
  *
+ * The move and the labels go through `nextMailboxIds`, the filing rules
+ * every caller shares: a move leaves every folder the message is in, not
+ * only the Inbox, and keeps its labels.
+ *
  * Mailbox membership is written as the **full `mailboxIds` object**, never
  * `mailboxIds/<id>` pointer patches: Stalwart v0.15.0–v0.16.7 (jmap-tools
  * ≤ 0.1.4) tokenizes all-digit pointer segments as array indices and
- * rejects the whole update with "Invalid patch value" — and Stalwart's id
+ * rejects the whole update with "Invalid patch value", and Stalwart's id
  * alphabet produces all-digit mailbox ids ("9", "92", …) for folders
- * created late enough. This was the root cause of rules reporting success
- * while folders stayed empty. Keywords keep the pointer form: `$`-prefixed
- * names always tokenize as strings, which every version parses correctly.
+ * created late enough. Keywords keep the pointer form: `$`-prefixed names
+ * always tokenize as strings, which every version parses correctly.
  *
  * Returns `{}` when the email already satisfies the outcome.
  */
-export function outcomeToUpdate(email: Email, outcome: RuleOutcome): Record<string, unknown> {
+export function outcomeToUpdate(
+	email: Pick<Email, 'mailboxIds' | 'keywords'>,
+	outcome: RuleOutcome,
+	mailboxes: RuleMailbox[]
+): Record<string, unknown> {
 	const update: Record<string, unknown> = {};
 
-	if (outcome.addMailboxIds.size > 0 || outcome.removeMailboxIds.size > 0) {
-		const next: Record<string, boolean> = { ...email.mailboxIds };
-		for (const id of outcome.removeMailboxIds) delete next[id];
-		for (const id of outcome.addMailboxIds) next[id] = true;
-		// JMAP requires ≥1 mailbox — never strand the message.
-		if (Object.keys(next).length === 0) Object.assign(next, email.mailboxIds);
-
-		const changed =
-			Object.keys(next).length !== Object.keys(email.mailboxIds).length ||
-			Object.keys(next).some((k) => !email.mailboxIds[k]);
-		if (changed) update.mailboxIds = next;
-	}
+	let next: Record<string, boolean> = { ...email.mailboxIds };
+	if (outcome.moveTo) next = nextMailboxIds(next, { move: outcome.moveTo }, mailboxes) ?? next;
+	for (const label of outcome.labels) next = nextMailboxIds(next, { addLabel: label }, mailboxes) ?? next;
+	if (!sameMailboxIds(next, email.mailboxIds)) update.mailboxIds = next;
 
 	for (const [keyword, on] of Object.entries(outcome.keywords)) {
 		if (!!email.keywords[keyword] !== on) {

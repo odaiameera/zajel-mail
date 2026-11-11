@@ -57,6 +57,8 @@ beforeEach(() => {
 	state.updates = [];
 	state.boxes = [
 		box('IN', 'Inbox', { role: 'inbox' }),
+		box('RML', 'Remind Me Later'),
+		box('SCH', 'Scheduled'),
 		box('LBLS', 'Labels'),
 		box('WORK', 'Work', { parentId: 'LBLS' }),
 		box('HOME', 'Home', { parentId: 'LBLS' }),
@@ -106,6 +108,18 @@ describe('POST /api/folders reorder', () => {
 		expect((await post({ action: 'reorder', id: 'A', parentId: 'P', beforeId: 'B' })).body.error).toBe(
 			'That folder is not at the destination'
 		);
+		expect(state.updates).toEqual([]);
+	});
+});
+
+describe('POST /api/folders and the app’s own folders', () => {
+	it('won’t rename, move, reorder or delete Remind Me Later or Scheduled', async () => {
+		for (const id of ['RML', 'SCH']) {
+			expect((await post({ action: 'rename', id, name: 'Later' })).status).toBe(403);
+			expect((await post({ action: 'move', id, newParentId: 'P' })).status).toBe(403);
+			expect((await post({ action: 'reorder', id, parentId: 'P', beforeId: null })).status).toBe(403);
+			expect((await post({ action: 'delete', id })).status).toBe(403);
+		}
 		expect(state.updates).toEqual([]);
 	});
 });

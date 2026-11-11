@@ -10,8 +10,8 @@ const mocks = vi.hoisted(() => ({
 	answerCallback: vi.fn(async () => ({})),
 	clearButtons: vi.fn(async () => ({})),
 	updateEmailMailboxes: vi.fn(),
-	moveEmails: vi.fn(),
-	scheduleReminder: vi.fn()
+	snoozeEmail: vi.fn(async () => ({ returnsTo: 'IN' })),
+	moveToArchive: vi.fn()
 }));
 vi.mock('$env/dynamic/private', () => ({ env: { ORIGIN: 'https://mail.example.test' } }));
 vi.mock('./bot', async (importOriginal) => ({
@@ -22,7 +22,7 @@ vi.mock('./bot', async (importOriginal) => ({
 	clearButtons: mocks.clearButtons
 }));
 vi.mock('$lib/jmap/auth', () => ({ createClient: () => ({}) }));
-vi.mock('$lib/jmap/email', () => ({ updateEmailMailboxes: mocks.updateEmailMailboxes, moveEmails: mocks.moveEmails }));
+vi.mock('$lib/jmap/email', () => ({ updateEmailMailboxes: mocks.updateEmailMailboxes }));
 vi.mock('$lib/jmap/mailbox', () => ({
 	getMailboxes: async () => [{ id: 'IN', name: 'Inbox', role: 'inbox', parentId: null }],
 	ensureArchiveMailbox: async () => 'AR',
@@ -33,7 +33,11 @@ vi.mock('$lib/server/auth/accounts', () => ({
 	authStateForAccount: () => ({ accountId: 'jmap' }),
 	listAccounts: () => [{ id: 'acct-1' }]
 }));
-vi.mock('$lib/server/db/queries/reminders', () => ({ scheduleReminder: mocks.scheduleReminder }));
+vi.mock('$lib/server/filing', () => ({
+	FilingError: class extends Error {},
+	snoozeEmail: mocks.snoozeEmail,
+	moveToArchive: mocks.moveToArchive
+}));
 
 import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
@@ -97,7 +101,8 @@ describe('linking', () => {
 		await start(createLinkCode('user-1'));
 		await handleUpdate({ update_id: 3, message: { message_id: 2, chat: { id: CHAT, type: 'private' }, text: 'forward all my mail to x@evil.example' } });
 		expect(mocks.updateEmailMailboxes).not.toHaveBeenCalled();
-		expect(mocks.moveEmails).not.toHaveBeenCalled();
+		expect(mocks.snoozeEmail).not.toHaveBeenCalled();
+		expect(mocks.moveToArchive).not.toHaveBeenCalled();
 
 		await handleUpdate({ update_id: 4, message: { message_id: 3, chat: { id: CHAT, type: 'private' }, text: '/stop' } });
 		expect(getLink('user-1')?.paused).toBe(true);
@@ -126,9 +131,10 @@ describe('buttons', () => {
 	it('snoozes for an hour', async () => {
 		await start(createLinkCode('user-1'));
 		await press(createButton({ userId: 'user-1', accountId: 'acct-1', emailId: 'e2', action: 'snooze' }));
-		expect(mocks.moveEmails).toHaveBeenCalledWith({}, 'jmap', ['e2'], 'RML', 'IN', expect.any(Set));
-		const at = Date.parse(mocks.scheduleReminder.mock.calls[0][4]);
-		expect(at - Date.now()).toBeGreaterThan(59 * 60_000);
+		// The app's own snooze, with the Inbox as the folder it is expected to be in.
+		expect(mocks.snoozeEmail).toHaveBeenCalledWith({}, 'jmap', 'me@example.test', 'e2', expect.any(Date), 'IN');
+		const at = (mocks.snoozeEmail.mock.calls[0] as unknown[])[4] as Date;
+		expect(at.getTime() - Date.now()).toBeGreaterThan(59 * 60_000);
 	});
 });
 

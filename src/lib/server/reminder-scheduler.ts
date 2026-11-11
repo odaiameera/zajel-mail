@@ -3,7 +3,8 @@ import { listSchedulableAuths, markNeedsReauth } from './auth/accounts';
 import { JMAPAuthError } from '$lib/jmap/client';
 import { createClient } from '$lib/jmap/auth';
 import { emailMailboxMembership, EmailUpdateError, updateEmailMailboxes } from '$lib/jmap/email';
-import { getMailboxes, REMIND_ME_LATER_NAME } from '$lib/jmap/mailbox';
+import { getMailboxes } from '$lib/jmap/mailbox';
+import { isRemindMeLaterMailbox } from '$lib/mailboxes';
 import {
 	listDueReminders,
 	deleteReminder,
@@ -95,7 +96,7 @@ async function returnReminder(
 ): Promise<void> {
 	const client = createClient(auth);
 	const mailboxes = await getMailboxes(client, r.account_id);
-	const rml = mailboxes.find((m) => m.name === REMIND_ME_LATER_NAME && m.parentId === null);
+	const rml = mailboxes.find(isRemindMeLaterMailbox);
 	const target =
 		mailboxes.find((m) => m.id === r.original_mailbox_id) ?? mailboxes.find((m) => m.role === 'inbox');
 	if (!target) throw new Error('No mailbox to return the reminder to');

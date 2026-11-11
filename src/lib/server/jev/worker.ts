@@ -3,7 +3,7 @@ import { listSchedulableAuths, markNeedsReauth } from '$lib/server/auth/accounts
 import { JMAPAuthError, type JMAPClient } from '$lib/jmap/client';
 import { createClient, fetchSession } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
-import type { AuthState, Email, JMAPSession, MethodCall } from '$lib/jmap/types';
+import type { AuthState, Email, JMAPSession, Mailbox, MethodCall } from '$lib/jmap/types';
 import { categoryKeywordPatch, categoryOf, type InboxCategory } from '$lib/types/categories';
 import { isRunnable } from '$lib/types/rules';
 import {
@@ -248,16 +248,18 @@ interface SpamRecord {
 	action: string | null;
 }
 
-/** Move a message from one mailbox to another. */
-function moveOutcome(from: string, to: string): RuleOutcome {
+/**
+ * Move a message to Junk or back to the Inbox. It is a move like any other
+ * (see `nextMailboxIds`): the message keeps its labels and leaves every
+ * other folder.
+ */
+function moveOutcome(to: string): RuleOutcome {
 	const outcome = emptyOutcome();
-	outcome.removeMailboxIds.add(from);
-	outcome.addMailboxIds.add(to);
+	outcome.moveTo = to;
 	return outcome;
 }
 
-const hasWork = (o: RuleOutcome) =>
-	o.addMailboxIds.size > 0 || o.removeMailboxIds.size > 0 || Object.keys(o.keywords).length > 0;
+const hasWork = (o: RuleOutcome) => o.moveTo !== null || o.labels.size > 0 || Object.keys(o.keywords).length > 0;
 
 type Placement = Pick<Email, 'mailboxIds' | 'keywords'>;
 
@@ -538,6 +540,7 @@ export async function sortNewMail(
 		accountId,
 		accountRowId,
 		inboxId: inbox.id,
+		mailboxes,
 		junkId: junk?.id ?? null,
 		spamMode,
 		jev: !jevOn ? 'off' : paused ? 'wait' : 'ask',
@@ -576,6 +579,8 @@ interface Batch {
 	accountId: string;
 	accountRowId: string;
 	inboxId: string;
+	/** Every mailbox on the account, for the filing rules a move follows. */
+	mailboxes: Mailbox[];
 	/** Watched while spam checking is on. */
 	junkId: string | null;
 	spamMode: SpamMode;
@@ -704,14 +709,14 @@ async function judgeAndApply(
 		if (junked) {
 			const rescue = acting && action === 'rescue';
 			plans.set(j.email.id, {
-				outcome: rescue && b.junkId ? moveOutcome(b.junkId, b.inboxId) : emptyOutcome(),
+				outcome: rescue && b.junkId ? moveOutcome(b.inboxId) : emptyOutcome(),
 				tab: null,
 				pin: null,
 				spam
 			});
 		} else if (acting && action === 'junk' && b.junkId) {
 			toJunk.add(j.email.id);
-			plans.set(j.email.id, { outcome: moveOutcome(b.inboxId, b.junkId), tab: null, pin: null, spam });
+			plans.set(j.email.id, { outcome: moveOutcome(b.junkId), tab: null, pin: null, spam });
 		} else {
 			plans.set(j.email.id, { ...planFor(j, wantsTabs && !chosen.has(j.email.id), pinOf(j.email)), spam });
 		}
@@ -723,7 +728,7 @@ async function judgeAndApply(
 	if (wantsTabs) {
 		for (const [id, plan] of plans) {
 			const email = fetched.get(id)!;
-			const staysInInbox = plan.outcome.addMailboxIds.has(b.inboxId) || (!inJunk(email) && !toJunk.has(id));
+			const staysInInbox = plan.outcome.moveTo === b.inboxId || (!inJunk(email) && !toJunk.has(id));
 			if (staysInInbox && isHeld(email, now)) plan.outcome.keywords[JEV_SORTED_KEYWORD] = true;
 		}
 	}
@@ -749,7 +754,7 @@ async function judgeAndApply(
 			}
 			continue;
 		}
-		const update = outcomeToUpdate({ ...snapshot, ...current }, plan.outcome);
+		const update = outcomeToUpdate({ ...snapshot, ...current }, plan.outcome, b.mailboxes);
 		if (Object.keys(update).length > 0) updates.push([id, update]);
 	}
 	const notWritten = await writeUpdates(b.client, b.accountId, updates, b.writes);

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { isScheduledMailbox, REMIND_ME_LATER_NAME } from '$lib/jmap/mailbox';
 import type { Mailbox } from '$lib/jmap/types';
-import { findLabelsParentId, isLabelMailbox, isLabelsParent, labelMailboxIds } from '$lib/types/labels';
+import { mailboxKind } from '$lib/mailboxes';
 import {
 	isUsableCondition,
 	RULE_ROLES,
@@ -40,11 +39,6 @@ type MailboxLike = Pick<Mailbox, 'id' | 'name' | 'parentId' | 'role'>;
 
 function isObject(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-/** Mailboxes that are the app's own, never a place for a rule to file mail. */
-function isAppMailbox(m: MailboxLike): boolean {
-	return isScheduledMailbox(m) || (m.parentId === null && m.name === REMIND_ME_LATER_NAME);
 }
 
 function parseConditions(input: unknown, problems: RuleProblem[]): RuleCondition[] {
@@ -99,14 +93,14 @@ function parseTarget(input: unknown, mailboxes: MailboxLike[], problems: RulePro
 	const id = typeof input.mailboxId === 'string' ? input.mailboxId : '';
 	const box = mailboxes.find((m) => m.id === id);
 	if (!box) return bad(`Pick a ${kind}: the one chosen no longer exists.`);
-	const labelsParentId = findLabelsParentId(mailboxes);
+	const boxKind = mailboxKind(box, mailboxes);
 	if (kind === 'label') {
-		if (!labelMailboxIds(mailboxes).has(id)) return bad(`“${box.name}” is a folder, not a label.`);
+		if (boxKind !== 'label') return bad(`“${box.name}” is a folder, not a label.`);
 		return { kind: 'label', mailboxId: id };
 	}
-	if (isLabelsParent(box, labelsParentId)) return bad('“Labels” holds your labels: pick a folder or a label.');
-	if (isLabelMailbox(box, labelsParentId)) return bad(`“${box.name}” is a label, not a folder.`);
-	if (isAppMailbox(box)) return bad(`Rules can’t file mail into “${box.name}”.`);
+	if (boxKind === 'labels-root') return bad('“Labels” holds your labels: pick a folder or a label.');
+	if (boxKind === 'label') return bad(`“${box.name}” is a label, not a folder.`);
+	if (boxKind === 'special') return bad(`Rules can’t file mail into “${box.name}”.`);
 	// Trash, Archive and Junk are named by their role; no other folder with a
 	// role (the Inbox, Sent, Drafts) is somewhere a rule files mail.
 	if (RULE_ROLES.includes(box.role as RuleRole)) return { kind: box.role as RuleRole };

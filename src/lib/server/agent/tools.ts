@@ -1,15 +1,15 @@
 import type { JMAPClient } from '$lib/jmap/client';
 import type { AuthState, Email, Mailbox } from '$lib/jmap/types';
-import { getEmailDetail, moveEmails, searchEmails, updateEmailMailboxes } from '$lib/jmap/email';
-import { ensureArchiveMailbox, ensureRemindMeLaterMailbox, getMailboxes } from '$lib/jmap/mailbox';
+import { getEmailDetail, searchEmails, updateEmailMailboxes } from '$lib/jmap/email';
+import { getMailboxes } from '$lib/jmap/mailbox';
+import { canMoveInto, mailboxKind } from '$lib/mailboxes';
 import { categoryOf, INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
-import { labelMailboxIds } from '$lib/types/labels';
+import * as filing from '$lib/server/filing';
 import { wallClockToUtc } from '$lib/server/calendar/tz';
 import { listAccounts } from '$lib/server/auth/accounts';
 import { listIdentities } from '$lib/server/db/queries/identities';
 import { spend, type TurnBudget } from './budget';
 import { localClock, parseLocalTime } from './local-time';
-import { scheduleReminder } from '$lib/server/db/queries/reminders';
 import { getDecision } from '$lib/server/db/queries/jev-decisions';
 import { setTab as moveToTab } from '$lib/server/jev/tab';
 import { htmlToPromptText } from '$lib/server/ai/extract-event';
@@ -208,15 +208,18 @@ const readEmail: AgentTool = {
 const listFolders: AgentTool = {
 	name: 'list_folders',
 	tier: 'read',
-	description: 'The account’s folders and labels, with their ids, for moving or labelling mail.',
+	description:
+		'The account’s folders and labels, with their ids, for moving or labelling mail. Mail can be moved only into a “folder”; a “label” is added or removed with set_label.',
 	input_schema: schema({}),
 	async run(ctx) {
 		const boxes = await ctx.mailboxes();
-		const labels = labelMailboxIds(boxes);
+		// What each one is for: a folder mail can be moved into, a label, or
+		// neither (the Labels container, Remind Me Later, Scheduled, Drafts,
+		// Sent), which the tools refuse.
+		const kindOf = (m: Mailbox) =>
+			canMoveInto(m, boxes) ? 'folder' : mailboxKind(m, boxes) === 'label' ? 'label' : 'not for filing';
 		return {
-			content: boxes
-				.map((m) => `id=${m.id} | ${labels.has(m.id) ? 'label' : 'folder'} | ${m.name}${m.role ? ` (${m.role})` : ''}`)
-				.join('\n')
+			content: boxes.map((m) => `id=${m.id} | ${kindOf(m)} | ${m.name}${m.role ? ` (${m.role})` : ''}`).join('\n')
 		};
 	}
 };
@@ -295,11 +298,9 @@ const archive: AgentTool = {
 	async run(ctx, input) {
 		const list = ids(input.email_ids);
 		if (list.length === 0) return { content: 'No valid email ids', isError: true };
-		const target = await ensureArchiveMailbox(ctx.client, ctx.auth.accountId);
-		if (!target) return { content: 'Could not find or create Archive', isError: true };
 		const refused = spend(ctx.budget, 'moved', list.length);
 		if (refused) return { content: refused, isError: true };
-		await moveEmails(ctx.client, ctx.auth.accountId, list, target, undefined, labelMailboxIds(await ctx.mailboxes()));
+		await filing.moveToArchive(ctx.client, ctx.auth.accountId, list);
 		const done = `Archived ${plural(list.length, 'message')}`;
 		return { content: `Done: ${done}.`, done };
 	}
@@ -318,7 +319,7 @@ const moveToTrash: AgentTool = {
 		if (!trash) return { content: 'This account has no Trash', isError: true };
 		const refused = spend(ctx.budget, 'trashed', list.length);
 		if (refused) return { content: refused, isError: true };
-		await moveEmails(ctx.client, ctx.auth.accountId, list, trash.id, undefined, labelMailboxIds(boxes));
+		await filing.moveToTrash(ctx.client, ctx.auth.accountId, list, { mailboxes: boxes });
 		const done = `Moved ${plural(list.length, 'message')} to Trash`;
 		return { content: `Done: ${done}.`, done };
 	}
@@ -332,12 +333,20 @@ const moveToFolder: AgentTool = {
 	async run(ctx, input) {
 		const list = ids(input.email_ids);
 		const boxes = await ctx.mailboxes();
-		const labels = labelMailboxIds(boxes);
-		const folder = boxes.find((m) => m.id === input.folder_id && !labels.has(m.id));
+		const folder = boxes.find((m) => m.id === input.folder_id);
 		if (list.length === 0 || !folder) return { content: 'Unknown folder or no valid email ids', isError: true };
+		// Only a folder from list_folders: never a label, the Labels container,
+		// Remind Me Later, Scheduled, Drafts or Sent.
+		if (!canMoveInto(folder, boxes)) {
+			const label = mailboxKind(folder, boxes) === 'label';
+			return {
+				content: label ? `“${folder.name}” is a label; use set_label to add it.` : `Mail can’t be moved into “${folder.name}”.`,
+				isError: true
+			};
+		}
 		const refused = spend(ctx.budget, 'moved', list.length);
 		if (refused) return { content: refused, isError: true };
-		await moveEmails(ctx.client, ctx.auth.accountId, list, folder.id, undefined, labels);
+		await filing.moveToFolder(ctx.client, ctx.auth.accountId, list, folder.id, { mailboxes: boxes });
 		const done = `Moved ${plural(list.length, 'message')} to ${folder.name}`;
 		return { content: `Done: ${done}.`, done };
 	}
@@ -346,19 +355,17 @@ const moveToFolder: AgentTool = {
 const setLabel: AgentTool = {
 	name: 'set_label',
 	tier: 'self',
-	description: 'Add (on=true) or remove a label from list_folders on messages.',
+	description:
+		'Add (on=true) or remove a label from list_folders on messages. A message that was in nothing but that label goes to Archive when it comes off.',
 	input_schema: schema({ email_ids: ID_LIST, label_id: { type: 'string' }, on: { type: 'boolean' } }),
 	async run(ctx, input) {
 		const list = ids(input.email_ids);
 		const boxes = await ctx.mailboxes();
-		const label = boxes.find((m) => m.id === input.label_id && labelMailboxIds(boxes).has(m.id));
+		const label = boxes.find((m) => m.id === input.label_id && mailboxKind(m, boxes) === 'label');
 		if (list.length === 0 || !label) return { content: 'Unknown label or no valid email ids', isError: true };
 		const on = input.on !== false;
-		await updateEmailMailboxes(
-			ctx.client,
-			ctx.auth.accountId,
-			Object.fromEntries(list.map((id) => [id, on ? { add: [label.id] } : { remove: [label.id] }]))
-		);
+		if (on) await filing.addLabel(ctx.client, ctx.auth.accountId, list, label.id, { mailboxes: boxes });
+		else await filing.removeLabel(ctx.client, ctx.auth.accountId, list, label.id, { mailboxes: boxes });
 		const done = `${on ? 'Labelled' : 'Removed the label from'} ${plural(list.length, 'message')}${on ? ` ${label.name}` : ''}`;
 		return { content: `Done: ${done}.`, done };
 	}
@@ -392,14 +399,15 @@ const snooze: AgentTool = {
 		if (!wall) return { content: `until “${str(input.until, 20)}” is not a real local time; use YYYY-MM-DDTHH:mm`, isError: true };
 		const at = wallClockToUtc(wall, ctx.timeZone);
 		if (at <= Date.now()) return { content: 'until must be in the future', isError: true };
-		const boxes = await ctx.mailboxes();
 		const email = await getEmailDetail(ctx.client, ctx.auth.accountId, id);
-		const labels = labelMailboxIds(boxes);
-		const source = Object.keys(email.mailboxIds ?? {}).find((m) => !labels.has(m));
-		const rml = await ensureRemindMeLaterMailbox(ctx.client, ctx.auth.accountId);
-		if (!source || !rml || source === rml) return { content: 'That message can’t be snoozed', isError: true };
-		await moveEmails(ctx.client, ctx.auth.accountId, [id], rml, source);
-		scheduleReminder(ctx.userEmail, ctx.auth.accountId, id, source, new Date(at).toISOString());
+		// The same snooze as the app's: out of every folder, labels kept, and
+		// back to the folder it was in.
+		try {
+			await filing.snoozeEmail(ctx.client, ctx.auth.accountId, ctx.userEmail, id, new Date(at));
+		} catch (err) {
+			if (err instanceof filing.FilingError) return { content: `That message can’t be snoozed: ${err.message}`, isError: true };
+			throw err;
+		}
 		const done = `Snoozed “${email.subject ?? 'a message'}” until ${str(input.until, 20).replace('T', ' ')}`;
 		return { content: `Done: ${done}.`, done };
 	}

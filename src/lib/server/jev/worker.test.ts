@@ -128,7 +128,9 @@ class FakeJmap {
 							{ id: 'sent', name: 'Sent', role: 'sent', sortOrder: 2, parentId: null },
 							{ id: 'archive', name: 'Archive', role: 'archive', sortOrder: 3, parentId: null },
 							{ id: 'junk', name: 'Junk', role: 'junk', sortOrder: 4, parentId: null },
-							{ id: 'trash', name: 'Trash', role: 'trash', sortOrder: 5, parentId: null }
+							{ id: 'trash', name: 'Trash', role: 'trash', sortOrder: 5, parentId: null },
+							{ id: 'labels', name: 'Labels', role: null, sortOrder: 6, parentId: null },
+							{ id: 'news', name: 'News', role: null, sortOrder: 0, parentId: 'labels' }
 						]
 					};
 					break;
@@ -834,6 +836,20 @@ describe('sortNewMail', () => {
 			expect(getDecision(ACCT, 'realSpam')?.spamAction).toBeNull();
 			expect(fake.emails.get('noDmarc')!.mailboxIds).toEqual({ junk: true });
 			expect(fake.emails.get('dmarcError')!.mailboxIds).toEqual({ junk: true });
+		});
+
+		it('moves to Junk and back like any other move: labels stay on', async () => {
+			updateJevSettings(ACCT, { spamMode: 'active' });
+			fake.add('spammy', 1, { ...flagged, mailboxIds: { inbox: true, news: true } });
+			fake.add('wronglyJunked', 2, {
+				mailboxIds: { junk: true, news: true },
+				'header:authentication-results:asText:all': ['mx.example.test; spf=pass; dkim=pass; dmarc=pass']
+			});
+
+			await sortNewMail(ACCT, ME, auth, at(10));
+
+			expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true, news: true });
+			expect(fake.emails.get('wronglyJunked')!.mailboxIds).toEqual({ inbox: true, news: true });
 		});
 
 		it('leaves Junk alone while spam checks are off', async () => {

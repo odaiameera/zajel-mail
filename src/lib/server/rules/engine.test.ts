@@ -48,15 +48,18 @@ function rule(id: string, overrides: Partial<Rule>): Rule {
 const folder = (mailboxId: string) => ({ target: { kind: 'folder' as const, mailboxId } });
 const label = (mailboxId: string) => ({ target: { kind: 'label' as const, mailboxId } });
 
+const box = (id: string, role: string | null, parentId: string | null = null) => ({ id, name: id, role, parentId });
 const ctx: RuleActionCtx = ruleContext([
-	{ id: 'inbox', role: 'inbox' },
-	{ id: 'trash', role: 'trash' },
-	{ id: 'arch', role: 'archive' },
-	{ id: 'junk', role: 'junk' },
-	{ id: 'finance', role: null },
-	{ id: 'receipts', role: null },
-	{ id: 'work', role: null },
-	{ id: 'bills', role: null }
+	box('inbox', 'inbox'),
+	box('trash', 'trash'),
+	box('arch', 'archive'),
+	box('junk', 'junk'),
+	box('finance', null),
+	box('receipts', null),
+	box('projects', null),
+	box('Labels', null),
+	box('work', null, 'Labels'),
+	box('bills', null, 'Labels')
 ]);
 
 const run = (rules: Rule[], e = email()) => evaluateRulesForEmail(e, rules, ctx, '');
@@ -65,22 +68,22 @@ describe('evaluateRulesForEmail', () => {
 	it('adds up labels', () => {
 		const outcome = run([rule('a', label('work')), rule('b', label('bills'))]);
 		expect(outcome.firedRuleIds).toEqual(['a', 'b']);
-		expect([...outcome.addMailboxIds]).toEqual(['work', 'bills']);
-		expect([...outcome.removeMailboxIds]).toEqual([]);
+		expect([...outcome.labels]).toEqual(['work', 'bills']);
+		expect(outcome.moveTo).toBeNull();
 	});
 
 	it('lets the first rule that moves a message decide its folder', () => {
 		const outcome = run([rule('label', label('work')), rule('first', folder('finance')), rule('second', folder('receipts'))]);
 		expect(outcome.firedRuleIds).toEqual(['label', 'first', 'second']);
-		expect([...outcome.addMailboxIds]).toEqual(['work', 'finance']);
-		expect([...outcome.removeMailboxIds]).toEqual(['inbox']);
+		expect([...outcome.labels]).toEqual(['work']);
+		expect(outcome.moveTo).toBe('finance');
 	});
 
 	it('moves to Trash, Archive or Junk by role', () => {
 		for (const [kind, id] of [['trash', 'trash'], ['archive', 'arch'], ['junk', 'junk']] as const) {
 			const outcome = run([rule(kind, { target: { kind } })]);
-			expect([...outcome.addMailboxIds]).toEqual([id]);
-			expect([...outcome.removeMailboxIds]).toEqual(['inbox']);
+			expect(outcome.moveTo).toBe(id);
+			expect(outcome.labels.size).toBe(0);
 		}
 	});
 
@@ -90,7 +93,7 @@ describe('evaluateRulesForEmail', () => {
 		const outcome = run([stop, later]);
 		expect(outcome.firedRuleIds).toEqual(['stop']);
 		expect(outcome.keywords).toEqual({ $seen: true });
-		expect(outcome.addMailboxIds.size).toBe(0);
+		expect(outcome.moveTo).toBeNull();
 		// A rule that stops only on the mail it matches.
 		expect(run([{ ...stop, conditions: [{ ...subjectInvoice, value: 'receipt' }] }, later]).firedRuleIds).toEqual(['later']);
 	});
@@ -98,15 +101,35 @@ describe('evaluateRulesForEmail', () => {
 	it('marks read and stars', () => {
 		const e = email();
 		const outcome = run([rule('read', { markRead: true }), rule('star', { star: true })], e);
-		expect(outcomeToUpdate(e, outcome)).toEqual({ 'keywords/$seen': true, 'keywords/$flagged': true });
+		expect(outcomeToUpdate(e, outcome, ctx.mailboxes)).toEqual({ 'keywords/$seen': true, 'keywords/$flagged': true });
 	});
 
 	it('skips a target that no longer exists, so a later move decides', () => {
 		const outcome = run([rule('gone', folder('deleted')), rule('label', label('deleted-label')), rule('next', folder('finance'))]);
-		expect([...outcome.addMailboxIds]).toEqual(['finance']);
+		expect(outcome.moveTo).toBe('finance');
+		expect(outcome.labels.size).toBe(0);
 		// No Junk on the account: nothing moves.
 		const noJunk = { ...ctx, junkId: undefined };
-		expect(evaluateRulesForEmail(email(), [rule('junk', { target: { kind: 'junk' } })], noJunk, '').addMailboxIds.size).toBe(0);
+		expect(evaluateRulesForEmail(email(), [rule('junk', { target: { kind: 'junk' } })], noJunk, '').moveTo).toBeNull();
+	});
+});
+
+describe('what a rule’s move writes', () => {
+	it('takes the message out of every folder it is in, not only the Inbox, and keeps its labels', () => {
+		const e = email({ mailboxIds: { inbox: true, projects: true, work: true } });
+		const { update } = updatesForEmails([e], [rule('file', folder('finance'))], ctx);
+		expect(update).toEqual({ e1: { mailboxIds: { finance: true, work: true } } });
+	});
+
+	it('adds a label and leaves the folders alone', () => {
+		const e = email({ mailboxIds: { inbox: true, projects: true } });
+		const { update } = updatesForEmails([e], [rule('tag', label('bills'))], ctx);
+		expect(update).toEqual({ e1: { mailboxIds: { inbox: true, projects: true, bills: true } } });
+	});
+
+	it('writes nothing for a message already where the rules put it', () => {
+		const e = email({ mailboxIds: { finance: true, work: true } });
+		expect(updatesForEmails([e], [rule('file', folder('finance')), rule('tag', label('work'))], ctx).update).toEqual({});
 	});
 });
 

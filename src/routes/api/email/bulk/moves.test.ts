@@ -38,6 +38,10 @@ const MAILBOXES = [
 	{ id: 'TR', name: 'Trash', role: 'trash', parentId: null },
 	{ id: 'JK', name: 'Junk', role: 'junk', parentId: null },
 	{ id: 'AR', name: 'Archive', role: 'archive', parentId: null },
+	{ id: 'DR', name: 'Drafts', role: 'drafts', parentId: null },
+	{ id: 'SN', name: 'Sent', role: 'sent', parentId: null },
+	{ id: 'RML', name: 'Remind Me Later', role: null, parentId: null },
+	{ id: 'SCH', name: 'Scheduled', role: null, parentId: null },
 	{ id: 'PRJ', name: 'Projects', role: null, parentId: null },
 	{ id: 'LBLS', name: 'Labels', role: null, parentId: null },
 	{ id: 'WORK', name: 'Work', role: null, parentId: 'LBLS' }
@@ -63,21 +67,29 @@ import { PATCH } from '../[id]/+server';
 
 const locals = { auth: { accountId: 'jmap' }, activeAccountId: 'acct-1' };
 
-async function bulk(body: Record<string, unknown>) {
+async function bulkStatus(body: Record<string, unknown>): Promise<number> {
 	const res = await POST({
 		request: new Request('http://localhost/api/email/bulk', { method: 'POST', body: JSON.stringify(body) }),
 		locals
 	} as unknown as Parameters<typeof POST>[0]);
-	expect(res.status).toBe(200);
+	return res.status;
 }
 
-async function single(id: string, body: Record<string, unknown>) {
+async function singleStatus(id: string, body: Record<string, unknown>): Promise<number> {
 	const res = await PATCH({
 		request: new Request(`http://localhost/api/email/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 		params: { id },
 		locals
 	} as unknown as Parameters<typeof PATCH>[0]);
-	expect(res.status).toBe(200);
+	return res.status;
+}
+
+async function bulk(body: Record<string, unknown>) {
+	expect(await bulkStatus(body)).toBe(200);
+}
+
+async function single(id: string, body: Record<string, unknown>) {
+	expect(await singleStatus(id, body)).toBe(200);
 }
 
 beforeEach(() => {
@@ -85,7 +97,9 @@ beforeEach(() => {
 		inbox1: { IN: true },
 		labelled: { IN: true, WORK: true },
 		filed: { PRJ: true },
-		trashed: { TR: true }
+		trashed: { TR: true },
+		twoFolders: { IN: true, PRJ: true, WORK: true },
+		labelOnly: { WORK: true }
 	};
 	state.keywords = {};
 	state.destroyed = [];
@@ -134,16 +148,49 @@ describe('Move to… from a folder or a label', () => {
 	it('takes the message out of the place it is moved from', async () => {
 		await bulk({ ids: ['filed'], action: 'moveTo', targetMailboxId: 'IN', sourceMailboxId: 'PRJ' });
 		expect(state.boxes.filed).toEqual({ IN: true });
+	});
 
+	it('from a label view, files the message in the folder and keeps the label', async () => {
+		// It used to leave the label and stay in the Inbox: { IN, PRJ }.
 		await bulk({ ids: ['labelled'], action: 'moveTo', targetMailboxId: 'PRJ', sourceMailboxId: 'WORK' });
-		expect(state.boxes.labelled).toEqual({ IN: true, PRJ: true });
+		expect(state.boxes.labelled).toEqual({ PRJ: true, WORK: true });
+		await single('labelOnly', { action: 'moveTo', targetMailboxId: 'PRJ', sourceMailboxId: 'WORK' });
+		expect(state.boxes.labelOnly).toEqual({ PRJ: true, WORK: true });
+	});
+
+	it('leaves every folder a message was in, whatever folder the view named', async () => {
+		await bulk({ ids: ['twoFolders'], action: 'moveTo', targetMailboxId: 'AR', sourceMailboxId: 'IN' });
+		expect(state.boxes.twoFolders).toEqual({ AR: true, WORK: true });
 	});
 });
 
-describe('dropping on a label, which names no folder', () => {
+describe('places mail can’t be moved into', () => {
+	it('refuses the Labels container, Remind Me Later, Scheduled, Drafts and Sent, and changes nothing', async () => {
+		for (const target of ['LBLS', 'RML', 'SCH', 'DR', 'SN']) {
+			expect(await bulkStatus({ ids: ['inbox1'], action: 'moveTo', targetMailboxId: target })).toBe(400);
+			expect(await singleStatus('filed', { action: 'moveTo', targetMailboxId: target })).toBe(400);
+		}
+		expect(state.boxes.inbox1).toEqual({ IN: true });
+		expect(state.boxes.filed).toEqual({ PRJ: true });
+	});
+
+	it('refuses a mailbox that doesn’t exist', async () => {
+		expect(await bulkStatus({ ids: ['inbox1'], action: 'moveTo', targetMailboxId: 'GONE' })).toBe(400);
+		expect(state.boxes.inbox1).toEqual({ IN: true });
+	});
+});
+
+describe('Move to… a label', () => {
 	it('adds the label and keeps the message where it is', async () => {
 		await bulk({ ids: ['inbox1', 'filed'], action: 'moveTo', targetMailboxId: 'WORK' });
 		expect(state.boxes.inbox1).toEqual({ IN: true, WORK: true });
+		expect(state.boxes.filed).toEqual({ PRJ: true, WORK: true });
+	});
+
+	it('does the same when the view names a folder, and from the single-message action', async () => {
+		await bulk({ ids: ['inbox1'], action: 'moveTo', targetMailboxId: 'WORK', sourceMailboxId: 'IN' });
+		expect(state.boxes.inbox1).toEqual({ IN: true, WORK: true });
+		await single('filed', { action: 'moveTo', targetMailboxId: 'WORK', sourceMailboxId: 'PRJ' });
 		expect(state.boxes.filed).toEqual({ PRJ: true, WORK: true });
 	});
 

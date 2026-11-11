@@ -2,9 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { EmailUpdateError } from '$lib/jmap/email';
-import { applyLabel, removeLabel } from '$lib/jmap/labels';
-import { ensureArchiveMailbox, getMailboxes } from '$lib/jmap/mailbox';
-import { labelMailboxIds } from '$lib/types/labels';
+import { addLabel, FilingError, removeLabel } from '$lib/server/filing';
 
 /**
  * Add a label to a message or take one off. `labelId` is a JMAP Mailbox id
@@ -31,16 +29,14 @@ export const POST: RequestHandler = async ({ request, locals, params }) => {
 	const client = createClient(locals.auth);
 	const { accountId } = locals.auth;
 	try {
-		if (!labelMailboxIds(await getMailboxes(client, accountId)).has(labelId)) {
-			return json({ error: 'Not a label' }, { status: 400 });
-		}
 		if (action === 'apply') {
-			await applyLabel(client, accountId, params.id, labelId);
+			await addLabel(client, accountId, [params.id], labelId);
 		} else {
-			await removeLabel(client, accountId, params.id, labelId, () => ensureArchiveMailbox(client, accountId));
+			await removeLabel(client, accountId, [params.id], labelId);
 		}
 		return json({ success: true });
 	} catch (err) {
+		if (err instanceof FilingError) return json({ error: err.message }, { status: err.status });
 		if (err instanceof EmailUpdateError) {
 			const gone = err.failures.every((f) => f.type === 'notFound');
 			return json({ error: gone ? 'Email not found' : err.message }, { status: gone ? 404 : 400 });

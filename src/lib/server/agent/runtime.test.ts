@@ -10,7 +10,9 @@ const mocks = vi.hoisted(() => ({
 	updateEmailMailboxes: vi.fn(),
 	sendEmail: vi.fn(),
 	getEmailDetail: vi.fn(),
-	moveEmails: vi.fn(),
+	moveToTrash: vi.fn(),
+	moveToArchive: vi.fn(),
+	moveToFolder: vi.fn(),
 	searchEmails: vi.fn(async () => ({ emails: [] as Record<string, unknown>[], total: 0 })),
 	saveDraft: vi.fn(async () => ({ success: true })),
 	addReminder: vi.fn(() => 'rem-1'),
@@ -42,12 +44,20 @@ vi.mock('$lib/server/log', async (importOriginal) => ({
 vi.mock('$lib/jmap/auth', () => ({ createClient: () => ({}) }));
 vi.mock('$lib/jmap/email', () => ({
 	getEmailDetail: mocks.getEmailDetail,
-	moveEmails: mocks.moveEmails,
 	searchEmails: mocks.searchEmails,
 	setEmailCategory: vi.fn(),
 	updateEmailMailboxes: mocks.updateEmailMailboxes,
 	saveDraft: mocks.saveDraft,
 	sendEmail: mocks.sendEmail
+}));
+vi.mock('$lib/server/filing', () => ({
+	FilingError: class extends Error {},
+	moveToTrash: mocks.moveToTrash,
+	moveToArchive: mocks.moveToArchive,
+	moveToFolder: mocks.moveToFolder,
+	addLabel: vi.fn(),
+	removeLabel: vi.fn(),
+	snoozeEmail: vi.fn()
 }));
 vi.mock('$lib/jmap/mailbox', () => ({
 	getMailboxes: async () => [
@@ -537,7 +547,7 @@ describe('runAgentTurn', () => {
 				)
 				.mockResolvedValueOnce(reply([{ type: 'text', text: 'Stopped at 30.' }], 'end_turn'));
 			const result = await runAgentTurn(turn());
-			expect(mocks.moveEmails).toHaveBeenCalledTimes(1);
+			expect(mocks.moveToTrash).toHaveBeenCalledTimes(1);
 			expect(result.done).toEqual(['Moved 30 messages to Trash']);
 			expect(resultsOf(1)[1]).toMatchObject({ is_error: true, content: expect.stringContaining('at most 30 messages') });
 		});
@@ -553,7 +563,8 @@ describe('runAgentTurn', () => {
 				)
 				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
 			await runAgentTurn(turn());
-			expect(mocks.moveEmails).toHaveBeenCalledTimes(2);
+			expect(mocks.moveToArchive).toHaveBeenCalledTimes(1);
+			expect(mocks.moveToFolder).toHaveBeenCalledTimes(1);
 			expect(resultsOf(1)[2]).toMatchObject({ is_error: true, content: expect.stringContaining('at most 100 messages') });
 		});
 

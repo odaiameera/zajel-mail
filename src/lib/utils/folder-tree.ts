@@ -1,82 +1,17 @@
 import type { Mailbox } from '$lib/jmap/types';
-import { REMIND_ME_LATER_NAME, isScheduledMailbox } from '$lib/jmap/mailbox';
-import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
+import { byPosition, filterUserFolders } from '$lib/mailboxes';
+import { findLabelsParentId, isLabelMailbox } from '$lib/types/labels';
 
-export type FolderTreeNode = Mailbox & { children: FolderTreeNode[] };
-
-export type FolderOption = {
-	id: string;
-	name: string;
-	depth: number;
-};
-
-/**
- * The order folders and labels are shown in: the position the user gave
- * them (JMAP `sortOrder`), then the name. A server hands every mailbox the
- * same sortOrder until someone drags one, so an untouched account reads
- * alphabetically, and a reordered level keeps its order in every client that
- * honours sortOrder.
- */
-export function byPosition(a: Pick<Mailbox, 'sortOrder' | 'name'>, b: Pick<Mailbox, 'sortOrder' | 'name'>): number {
-	return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
-}
-
-/**
- * Keep only the folders the user made and may rearrange. Out go system
- * folders (non-null role), the "Labels" container and its children, and the
- * two folders the app itself keeps at the top level: Remind Me Later and
- * Scheduled, which reminders and Send later depend on.
- */
-export function filterUserFolders(mailboxes: Mailbox[]): Mailbox[] {
-	const labelsParentId = findLabelsParentId(mailboxes);
-	return mailboxes.filter(
-		(m) =>
-			m.role === null &&
-			!isLabelMailbox(m, labelsParentId) &&
-			!isLabelsParent(m, labelsParentId) &&
-			!(m.name === REMIND_ME_LATER_NAME && m.parentId === null) &&
-			!isScheduledMailbox(m)
-	);
-}
-
-/**
- * Build a nested tree of user folders, each level in its own order
- * (see {@link byPosition}).
- */
-export function buildFolderTree(mailboxes: Mailbox[]): FolderTreeNode[] {
-	const folders = filterUserFolders(mailboxes);
-	const byId = new Map<string, FolderTreeNode>(
-		folders.map((m) => [m.id, { ...m, children: [] }])
-	);
-	const roots: FolderTreeNode[] = [];
-	for (const node of byId.values()) {
-		const parent = node.parentId ? byId.get(node.parentId) : undefined;
-		if (parent) parent.children.push(node);
-		else roots.push(node);
-	}
-	const sortLevel = (nodes: FolderTreeNode[]) => {
-		nodes.sort(byPosition);
-		for (const n of nodes) sortLevel(n.children);
-	};
-	sortLevel(roots);
-	return roots;
-}
-
-/**
- * Flatten a folder tree into an ordered list with a `depth` hint for
- * indented dropdown rendering.
- */
-export function flattenFolderTree(tree: FolderTreeNode[]): FolderOption[] {
-	const out: FolderOption[] = [];
-	const walk = (nodes: FolderTreeNode[], depth: number) => {
-		for (const n of nodes) {
-			out.push({ id: n.id, name: n.name, depth });
-			walk(n.children, depth + 1);
-		}
-	};
-	walk(tree, 0);
-	return out;
-}
+// The tree itself is built in $lib/mailboxes, where what counts as a folder
+// is decided; it is re-exported here for the code that rearranges folders.
+export {
+	buildFolderTree,
+	byPosition,
+	filterUserFolders,
+	flattenFolderTree,
+	type FolderOption,
+	type FolderTreeNode
+} from '$lib/mailboxes';
 
 /**
  * Return the set of folder ids that are descendants of `id` (inclusive).

@@ -555,14 +555,6 @@ export interface EmailMailboxChange {
 	add?: string[];
 	/** Mailbox ids to remove. */
 	remove?: string[];
-	/**
-	 * For a move, worked out from where the message really is rather than
-	 * where the client says it is: it leaves `from` if it is there, and
-	 * otherwise every mailbox but its labels. Starred and Search name no
-	 * folder, and a stale view can name the wrong one; either used to turn
-	 * the move into a copy.
-	 */
-	leave?: { from?: string; labelIds: ReadonlySet<string> };
 	/** Keyword → set (true) / clear (false). */
 	keywords?: Record<string, boolean>;
 }
@@ -657,13 +649,8 @@ export async function updateEmailMailboxes(
 		const change = changes[id];
 		const patch: Record<string, unknown> = {};
 
-		if (change.add?.length || change.remove?.length || change.leave) {
+		if (change.add?.length || change.remove?.length) {
 			const next: Record<string, boolean> = { ...cur };
-			if (change.leave) {
-				const { from, labelIds } = change.leave;
-				const leaving = from && cur[from] ? [from] : Object.keys(cur).filter((mb) => !labelIds.has(mb));
-				for (const mb of leaving) delete next[mb];
-			}
 			for (const mb of change.remove ?? []) delete next[mb];
 			for (const mb of change.add ?? []) next[mb] = true;
 			// JMAP requires at least one mailbox — never strand a message.
@@ -682,15 +669,27 @@ export async function updateEmailMailboxes(
 		if (Object.keys(patch).length > 0) update[id] = patch;
 	}
 
-	if (Object.keys(update).length > 0) {
-		const setResponse = await client.request([
-			['Email/set', { accountId, update }, '0']
-		]);
-		failures.push(...collectSetFailures(setResponse.methodResponses[0][1] as EmailSetResult));
-	}
+	await sendEmailUpdates(client, accountId, update, failures);
+}
 
-	if (failures.length > 0) {
-		throw new EmailUpdateError(failureMessage(failures), failures);
+/**
+ * Send one Email/set of updates, and throw {@link EmailUpdateError} for
+ * every one the server refused, along with any `failures` the caller found
+ * before writing (a message that no longer exists, say).
+ */
+export async function sendEmailUpdates(
+	client: JMAPClient,
+	accountId: string,
+	update: Record<string, Record<string, unknown>>,
+	failures: EmailUpdateFailure[] = []
+): Promise<void> {
+	const all = [...failures];
+	if (Object.keys(update).length > 0) {
+		const setResponse = await client.request([['Email/set', { accountId, update }, '0']]);
+		all.push(...collectSetFailures(setResponse.methodResponses[0][1] as EmailSetResult));
+	}
+	if (all.length > 0) {
+		throw new EmailUpdateError(failureMessage(all), all);
 	}
 }
 
@@ -713,156 +712,8 @@ export async function emailMailboxMembership(
 	return new Map(list.map((e) => [e.id, e.mailboxIds ?? {}]));
 }
 
-/**
- * What a move takes the message out of. With the account's labels known it
- * is worked out from where the message really is (see
- * {@link EmailMailboxChange.leave}); without them, only the named source.
- */
-function moveAway(
-	targetMailboxId: string,
-	sourceMailboxId: string | undefined,
-	labelIds: ReadonlySet<string> | undefined
-): Pick<EmailMailboxChange, 'remove' | 'leave'> {
-	if (labelIds) {
-		// Dropping a message on a label from a view that names no folder
-		// (Starred, Search, the sidebar) only adds the label: the message
-		// keeps the folders it is in. Leaving "wherever it is" is for moves
-		// into a folder, where staying put would mean a copy.
-		if (!sourceMailboxId && labelIds.has(targetMailboxId)) return {};
-		return { leave: { from: sourceMailboxId, labelIds } };
-	}
-	return {
-		remove: sourceMailboxId && sourceMailboxId !== targetMailboxId ? [sourceMailboxId] : []
-	};
-}
-
-export async function moveEmail(
-	client: JMAPClient,
-	accountId: string,
-	id: string,
-	targetMailboxId: string,
-	sourceMailboxId?: string,
-	labelIds?: ReadonlySet<string>
-): Promise<void> {
-	await updateEmailMailboxes(client, accountId, {
-		[id]: { add: [targetMailboxId], ...moveAway(targetMailboxId, sourceMailboxId, labelIds) }
-	});
-}
-
-/**
- * Move a batch of emails: one Email/get + one Email/set regardless of
- * batch size.
- */
-export async function moveEmails(
-	client: JMAPClient,
-	accountId: string,
-	ids: string[],
-	targetMailboxId: string,
-	sourceMailboxId?: string,
-	labelIds?: ReadonlySet<string>
-): Promise<void> {
-	if (ids.length === 0) return;
-	const changes: Record<string, EmailMailboxChange> = {};
-	for (const id of ids) {
-		changes[id] = { add: [targetMailboxId], ...moveAway(targetMailboxId, sourceMailboxId, labelIds) };
-	}
-	await updateEmailMailboxes(client, accountId, changes);
-}
-
-// Trash, Archive and Spam take a message out of every folder it is in,
-// wherever they are pressed, and leave its labels on it.
-
-export const trashEmail = (
-	client: JMAPClient, accountId: string, id: string,
-	trashMailboxId: string, labelIds: ReadonlySet<string>
-) => moveEmail(client, accountId, id, trashMailboxId, undefined, labelIds);
-
-export const archiveEmail = (
-	client: JMAPClient, accountId: string, id: string,
-	archiveMailboxId: string, labelIds: ReadonlySet<string>
-) => moveEmail(client, accountId, id, archiveMailboxId, undefined, labelIds);
-
-/**
- * Mark an email as spam: move to Junk AND set the `$junk` IMAP keyword
- * (clearing `$notjunk` if set) so Stalwart's Bayesian classifier can
- * learn from the correction. One Email/set patch updates both at once.
- */
-export async function markAsSpam(
-	client: JMAPClient,
-	accountId: string,
-	id: string,
-	junkMailboxId: string,
-	labelIds: ReadonlySet<string>
-): Promise<void> {
-	await updateEmailMailboxes(client, accountId, {
-		[id]: {
-			add: [junkMailboxId],
-			leave: { labelIds },
-			keywords: { $junk: true, $notjunk: false }
-		}
-	});
-}
-
-/**
- * Mark an email as NOT spam: move from Junk back to Inbox AND flip the
- * keywords so the classifier learns which direction this message
- * belongs in.
- */
-export async function markAsNotSpam(
-	client: JMAPClient,
-	accountId: string,
-	id: string,
-	junkMailboxId: string,
-	inboxMailboxId: string
-): Promise<void> {
-	await updateEmailMailboxes(client, accountId, {
-		[id]: {
-			add: [inboxMailboxId],
-			remove: [junkMailboxId],
-			keywords: { $junk: false, $notjunk: true }
-		}
-	});
-}
-
-/** Batch version of {@link markAsSpam}. */
-export async function markManyAsSpam(
-	client: JMAPClient,
-	accountId: string,
-	ids: string[],
-	junkMailboxId: string,
-	labelIds: ReadonlySet<string>
-): Promise<void> {
-	if (ids.length === 0) return;
-	const changes: Record<string, EmailMailboxChange> = {};
-	for (const id of ids) {
-		changes[id] = {
-			add: [junkMailboxId],
-			leave: { labelIds },
-			keywords: { $junk: true, $notjunk: false }
-		};
-	}
-	await updateEmailMailboxes(client, accountId, changes);
-}
-
-/** Batch version of {@link markAsNotSpam}. */
-export async function markManyAsNotSpam(
-	client: JMAPClient,
-	accountId: string,
-	ids: string[],
-	junkMailboxId: string,
-	inboxMailboxId: string
-): Promise<void> {
-	if (ids.length === 0) return;
-	const changes: Record<string, EmailMailboxChange> = {};
-	for (const id of ids) {
-		changes[id] = {
-			add: [inboxMailboxId],
-			remove: [junkMailboxId],
-			keywords: { $junk: false, $notjunk: true }
-		};
-	}
-	await updateEmailMailboxes(client, accountId, changes);
-}
+// Moves, Trash, Archive, Spam and labels are in $lib/server/filing, which
+// applies the filing rules of $lib/mailboxes to every caller.
 
 export const forwardEmail = sendEmail;
 

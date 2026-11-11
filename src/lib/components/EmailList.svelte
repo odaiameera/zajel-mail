@@ -18,7 +18,8 @@
 	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
 	import { browser } from '$app/environment';
 	import { isPhone } from '$lib/stores/viewport';
-	import { REMIND_ME_LATER_NAME, isScheduledMailbox } from '$lib/jmap/mailbox';
+	import { isScheduledMailbox } from '$lib/jmap/mailbox';
+	import { isRemindMeLaterMailbox } from '$lib/mailboxes';
 
 	let {
 		emails,
@@ -259,7 +260,7 @@
 			case 'archive': return 'Nothing archived';
 		}
 		const listMailbox = mailboxes.find((m) => m.id === mailboxId);
-		if (listMailbox?.name === REMIND_ME_LATER_NAME && listMailbox.parentId === null) return 'Nothing snoozed';
+		if (listMailbox && isRemindMeLaterMailbox(listMailbox)) return 'Nothing snoozed';
 		if (listIsScheduled) return 'Nothing scheduled';
 		return 'This folder is empty';
 	});

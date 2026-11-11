@@ -1,9 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createClient, fetchSession } from '$lib/jmap/auth';
-import { markEmail, flagEmail, trashEmail, archiveEmail, moveEmail, markAsSpam, markAsNotSpam, destroyEmail, emailsInMailbox } from '$lib/jmap/email';
-import { getMailboxes, ensureArchiveMailbox } from '$lib/jmap/mailbox';
-import { labelMailboxIds } from '$lib/types/labels';
+import { markEmail, flagEmail, destroyEmail, emailMailboxMembership, emailsInMailbox, EmailUpdateError } from '$lib/jmap/email';
+import { getMailboxes } from '$lib/jmap/mailbox';
+import { FilingError, fileInto, markNotSpam, markSpam, moveToArchive, moveToTrash } from '$lib/server/filing';
 import { trustSender } from '$lib/server/trust-sender';
 import { recordSpamCorrections } from '$lib/server/db/queries/jev-decisions';
 
@@ -13,7 +13,10 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 	const body = await request.json();
 	const action = body.action as string;
 	const emailId = params.id;
-	const sourceMailboxId = body.sourceMailboxId as string | undefined;
+	// The folder the list was showing. Moves no longer read it (they go by
+	// where the message really is); Trash reads it only to know that it was
+	// pressed in Trash, where it deletes for good.
+	const viewMailboxId = body.sourceMailboxId as string | undefined;
 
 	try {
 		const client = createClient(locals.auth);
@@ -38,39 +41,26 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 				if (!trash) return json({ error: 'Trash folder not found' }, { status: 500 });
 				// Destroy only a message that is really in Trash.
 				const inTrash =
-					sourceMailboxId === trash.id &&
+					viewMailboxId === trash.id &&
 					(await emailsInMailbox(client, accountId, [emailId], trash.id)).has(emailId);
 				if (inTrash) {
 					await destroyEmail(client, accountId, emailId);
 				} else {
-					await trashEmail(client, accountId, emailId, trash.id, labelMailboxIds(mailboxes));
+					await moveToTrash(client, accountId, [emailId], { mailboxes });
 				}
 				break;
 			}
-			case 'archive': {
-				const archiveId = await ensureArchiveMailbox(client, accountId);
-				if (!archiveId) return json({ error: 'Could not create Archive' }, { status: 500 });
-				const labelIds = labelMailboxIds(await getMailboxes(client, accountId));
-				await archiveEmail(client, accountId, emailId, archiveId, labelIds);
+			case 'archive':
+				await moveToArchive(client, accountId, [emailId]);
 				break;
-			}
-			case 'spam': {
-				const mailboxes = await getMailboxes(client, accountId);
-				const junk = mailboxes.find((m) => m.role === 'junk');
-				if (!junk) return json({ error: 'Junk folder not found' }, { status: 500 });
-				await markAsSpam(client, accountId, emailId, junk.id, labelMailboxIds(mailboxes));
+			case 'spam':
+				await markSpam(client, accountId, [emailId]);
 				if (locals.activeAccountId) recordSpamCorrections(locals.activeAccountId, [emailId], 'spam');
 				break;
-			}
-			case 'notSpam': {
-				const mailboxes = await getMailboxes(client, accountId);
-				const junk = mailboxes.find((m) => m.role === 'junk');
-				const inbox = mailboxes.find((m) => m.role === 'inbox');
-				if (!junk || !inbox) return json({ error: 'Inbox or Junk folder missing' }, { status: 500 });
-				await markAsNotSpam(client, accountId, emailId, junk.id, inbox.id);
+			case 'notSpam':
+				await markNotSpam(client, accountId, [emailId]);
 				if (locals.activeAccountId) recordSpamCorrections(locals.activeAccountId, [emailId], 'ham');
 				break;
-			}
 			/**
 			 * Trust the sender: add them to the address book and, if the message
 			 * is sitting in Junk, bring it back and train the classifier on it.
@@ -90,12 +80,14 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 
 				// Independently of the contact, get the message out of Junk if
 				// that is where it landed — the reason the user pressed this.
+				// Whether it is in Junk is read from the server, not from the view.
 				let movedOut = false;
 				const mailboxes = await getMailboxes(client, accountId);
 				const junk = mailboxes.find((m) => m.role === 'junk');
 				const inbox = mailboxes.find((m) => m.role === 'inbox');
-				if (junk && inbox && sourceMailboxId === junk.id) {
-					await markAsNotSpam(client, accountId, emailId, junk.id, inbox.id);
+				const current = (await emailMailboxMembership(client, accountId, [emailId])).get(emailId);
+				if (junk && inbox && current?.[junk.id]) {
+					await markNotSpam(client, accountId, [emailId], { mailboxes });
 					movedOut = true;
 				}
 
@@ -104,8 +96,8 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 			case 'moveTo': {
 				const targetMailboxId = body.targetMailboxId as string | undefined;
 				if (!targetMailboxId) return json({ error: 'targetMailboxId required' }, { status: 400 });
-				const labelIds = labelMailboxIds(await getMailboxes(client, accountId));
-				await moveEmail(client, accountId, emailId, targetMailboxId, sourceMailboxId, labelIds);
+				// A label adds the label; a folder is a move; anything else is refused.
+				await fileInto(client, accountId, [emailId], targetMailboxId);
 				break;
 			}
 			default:
@@ -114,6 +106,10 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 
 		return json({ success: true });
 	} catch (err) {
+		if (err instanceof FilingError) return json({ error: err.message }, { status: err.status });
+		if (err instanceof EmailUpdateError && err.failures.every((f) => f.type === 'notFound')) {
+			return json({ error: 'Email not found' }, { status: 404 });
+		}
 		return json({ error: err instanceof Error ? err.message : 'Action failed' }, { status: 500 });
 	}
 };

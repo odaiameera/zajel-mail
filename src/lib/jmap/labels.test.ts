@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { JMAPClient } from './client';
-import { deleteLabelMailbox, removeLabel } from './labels';
+import { deleteLabelMailbox } from './labels';
 
 // An in-memory account: which mailboxes each message is in, and what was destroyed.
 const state = {
@@ -67,19 +67,5 @@ describe('deleteLabelMailbox', () => {
 		delete state.boxes.onlyLabel;
 		expect(await deleteLabelMailbox(client, 'acct', 'WORK', archive)).toEqual({ success: true, id: 'WORK' });
 		expect(state.fallbackCalls).toBe(0);
-	});
-});
-
-describe('removeLabel', () => {
-	it('removes the label and leaves the folders alone', async () => {
-		await removeLabel(client, 'acct', 'both', 'WORK', archive);
-		expect(state.boxes.both).toEqual({ IN: true });
-		expect(state.fallbackCalls).toBe(0);
-	});
-
-	it('puts a message that was only in the label into Archive, instead of silently doing nothing', async () => {
-		await removeLabel(client, 'acct', 'onlyLabel', 'WORK', archive);
-		expect(state.boxes.onlyLabel).toEqual({ AR: true });
-		expect(state.fallbackCalls).toBe(1);
 	});
 });
