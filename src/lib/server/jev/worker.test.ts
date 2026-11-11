@@ -59,7 +59,6 @@ import { recordSenderMoves, setPin } from '$lib/server/db/queries/jev-learning';
 import type { AuthState, MethodCall } from '$lib/jmap/types';
 import type { Rule } from '$lib/types/rules';
 import { forgetRateLimits, sortNewMail, sortNewMailSafe } from './worker';
-import { jevHandlesRules } from './rules';
 
 const ACCT = 'acct-1';
 const ME = 'me@example.test';
@@ -366,18 +365,8 @@ describe('sortNewMail', () => {
 	});
 
 	it('does not write over a move or a tab change made while Jev was judging', async () => {
-		const invoices: Rule = {
-			id: 'invoices',
-			name: 'Invoices',
-			enabled: true,
-			logic: 'allof',
-			conditions: [{ id: 'j1', field: 'jev', op: 'contains', value: 'an invoice', negate: false }],
-			actions: [{ type: 'applyLabel', value: 'archive' }],
-			createdAt: 0
-		};
-		setRules(ME, [invoices]);
 		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
-		fake.add('bill', 2, { subject: 'Your October invoice' });
+		fake.add('bill', 2, { 'header:list-unsubscribe': ' <x>', subject: 'Your October invoice' });
 		fake.add('deal', 3, { 'header:list-unsubscribe': ' <x>', subject: '30% off this week' });
 		// Between Jev's read of the messages and its write: you drag the
 		// newsletter to Promotions, delete the invoice and star the offer.
@@ -399,9 +388,10 @@ describe('sortNewMail', () => {
 		// Your tab stands, and Jev's is not added beside it.
 		expect(fake.emails.get('news')!.keywords).toEqual({ $cat_promotions: true });
 		expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'done', category: 'newsletters', applied: null });
-		// Deleted mail stays deleted: the label is not written from the old snapshot.
+		// Deleted mail stays deleted, and is not given a tab from the old snapshot.
 		expect(fake.emails.get('bill')!.mailboxIds).toEqual({ trash: true });
-		expect(getDecision(ACCT, 'bill')?.status).toBe('done');
+		expect(fake.emails.get('bill')!.keywords).toEqual({});
+		expect(getDecision(ACCT, 'bill')).toMatchObject({ status: 'done', applied: null });
 		// A change that is not a move is kept, and Jev's tab still goes on.
 		expect(fake.emails.get('deal')!.keywords).toEqual({ $flagged: true, $cat_promotions: true });
 	});
@@ -520,21 +510,11 @@ describe('sortNewMail', () => {
 		delete env.JEV_MOCK;
 		env.TYPESAFE_API_KEY = 'ts-test-key';
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
-		const labelInvoices: Rule = {
-			id: 'invoices',
-			name: 'Invoices',
-			enabled: true,
-			logic: 'allof',
-			conditions: [{ id: 'j1', field: 'jev', op: 'contains', value: 'an invoice', negate: false }],
-			actions: [{ type: 'applyLabel', value: 'archive' }],
-			createdAt: 0
-		};
-		setRules(ME, [labelInvoices]);
-		// TypeSafe says no to any request that carries the rule's statement.
+		// TypeSafe says no to these two requests, and answers any other.
 		vi.stubGlobal(
 			'fetch',
 			vi.fn().mockImplementation(async (_url: string, init?: RequestInit) =>
-				String(init?.body).includes('cond:') ? new Response('{"error":"bad question"}', { status: 400 }) : liveAnswer()
+				String(init?.body).includes('Invoice') ? new Response('{"error":"bad question"}', { status: 400 }) : liveAnswer()
 			)
 		);
 		fake.add('a', 1, { subject: 'Invoice 1' });
@@ -604,93 +584,6 @@ describe('sortNewMail', () => {
 		expect(getDecision(ACCT, 'later')?.status).toBe('done');
 	});
 
-	it('runs rules with Jev conditions, and the exact rules beside them, in the same pass', async () => {
-		const invoices: Rule = {
-			id: 'invoices',
-			name: 'Invoices',
-			enabled: true,
-			logic: 'allof',
-			conditions: [{ id: 'j1', field: 'jev', op: 'contains', value: 'an invoice or a payment request', negate: false }],
-			actions: [{ type: 'moveToFolder', value: 'archive' }, { type: 'delete' }],
-			createdAt: 0
-		};
-		const sam: Rule = {
-			id: 'sam',
-			name: 'Sam',
-			enabled: true,
-			logic: 'allof',
-			conditions: [{ id: 'f1', field: 'from', op: 'contains', value: 'sam@example.com', negate: false }],
-			actions: [{ type: 'markRead' }],
-			createdAt: 0
-		};
-		setRules(ME, [invoices, sam]);
-		// Tabs off: only the rules need Jev.
-		updateJevSettings(ACCT, { inboxTabs: false });
-		expect(jevHandlesRules(ACCT, [invoices, sam])).toBe(true);
-
-		fake.add('bill', 1, { subject: 'Your October invoice' });
-		fake.add('lunch', 2, { subject: 'Lunch?' });
-		fake.add('fromSam', 3, { from: [{ name: 'Sam', email: 'sam@example.com' }] });
-
-		await sortNewMail(ACCT, ME, auth, at(10));
-
-		// Mock Jev: "invoice" is in the subject, so the statement holds (0.9).
-		// The rule moves it — and its Delete is skipped, as for any Jev rule.
-		expect(fake.emails.get('bill')!.mailboxIds).toEqual({ archive: true });
-		expect(fake.emails.get('lunch')!.mailboxIds).toEqual({ inbox: true });
-		expect(fake.emails.get('fromSam')!.keywords).toEqual({ $seen: true });
-
-		expect(getDecision(ACCT, 'bill')?.rules).toEqual([
-			{
-				ruleId: 'invoices',
-				ruleName: 'Invoices',
-				statement: 'an invoice or a payment request',
-				probability: 0.9,
-				threshold: 0.8,
-				negate: false,
-				fired: true
-			}
-		]);
-		expect(getDecision(ACCT, 'bill')?.category).toBeNull();
-	});
-
-	it('never lets a rule Jev judges move mail to Trash or Junk', async () => {
-		const junkIt: Rule = {
-			id: 'junkit',
-			name: 'Junk invoices',
-			enabled: true,
-			logic: 'allof',
-			conditions: [{ id: 'j1', field: 'jev', op: 'contains', value: 'an invoice', negate: false }],
-			actions: [{ type: 'moveToFolder', value: 'junk' }, { type: 'markRead' }],
-			createdAt: 0
-		};
-		setRules(ME, [junkIt]);
-		fake.add('bill', 1, { subject: 'Your October invoice' });
-
-		await sortNewMail(ACCT, ME, auth, at(10));
-
-		// The move is dropped, as Delete is; the rest of the rule still runs.
-		expect(fake.emails.get('bill')!.mailboxIds).toEqual({ inbox: true });
-		expect(fake.emails.get('bill')!.keywords).toEqual({ $seen: true });
-	});
-
-	it('leaves rules to the rules scheduler while Jev may not read the account', () => {
-		const jevRule: Rule = {
-			id: 'r',
-			name: 'r',
-			enabled: true,
-			logic: 'allof',
-			conditions: [{ id: 'j', field: 'jev', op: 'contains', value: 'anything', negate: false }],
-			actions: [],
-			createdAt: 0
-		};
-		updateJevSettings(ACCT, { jevEnabled: false });
-		expect(jevHandlesRules(ACCT, [jevRule])).toBe(false);
-		updateJevSettings(ACCT, { jevEnabled: true });
-		expect(jevHandlesRules(ACCT, [jevRule])).toBe(true);
-		expect(jevHandlesRules(ACCT, [{ ...jevRule, conditions: [] }])).toBe(false);
-	});
-
 	it('puts a pinned sender’s mail in its tab without asking Jev', async () => {
 		delete env.JEV_MOCK;
 		env.TYPESAFE_API_KEY = 'ts-test-key';
@@ -733,11 +626,12 @@ describe('sortNewMail', () => {
 			name: 'Mark invoices read',
 			enabled: true,
 			logic: 'allof',
-			conditions: [{ id: 'j1', field: 'jev', op: 'contains', value: 'an invoice', negate: false }],
+			conditions: [{ id: 's1', field: 'subject', op: 'contains', value: 'invoice', negate: false }],
 			actions: [{ type: 'markRead' }],
 			createdAt: 0
 		};
 		setRules(ME, [markAll]);
+		setRulesCursor(ME, at(0).toISOString());
 		// Older than the cursor: only a backfill reaches these.
 		fake.add('oldNews', -60, { 'header:list-unsubscribe': ' <x>', subject: 'Your invoice digest' });
 		fake.add('oldPinned', -50, { from: [{ name: 'Shop', email: 'deals@shop.example' }] });
@@ -749,7 +643,6 @@ describe('sortNewMail', () => {
 
 		// Tab from Jev; the invoice rule did not run on old mail.
 		expect(fake.emails.get('oldNews')!.keywords).toEqual({ $cat_newsletters: true });
-		expect(getDecision(ACCT, 'oldNews')?.rules).toBeNull();
 		// Pins apply to existing mail too.
 		expect(fake.emails.get('oldPinned')!.keywords).toEqual({ $cat_promotions: true });
 		// Already in a tab: left alone, and nothing asked.
@@ -885,7 +778,7 @@ describe('sortNewMail', () => {
 			// Never Junk for someone you've written to: a warning instead.
 			expect(fake.emails.get('friendPhish')!.mailboxIds).toEqual({ inbox: true });
 			expect(getDecision(ACCT, 'friendPhish')?.spamAction).toBe('flagged');
-			// Junked mail skips tabs and rules; no $junk keyword, so Stalwart isn't trained.
+			// Junked mail gets no tab; no $junk keyword, so Stalwart isn't trained.
 			expect(fake.emails.get('spammy')!.keywords).toEqual({});
 		});
 
@@ -1085,7 +978,7 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 			writes.push(...calls.filter(([name]) => name === 'Email/set'));
 			return realRequest(calls);
 		};
-		await applyRulesForUser(auth, ME, ACCT);
+		await applyRulesForUser(auth, ME);
 		expect(writes).toEqual([]);
 	});
 
@@ -1102,6 +995,45 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 
 		// The rule's tab is on; no mark, so the hold's timeout lets it through.
 		expect(fake.emails.get('gh')!.keywords).toEqual({ $cat_updates: true });
+	});
+
+	it('runs rules first with the tabs off too, so a rule’s move lands before a spam verdict could take the message', async () => {
+		updateJevSettings(ACCT, { inboxTabs: false, spamMode: 'active' });
+		const githubToArchive: Rule = { ...githubToUpdates, id: 'gh-move', actions: [{ type: 'moveToFolder', value: 'archive' }] };
+		setRules(ME, [githubToArchive]);
+		setRulesCursor(ME, at(0).toISOString());
+		// Stalwart flagged it, and nobody here knows the sender: Jev would junk it.
+		// (Its own id: the scheduler remembers the ids its last run handled.)
+		fake.add('ghMoved', JUST_NOW, { from: [{ name: 'GitHub', email: 'noreply@github.com' }], 'header:x-spam-status:asText': 'Yes, score=8.1' });
+		fake.add('spammy', JUST_NOW, { 'header:x-spam-status:asText': 'Yes, score=8.1' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		// The rule got there first; Jev never saw the message in the Inbox.
+		expect(fake.emails.get('ghMoved')!.mailboxIds).toEqual({ archive: true });
+		expect(getDecision(ACCT, 'ghMoved')).toBeNull();
+		// The check that would have taken it is real: this one went to Junk.
+		expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true });
+	});
+
+	it('runs no rule that is waiting to be rewritten, even switched back on', async () => {
+		// What the upgrade leaves of a rule with a Jev condition: flagged, its
+		// exact part in place. Someone has switched it on again unfixed.
+		const flagged: Rule = {
+			...githubToUpdates,
+			id: 'flagged',
+			actions: [{ type: 'moveToFolder', value: 'archive' }],
+			attention: 'jev_condition',
+			enabled: true
+		};
+		setRules(ME, [flagged]);
+		setRulesCursor(ME, at(0).toISOString());
+		fake.add('ghFlagged', JUST_NOW, { from: [{ name: 'GitHub', email: 'noreply@github.com' }] });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+		await applyRulesForUser(auth, ME);
+
+		expect(fake.emails.get('ghFlagged')!.mailboxIds).toEqual({ inbox: true });
 	});
 
 	it('leaves mail judged while the tabs were off unmarked: it waits out the hold, no longer', async () => {

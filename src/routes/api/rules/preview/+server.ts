@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { buildJmapFilter } from '$lib/server/rules';
-import { hasJevCondition, type Rule } from '$lib/types/rules';
+import type { Rule } from '$lib/types/rules';
 
 /**
  * Preview how many existing emails match a single rule. Returns a JMAP
@@ -15,9 +15,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	const { rule } = (await request.json()) as { rule: Rule };
 	if (!rule) return json({ error: 'rule required' }, { status: 400 });
-
-	// No query can count a rule Jev judges; the editor tests it instead.
-	if (hasJevCondition(rule)) return json({ count: null, jev: true });
 
 	const filter = buildJmapFilter(rule);
 	if (!filter) return json({ count: 0 });

@@ -5,7 +5,7 @@ import { createClient, fetchSession } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import type { AuthState, Email, JMAPSession, MethodCall } from '$lib/jmap/types';
 import { categoryKeywordPatch, categoryOf, type InboxCategory } from '$lib/types/categories';
-import { hasJevCondition, JEV_OFF_LIMITS_ROLES, withoutOffLimitsTargets, type Rule } from '$lib/types/rules';
+import { isRunnable } from '$lib/types/rules';
 import {
 	advanceSortCursor,
 	getJevSettings,
@@ -18,22 +18,12 @@ import {
 	addUsage,
 	correctedEmailIds,
 	enqueueEmails,
-	getDecision,
 	listPendingEmailIds,
 	markSkipped,
 	recordDecision,
-	recordFailure,
-	type JevRuleCheck
+	recordFailure
 } from '$lib/server/db/queries/jev-decisions';
-import {
-	emptyOutcome,
-	evaluateRulesForEmail,
-	extractBodyText,
-	jevConditionsToAsk,
-	outcomeToUpdate,
-	type RuleActionCtx,
-	type RuleOutcome
-} from '$lib/server/rules-engine';
+import { emptyOutcome, outcomeToUpdate, type RuleOutcome } from '$lib/server/rules-engine';
 import { askJev, JevError, jevMode } from './client';
 import {
 	CATEGORY_QUESTION,
@@ -43,7 +33,6 @@ import {
 } from './categorize';
 import { buildEmailState, type JevFacts } from './email-state';
 import { gatherFacts, senderAddress } from './facts';
-import { conditionAnswers, ruleChecks, ruleQuestions } from './rules';
 import { decideSpam, SPAM_QUESTIONS, spamAnswers, type SpamAction } from './spam';
 import { isUrgent, URGENT_QUESTION, URGENT_QUESTION_ID } from '$lib/server/telegram/urgent';
 import { flushAlerts, queueUrgent, urgentAlertsWanted } from '$lib/server/telegram/notifier';
@@ -61,16 +50,14 @@ import { applyRulesNow } from '$lib/server/rules-scheduler';
  * and only mail that arrived after that was switched on.
  *
  * Each email gets one Jev call holding everything there is to ask: the
- * Inbox tab (when tabs are on) and every rule condition written for Jev
- * that could still decide a rule. When the account has such rules, this
- * worker evaluates all of its rules — exact ones included — and the rules
- * scheduler steps aside (see `jevHandlesRules`), so rules keep their order
- * and Stop processing keeps working.
+ * Inbox tab (when tabs are on), and the spam and urgency questions when
+ * those are on. Rules are not Jev's: the rules scheduler runs them, and a
+ * pass asks it for a run before it sorts, so a rule's move or label is in
+ * place first and never waits on TypeSafe.
  *
  * Arrivals are queued in jev_decisions and judged from the queue: an email
- * whose call fails is retried on the next run, and after MAX_JEV_ATTEMPTS
- * its rules run with every Jev condition counted as not holding. The
- * cursor keeps moving for everything else.
+ * whose call fails is retried on the next run, and given up on after
+ * MAX_JEV_ATTEMPTS. The cursor keeps moving for everything else.
  */
 
 /** New arrivals queued per run. */
@@ -110,7 +97,7 @@ const JEV_EMAIL_PROPERTIES = [
 	'header:x-spam-result:asText'
 ];
 
-/** Fetch emails with everything the state, facts and rules are built from. */
+/** Fetch emails with everything the state and facts are built from. */
 export async function fetchEmailsForJev(
 	client: JMAPClient,
 	accountId: string,
@@ -239,11 +226,10 @@ export function tabToApply(judged: JudgedEmail): InboxCategory | null {
 interface Plan {
 	/** What to do to the message — applied to where it is when it is written. */
 	outcome: RuleOutcome;
-	/** The tab a pin or Jev's pick put it in (not a rule's), for the record. */
+	/** The tab a pin or Jev's pick put it in, for the record. */
 	tab: InboxCategory | null;
 	/** The pin that chose the tab, if one did. */
 	pin: SenderPin | null;
-	checks: JevRuleCheck[];
 	/** Jev's spam answers and what came of them, when spam checking is on. */
 	spam?: SpamRecord | null;
 }
@@ -298,34 +284,17 @@ function spamActionLabel(action: SpamAction | null, mode: SpamMode): string | nu
 }
 
 /**
- * What to do with one email: the rules' outcome — with Jev's answers for
- * their conditions — and then its tab. A rule that picks a tab wins, then
- * your pin for the sender, then Jev's own pick; none of them overrules a tab
- * the message already has.
+ * The tab for one email still in Important: your pin for the sender wins,
+ * then Jev's own pick. Neither overrules a tab the message already has,
+ * whether you put it there or a rule did.
  */
-function planFor(
-	judged: JudgedEmail,
-	rules: Rule[],
-	ruleCtx: RuleActionCtx,
-	wantsTabs: boolean,
-	pin: SenderPin | null
-): Plan {
-	const email = judged.email;
-	const answers = conditionAnswers(judged.response);
-	const outcome: RuleOutcome =
-		rules.length > 0
-			? evaluateRulesForEmail(email, rules, ruleCtx, extractBodyText(email), answers)
-			: emptyOutcome();
-	const open = wantsTabs && !outcome.category && categoryOf(email.keywords) === 'important';
+function planFor(judged: JudgedEmail, wantsTabs: boolean, pin: SenderPin | null): Plan {
+	const outcome = emptyOutcome();
+	const open = wantsTabs && categoryOf(judged.email.keywords) === 'important';
 	const pinned = open && pin ? pin : null;
 	const tab = pinned ? pinned.category : open ? tabToApply(judged) : null;
 	if (tab && tab !== 'important') Object.assign(outcome.keywords, categoryKeywordPatch(tab));
-	return {
-		outcome,
-		tab,
-		pin: pinned,
-		checks: ruleChecks(rules, answers, outcome.firedRuleIds)
-	};
+	return { outcome, tab, pin: pinned };
 }
 
 /**
@@ -431,27 +400,26 @@ export async function sortNewMail(
 		return;
 	}
 
-	const enabledRules = getRules(accountEmail).filter((r) => r.enabled);
 	const wantsTabs = settings.inboxTabs;
-	// Only when a rule needs Jev does this worker take over the rules.
-	const handlesRules = enabledRules.some(hasJevCondition);
 	const spamMode = settings.spamMode;
 	// Telegram alerts for urgent mail: one more question for Jev, new mail only.
 	const alertUrgent = urgentAlertsWanted(accountRowId);
-	if (!wantsTabs && !handlesRules && spamMode === 'off' && !alertUrgent) {
-		// Nothing to ask: keep the cursor current, so switching tabs or a Jev
-		// rule on later doesn't reach back into mail from before.
+	if (!wantsTabs && spamMode === 'off' && !alertUrgent) {
+		// Nothing to ask: keep the cursor current, so switching tabs on later
+		// doesn't reach back into mail from before.
 		advanceSortCursor(accountRowId, settings.sortCursor, now.toISOString(), now);
 		return;
 	}
 
-	// The Inbox holds new mail until Jev marks it (see inbox-hold). Rules
-	// Jev doesn't judge are the rules scheduler's, so they run first: a tab
-	// or move they make lands before the mark, not after it is showing.
-	// They don't wait on TypeSafe, so they keep working while it is down.
-	if (wantsTabs && !handlesRules && enabledRules.length > 0) {
+	// Rules are the rules scheduler's, and they go first, whatever this pass
+	// is for. With tabs on, the Inbox holds new mail until Jev marks it (see
+	// inbox-hold), so a rule's move or tab has to land before the mark, not
+	// after the message is showing. With tabs off, a rule's move has to land
+	// before a spam verdict could send the same message to Junk. Rules don't
+	// wait on TypeSafe, so they keep working while it is down.
+	if (getRules(accountEmail).some(isRunnable)) {
 		try {
-			await applyRulesNow(auth, accountEmail, accountRowId);
+			await applyRulesNow(auth, accountEmail);
 		} catch (err) {
 			if (err instanceof JMAPAuthError) throw err;
 			console.error('[jev] rules before sorting failed', accountEmail, err);
@@ -466,14 +434,6 @@ export async function sortNewMail(
 	// With spam checking on, Junk is watched too: Stalwart's verdicts there
 	// are what Jev can confirm, or (in active mode) rescue mail from.
 	const junk = spamMode !== 'off' ? (mailboxes.find((m) => m.role === 'junk') ?? null) : null;
-	// A rule Jev judges never moves mail into Trash or Junk, as it never deletes.
-	const offLimits = new Set(mailboxes.filter((m) => m.role && JEV_OFF_LIMITS_ROLES.has(m.role)).map((m) => m.id));
-	const rules = handlesRules ? enabledRules.map((r) => withoutOffLimitsTargets(r, offLimits)) : [];
-	const ruleCtx: RuleActionCtx = {
-		inboxId: inbox.id,
-		trashId: mailboxes.find((m) => m.role === 'trash')?.id,
-		validMailboxIds: new Set(mailboxes.map((m) => m.id))
-	};
 
 	// 1. Queue what arrived since the cursor — in the Inbox, and in Junk
 	// while spam checking is on.
@@ -544,7 +504,6 @@ export async function sortNewMail(
 				sentId: mailboxes.find((m) => m.role === 'sent')?.id ?? null,
 				session: await fetchSession(auth).catch(() => null)
 			}),
-		ruleCtx,
 		// A pinned sender's tab is already decided: Jev isn't asked for it.
 		pins: wantsTabs ? listPins(accountRowId) : [],
 		now,
@@ -555,14 +514,14 @@ export async function sortNewMail(
 	// batch, so nothing more is sent once it is.
 	const stillOn = () => getJevSettings(accountRowId).jevEnabled;
 
-	// 2. New arrivals, and earlier failures among them: spam, tab and rules.
+	// 2. New arrivals, and earlier failures among them: spam, urgency and tab.
 	if (!stillOn()) return;
-	await judgeAndApply(batch, listPendingEmailIds(accountRowId, JUDGE_BATCH), rules, wantsTabs, spamMode !== 'off', alertUrgent);
+	await judgeAndApply(batch, listPendingEmailIds(accountRowId, JUDGE_BATCH), wantsTabs, spamMode !== 'off', alertUrgent);
 
 	// 3. Then mail that was already in the Inbox when you asked Jev to sort
-	// it: its tab only — rules and spam checks apply to new mail only.
+	// it: its tab only — spam checks and alerts apply to new mail only.
 	if (wantsTabs && !opts.fromStream && stillOn()) {
-		await judgeAndApply(batch, listPendingEmailIds(accountRowId, BACKFILL_BATCH, true), [], true, false, false);
+		await judgeAndApply(batch, listPendingEmailIds(accountRowId, BACKFILL_BATCH, true), true, false, false);
 	}
 	noteWrites(accountRowId, batch.writes);
 }
@@ -576,7 +535,6 @@ interface Batch {
 	junkId: string | null;
 	spamMode: SpamMode;
 	judge: () => Promise<JudgeContext>;
-	ruleCtx: RuleActionCtx;
 	pins: SenderPin[];
 	now: Date;
 	/** Both batches' writes, logged once for the pass. */
@@ -587,7 +545,6 @@ interface Batch {
 async function judgeAndApply(
 	b: Batch,
 	ids: string[],
-	rules: Rule[],
 	wantsTabs: boolean,
 	checkSpam: boolean,
 	alertUrgent: boolean
@@ -611,15 +568,14 @@ async function judgeAndApply(
 	const tabOpen = (email: Email) => wantsTabs && !chosen.has(email.id) && categoryOf(email.keywords) === 'important';
 	// Origin evidence goes along only while this batch's spam is checked.
 	const judged = await judgeEmails(b.client, b.accountId, judgeable, { ...(await b.judge()), security: checkSpam }, (email) =>
-		// Junk mail is only checked for spam: no tab, no rules.
+		// Junk mail is only checked for spam: no tab.
 		inJunk(email)
 			? SPAM_QUESTIONS
 			: {
 					...(checkSpam ? SPAM_QUESTIONS : {}),
 					...(alertUrgent ? { [URGENT_QUESTION_ID]: URGENT_QUESTION } : {}),
 					// No point asking for a tab the message already has: Jev won't overrule it.
-					...(tabOpen(email) && !pinOf(email) ? tabQuestion() : {}),
-					...ruleQuestions(jevConditionsToAsk(email, rules, extractBodyText(email)))
+					...(tabOpen(email) && !pinOf(email) ? tabQuestion() : {})
 				}
 	);
 
@@ -639,7 +595,7 @@ async function judgeAndApply(
 	// these requests (a 4xx about them, not the key, the model or its load).
 	// Every request refused is charged to its email and recorded, or the
 	// same mail would be sent again every pass for ever, none of it ever
-	// getting its tab or its rules' labels, with nothing to say why.
+	// getting its tab, with nothing to say why.
 	if (asked.length && asked.every((j) => j.error) && !asked.every((j) => j.refused)) {
 		typesafeFailing.add(b.accountRowId);
 		noteFailure('typesafe', b.accountRowId, 'typesafe_unavailable', { count: asked.length, error: asked[0].error });
@@ -650,18 +606,14 @@ async function judgeAndApply(
 	if (failed.length) noteFailure('judge', b.accountRowId, 'judge_failed', { failed: failed.length, error: failed[0].error });
 	else noteRecovered('judge', b.accountRowId, 'judge_recovered');
 
-	// Plan each email. A failed call is retried next run; once it has failed
-	// for good, the rules still run, with no Jev answers. Spam goes first:
-	// mail that goes to Junk skips rules and tabs.
+	// Plan each email. A failed call is retried next run, until it has failed
+	// for good. Spam goes first: mail that goes to Junk gets no tab.
 	const plans = new Map<string, Plan>();
 	const toJunk = new Set<string>();
 	for (const j of judged) {
 		if (j.error) {
 			// Rate limited: TypeSafe is busy, so it isn't charged to the email.
-			if (j.errorStatus === 429) continue;
-			recordFailure(b.accountRowId, j.email.id, j.error, now);
-			if (inJunk(j.email) || getDecision(b.accountRowId, j.email.id)?.status !== 'failed' || rules.length === 0) continue;
-			plans.set(j.email.id, planFor({ ...j, decision: null }, rules, b.ruleCtx, false, null));
+			if (j.errorStatus !== 429) recordFailure(b.accountRowId, j.email.id, j.error, now);
 			continue;
 		}
 		const verdict = checkSpam ? spamAnswers(j.response?.answers) : null;
@@ -691,14 +643,13 @@ async function judgeAndApply(
 				outcome: rescue && b.junkId ? moveOutcome(b.junkId, b.inboxId) : emptyOutcome(),
 				tab: null,
 				pin: null,
-				checks: [],
 				spam
 			});
 		} else if (acting && action === 'junk' && b.junkId) {
 			toJunk.add(j.email.id);
-			plans.set(j.email.id, { outcome: moveOutcome(b.inboxId, b.junkId), tab: null, pin: null, checks: [], spam });
+			plans.set(j.email.id, { outcome: moveOutcome(b.inboxId, b.junkId), tab: null, pin: null, spam });
 		} else {
-			plans.set(j.email.id, { ...planFor(j, rules, b.ruleCtx, wantsTabs && !chosen.has(j.email.id), pinOf(j.email)), spam });
+			plans.set(j.email.id, { ...planFor(j, wantsTabs && !chosen.has(j.email.id), pinOf(j.email)), spam });
 		}
 	}
 
@@ -759,7 +710,6 @@ async function judgeAndApply(
 				pinnedBy: plan.pin?.sender ?? null,
 				answers: j.response?.answers ?? {},
 				facts: j.facts ?? {},
-				rules: plan.checks,
 				model: j.response?.model ?? null,
 				inputTokens: j.response?.usage.inputTokens ?? 0,
 				spam: plan.spam ? { ...plan.spam, action: applied ? plan.spam.action : null } : null

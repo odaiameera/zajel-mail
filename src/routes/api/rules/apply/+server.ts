@@ -1,21 +1,8 @@
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
-import {
-	applyActionsToOutcome,
-	emptyOutcome,
-	matcherProperties,
-	outcomeToUpdate,
-	updatesForEmails,
-	type RuleActionCtx
-} from '$lib/server/rules-engine';
-import {
-	effectiveActions,
-	hasJevCondition,
-	JEV_OFF_LIMITS_ROLES,
-	withoutOffLimitsTargets,
-	type Rule
-} from '$lib/types/rules';
+import { matcherProperties, updatesForEmails, type RuleActionCtx } from '$lib/server/rules-engine';
+import { isRunnable, type Rule } from '$lib/types/rules';
 import type { Email } from '$lib/jmap/types';
 
 const PAGE = 200;
@@ -26,36 +13,16 @@ interface SetResult {
 	notUpdated?: Record<string, { type?: string; description?: string; properties?: string[] }> | null;
 }
 
-/**
- * One email's JMAP update for a single rule whose matches were chosen by
- * hand (the editor's Jev test), so only the actions run here. The wire
- * format comes from the shared engine — full `mailboxIds` objects, never
- * id pointer patches (see outcomeToUpdate for the Stalwart digit-id story).
- */
-function buildUpdates(
-	email: Email,
-	rule: Rule,
-	ctx: RuleActionCtx,
-	offLimits: ReadonlySet<string>
-): Record<string, unknown> {
-	const outcome = emptyOutcome();
-	// A rule Jev judges never deletes and never moves mail to Trash or Junk,
-	// here as in the worker: a judgement can be wrong, and those are the
-	// places mail is lost from.
-	applyActionsToOutcome(email, effectiveActions(withoutOffLimitsTargets(rule, offLimits)), ctx, outcome);
-	return outcomeToUpdate(email, outcome);
-}
-
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.auth) {
 		return new Response('Not authenticated', { status: 401 });
 	}
 
-	const { rules, ids } = (await request.json()) as { rules: Rule[]; ids?: unknown };
-	const activeRules = (rules ?? []).filter((r) => r.enabled);
-	// For a rule with a Jev condition no query finds the matches; the
-	// editor's test on recent mail does, and sends the ones you accepted.
-	const chosenIds = Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : null;
+	const { rules } = (await request.json()) as { rules: Rule[] };
+	// The rules come from the editor, not the database, so they are checked
+	// here as the scheduler checks stored ones: a rule waiting for its owner
+	// to rewrite it never acts, switched on or not.
+	const activeRules = (rules ?? []).filter(isRunnable);
 	const client = createClient(locals.auth);
 	const { accountId } = locals.auth;
 
@@ -119,9 +86,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					trashId: mailboxes.find((m) => m.role === 'trash')?.id,
 					validMailboxIds: validIds
 				};
-				const offLimits = new Set(
-					mailboxes.filter((m) => m.role && JEV_OFF_LIMITS_ROLES.has(m.role)).map((m) => m.id)
-				);
 
 				// Preflight: a rule whose label/folder target was deleted would
 				// "apply" as a stream of server-side rejections. Name the broken
@@ -152,36 +116,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					}
 				}
 
-				if (chosenIds) {
-					if (activeRules.length !== 1) {
-						send({ type: 'error', message: 'Chosen emails can only be applied with one rule.' });
-						return;
-					}
-					const rule = activeRules[0];
-					send({ type: 'start', total: chosenIds.length });
-					const response = await client.request([
-						['Email/get', { accountId, ids: chosenIds, properties: ['id', 'keywords', 'mailboxIds'] }, 'g']
-					]);
-					const emails = (response.methodResponses[0][1] as { list?: Email[] }).list ?? [];
-					const patches = Object.fromEntries(
-						emails
-							.map((email) => [email.id, buildUpdates(email, rule, ctx, offLimits)] as const)
-							.filter(([, p]) => Object.keys(p).length > 0)
-					);
-					scanned = matched = emails.length;
-					await applyUpdates(patches);
-					send({ type: 'done', scanned, matched, applied, failed, failedReason });
-					return;
-				}
-
-				const jevRule = activeRules.find(hasJevCondition);
-				if (jevRule) {
-					send({
-						type: 'error',
-						message: `Rule "${jevRule.name}" has a Jev condition, so no search can find its matches. Test it on recent mail, then apply it to the emails that match.`
-					});
-					return;
-				}
 				if (!inbox) {
 					send({ type: 'error', message: 'This account has no Inbox to apply rules to.' });
 					return;

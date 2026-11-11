@@ -21,7 +21,7 @@ It's built to feel quick and calm:
 - **Inbox tabs** keep mail you need apart from notices, newsletters and offers.
 - A **composer** can send later, even after you close the tab.
 - **Zajel**, the AI agent, reads your mailbox and calendar and tells you what needs you today.
-- **Jev**, an optional decision model, sorts new mail and runs rules you write in plain English.
+- **Jev**, an optional decision model, sorts new mail into the tabs and gives a second opinion on spam.
 
 > Every screenshot in this README is the real app, running against a mock mail server filled with fictional people and companies.
 
@@ -74,7 +74,6 @@ Three principles shape it:
 - 🪶 **Zajel, the AI agent.** It searches your whole mailbox and calendar, summarises your day and drafts replies. On **Claude** it also files, archives, labels and snoozes mail for you, while anything that leaves your account waits for your click. It runs on **Claude**, **OpenAI GPT-5.6** or any **Ollama** model, chosen in Settings.
 - 🔎 **Search that understands what you mean.** Keyword search plus semantic search, from a small model on your own Ollama, in Arabic and English.
 - 💬 **Zajel on Telegram.** Urgent mail and reminders reach your phone, and scheduled jobs send digests or tidy the Inbox.
-- 🧠 **Jev rules in plain English**, such as *"it's an invoice or a request for payment"*, with a strictness you choose and a test run on recent mail.
 - ⏰ **Send later and Undo send, handled by the server.** A scheduled message goes out on time even with every tab closed.
 - 🔑 **Sign-in codes detected**, with a one-click **Copy code** that can also send the email to Trash.
 - 📅 **CalDAV calendars**: month, week, work week, 3-day and day views, invitations, reminders and keyboard shortcuts.
@@ -125,7 +124,7 @@ With **semantic search** switched on in Settings → Search, it also finds mail 
 - **Starred** keeps the mail you flagged in one place.
 - **Archive** works even when your server has no folder with the archive role: it uses your top-level `Archive` folder.
 - **Trash can empty itself** after 7 or 30 days.
-- **Rules** run on the server about a minute after mail lands, and are deployed as Sieve too, so they keep filtering with every tab closed. A live count shows how many existing emails a rule matches, and **Save & apply** sorts them right away.
+- **Rules** match mail exactly, by sender, recipient, subject, body, size or attachment. They run on the server about a minute after mail lands, and are deployed as Sieve too, so they keep filtering with every tab closed. A live count shows how many existing emails a rule matches, and **Save & apply** sorts them right away.
 - **Auto-reply** is deployed to your mail server as a Sieve vacation message, with a subject and body you choose.
 - **Sender avatars** come from BIMI, site favicons and Gravatar. They're cached on the server, so every device shares one lookup. Lookups that find nothing are remembered too, instead of being retried on every render.
 
@@ -191,7 +190,7 @@ Otherwise it runs on **any Ollama-compatible endpoint**: Ollama Cloud, or a mode
 
 ### Jev: an Inbox that sorts itself
 
-[Jev](https://docs.typesafe.ai) is TypeSafe's decision model. It doesn't write text; it answers typed questions about each email, with probabilities. Zajel Mail uses those answers in three places.
+[Jev](https://docs.typesafe.ai) is TypeSafe's decision model. It doesn't write text; it answers typed questions about each email, with probabilities. Zajel Mail uses those answers in two places.
 
 ![Settings → Jev: the four Inbox tabs and the switch that turns them on for an account](docs/screenshots/jev-tabs.png)
 
@@ -212,18 +211,11 @@ Jev learns from you:
 
 Before switching it on, **Try Jev** shows where it would put your newest 200 Inbox emails, without moving anything. Afterwards, the mail already in your Inbox can be **sorted in the background**, with a cost estimate first.
 
-**2. Rules in plain English.** A rule can have a condition Jev judges, such as *"it's an invoice, a receipt or a request for payment"*. You set a strictness:
-- Loose (60%)
-- Normal (80%)
-- Strict (95%)
-
-Mix these conditions freely with exact matches like *From contains…*, and test the rule on recent mail before you save it. Rules with a Jev condition never delete, and never move mail to Trash or Junk.
-
-![A Jev rule that moves invoices and receipts to the Receipts folder](docs/screenshots/jev-rule.png)
-
-**3. A second opinion on spam and phishing.** Jev runs beside Stalwart's filter, which keeps running.
+**2. A second opinion on spam and phishing.** Jev runs beside Stalwart's filter, which keeps running.
 - **Watch only** records Jev's verdict next to Stalwart's, with a report of where the two disagree. Nothing moves.
 - **Active** moves mail Jev is at least 90% sure is spam or phishing to Junk. It warns from 60%, and never moves mail from your contacts or people you've written to, nor any mail when it couldn't check that. It also brings mail back out of Junk when Jev is very sure it's fine and the sender passed DMARC. A missing or errored DMARC result doesn't count as a pass.
+
+**Rules are not Jev's.** A rule matches mail exactly and is run by the app's own rules engine, whether Jev is on, off or unreachable. Earlier versions let a rule carry a condition written in plain English for Jev to judge. That is gone. When you upgrade, a rule that had such a condition is **switched off, not rewritten**: left running without the condition it would act on more mail than you wrote it for. It is listed under **Needs your attention** in Settings → Filters & Rules, with what it used to say, and you can rewrite it with exact conditions or delete it. Until you do, it never runs, even if it is switched back on.
 
 Jev is **off until you turn it on, account by account.** For a demo or development without a key, `JEV_MOCK=1` answers on the server and labels every answer as a mock, so a demo can never be mistaken for Jev. What is still planned is in [docs/jev-plan.md](docs/jev-plan.md).
 
@@ -442,13 +434,7 @@ environment:
 
 **8. Optional: spam checks.** Start with **Watch only**, compare Jev's verdicts with Stalwart's in the report, and move to **Active** once you trust it.
 
-**9. Write Jev rules.** In **Settings → Filters & Rules → New Jev rule**:
-1. Describe the mail in plain English.
-2. Pick a strictness.
-3. Press **Test on recent mail**.
-4. Save.
-
-**10. Teach it as you go.** Move mail between tabs, and pin senders or `@domains` to a tab.
+**9. Teach it as you go.** Move mail between tabs, and pin senders or `@domains` to a tab.
 
 > **No key yet?** Set `JEV_MOCK=1` to try the whole flow. Answers are worked out on your server from the same facts, nothing is sent to TypeSafe, and every answer is labelled as a mock.
 

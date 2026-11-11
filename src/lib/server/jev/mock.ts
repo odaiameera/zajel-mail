@@ -35,7 +35,7 @@ const STOP_WORDS = new Set([
 /**
  * The rule of thumb behind mock `noul` answers: likely (0.9) when one of the
  * statement's content words appears in the subject or body, unlikely (0.1)
- * otherwise — enough to exercise rules end to end without Jev.
+ * otherwise — enough to exercise a yes-or-no question end to end without Jev.
  */
 export function mockStatementProbability(statement: string, state: JevEmailState): number {
 	const text = `${state.email.subject} ${state.email.body_excerpt}`.toLowerCase();

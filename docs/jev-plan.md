@@ -1,10 +1,10 @@
 # Jev: what is left to build
 
-Jev is TypeSafe's decision model. Zajel Mail uses it to sort the Inbox into tabs, judge plain-English rule conditions, and act as a spam layer. The README's [Jev section](../README.md#jev-an-inbox-that-sorts-itself) describes what is built: tabs, Jev conditions in rules, learning from your moves and pins, the spam layer with its watch-only mode, and sorting the mail already in the Inbox.
+Jev is TypeSafe's decision model. Zajel Mail uses it to sort the Inbox into tabs and to act as a spam layer. The README's [Jev section](../README.md#jev-an-inbox-that-sorts-itself) describes what is built: tabs, learning from your moves and pins, the spam layer with its watch-only mode, and sorting the mail already in the Inbox.
 
 This page keeps what is not built yet, and the rules any new Jev work has to keep.
 
-A redesign of how rules, folders, labels and Jev fit together is planned in [organising-mail-plan.md](organising-mail-plan.md): Jev keeps the four tabs, and rules go back to exact matches that file into folders and labels.
+A redesign of how rules, folders, labels and Jev fit together is under way, staged in [organising-mail-plan.md](organising-mail-plan.md): Jev keeps the four tabs, and rules go back to exact matches that file into folders and labels. Its first stage is done: rules are exact-match only, and Jev no longer judges rule conditions or runs rules at all.
 
 ---
 
@@ -17,14 +17,15 @@ A redesign of how rules, folders, labels and Jev fit together is planned in [org
 
 ## Rules new Jev work keeps
 
-1. **Jev never deletes.** A rule with a Jev condition can't delete or move mail to Trash, since Trash empties itself and a misjudgement would become permanent. Spam goes to Junk, which can be undone.
-2. **Act only above a confidence threshold, and require more for bigger moves.** Categories need a minimum `choice` confidence. Rule conditions use the rule's strictness: Loose 0.6, Normal 0.8, Strict 0.95. Moving mail to Junk needs at least 0.9; rescuing it from Junk needs spam at most 0.1.
-3. **When Jev is unsure, nothing happens.** No keyword means the message stays in Important; a failed call is retried, then treated as if every Jev condition were false.
+1. **Jev never deletes.** Trash empties itself, so a misjudgement there would become permanent. Spam goes to Junk, which can be undone. Rules can move mail to Trash, but a rule is an exact match you wrote, and Jev has no part in it (rule 9).
+2. **Act only above a confidence threshold, and require more for bigger moves.** Categories need a minimum `choice` confidence. Moving mail to Junk needs at least 0.9; rescuing it from Junk needs spam at most 0.1.
+3. **When Jev is unsure, nothing happens.** No keyword means the message stays in Important; a failed call is retried, then given up on, and the message stays where it is.
 4. **Jev's own moves never train Stalwart.** Only your Spam and Not spam clicks set `$junk` and `$notjunk`.
 5. **What Jev sees is fixed:** sender, recipients, subject, list headers, the facts our code works out (in their own fields, so the email can't pose as one), and the first 2,000 characters of the plain-text body without quoted replies. `jev_decisions` keeps answers and probabilities, never the email text.
 6. **Opt-in for each linked account**, since that account's mail is what leaves the server.
 7. **Every decision explains itself** in the message view.
-8. **Holding new mail for Jev is short, and never hides it.** While Jev sorts an account's tabs, the Inbox tabs, their counts and new-mail notifications wait for a message until Jev marks it `$jev_sorted`, whatever the outcome. They wait no longer than `INBOX_HOLD_MS` (two minutes) after it arrived, and never for mail dated further ahead than that ([inbox-hold.ts](../src/lib/inbox-hold.ts)). Rules Jev doesn't judge run before the mark is written, so their moves and tabs are in place when the message shows; they never wait on TypeSafe. Mail is never parked in a holding folder, so mail is still delivered and visible elsewhere when the app is down.
+8. **Holding new mail for Jev is short, and never hides it.** While Jev sorts an account's tabs, the Inbox tabs, their counts and new-mail notifications wait for a message until Jev marks it `$jev_sorted`, whatever the outcome. They wait no longer than `INBOX_HOLD_MS` (two minutes) after it arrived, and never for mail dated further ahead than that ([inbox-hold.ts](../src/lib/inbox-hold.ts)). Rules run before the mark is written (every pass asks the rules scheduler for a run first), so their moves and tabs are in place when the message shows; they never wait on TypeSafe. Mail is never parked in a holding folder, so mail is still delivered and visible elsewhere when the app is down.
+9. **Jev has no part in rules.** A rule matches exactly (sender, recipient, subject, body, size, attachment) and only the rules scheduler runs it, so rules behave the same with Jev on, off or unreachable. A stored rule that still has a condition Jev used to judge is never run on its remaining conditions, which would widen it: it is switched off, flagged for its owner, and refused by the engine until it is rewritten.
 
 ---
 

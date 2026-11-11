@@ -141,22 +141,27 @@ describe('apply now', () => {
 	});
 });
 
-describe('applying a Jev rule to the emails the editor chose', () => {
-	const jev = (value: string): RuleCondition => ({ id: 'j1', field: 'jev', op: 'contains', value, negate: false });
+describe('rules that may not run', () => {
+	it('never act through "apply now", even switched on', async () => {
+		state.emails = [email('m1', 'hello world')];
+		// Flagged by the upgrade (its Jev condition gone, the exact part left),
+		// then sent as an enabled rule.
+		const flagged = { ...rule([subject('contains', 'hello')], [{ type: 'moveToFolder', value: 'ARCH' }]), attention: 'jev_condition' };
+		const events = await apply({ rules: [flagged] });
+		expect(state.sets).toEqual([]);
+		expect(events.at(-1)).toMatchObject({ type: 'done', matched: 0, applied: 0 });
 
-	it('never moves mail to Trash, whatever the rule says, and still does the rest', async () => {
-		state.emails = [email('m1', 'invoice')];
-		const events = await apply({
-			rules: [rule([jev('it is an invoice')], [{ type: 'moveToFolder', value: 'TRASH' }, { type: 'markRead' }])],
-			ids: ['m1']
-		});
-		expect(state.sets).toEqual([{ m1: { 'keywords/$seen': true } }]);
-		expect(events.at(-1)).toMatchObject({ type: 'done', applied: 1, failed: 0 });
-	});
+		// And one an old browser tab still holds, with the Jev condition in it.
+		const jev = { id: 'j1', field: 'jev', op: 'contains', value: 'it is an invoice', negate: false } as unknown as RuleCondition;
+		await apply({ rules: [rule([subject('contains', 'hello'), jev], [{ type: 'moveToFolder', value: 'ARCH' }])] });
+		expect(state.sets).toEqual([]);
 
-	it('moves to an ordinary folder as asked', async () => {
-		state.emails = [email('m1', 'invoice')];
-		await apply({ rules: [rule([jev('it is an invoice')], [{ type: 'moveToFolder', value: 'ARCH' }])], ids: ['m1'] });
+		// Chosen ids were how a Jev rule was applied; they are no longer a way in.
+		await apply({ rules: [flagged], ids: ['m1'] });
+		expect(state.sets).toEqual([]);
+
+		// The control: the same rule without the flag does move the message.
+		await apply({ rules: [{ ...flagged, attention: undefined }] });
 		expect(state.sets).toEqual([{ m1: { mailboxIds: { ARCH: true } } }]);
 	});
 });

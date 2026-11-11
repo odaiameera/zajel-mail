@@ -226,7 +226,6 @@ export const ICONS = {
 	close: X,
 	check: Check,
 	error: CircleAlert,
-	'rule-miss': Minus,
 	passkey: UserKey,
 	photo: Camera,
 	'zoom-in': ZoomIn,

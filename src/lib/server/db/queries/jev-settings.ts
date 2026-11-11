@@ -24,7 +24,7 @@ export interface JevSettings {
 	inboxTabs: boolean;
 	/**
 	 * Let Jev read this account's new mail — to sort it into tabs (with
-	 * `inboxTabs`) and to judge rule conditions written for Jev.
+	 * `inboxTabs`), and for spam checks and urgent alerts.
 	 */
 	jevEnabled: boolean;
 	/** ISO receivedAt new mail has been queued up to; null while Jev is off. */

@@ -1,4 +1,11 @@
-import { hasJevCondition, type Rule, type RuleCondition, type RuleAction, type RuleConditionOp } from '$lib/types/rules';
+import {
+	isRunnable,
+	isUsableCondition,
+	type Rule,
+	type RuleCondition,
+	type RuleAction,
+	type RuleConditionOp
+} from '$lib/types/rules';
 import { CATEGORY_KEYWORDS, categoryKeywordPatch, isInboxCategory } from '$lib/types/categories';
 import type { Mailbox } from '$lib/jmap/types';
 import { findLabelsParentId, isLabelMailbox } from '$lib/types/labels';
@@ -45,34 +52,14 @@ function mailboxImapPath(mb: Mailbox, ctx: SieveContext): string {
 	return parts.join('/');
 }
 
-/**
- * A condition is usable only if it would produce a real test. An empty text
- * value would compile to `:contains "Header" ""` — which matches EVERY
- * message — so we drop such conditions, and skip any rule left with none.
- * This prevents a half-finished rule from becoming a match-everything filter.
- */
-function isUsableCondition(c: RuleCondition): boolean {
-	switch (c.field) {
-		case 'from':
-		case 'to':
-		case 'subject':
-		case 'body':
-			return c.value.trim().length > 0;
-		case 'size':
-			return Number.isFinite(parseInt(c.value, 10));
-		case 'hasAttachment':
-			return true;
-		default:
-			return false;
-	}
-}
-
 export function compileRulesToSieve(
 	rules: Rule[],
 	ctx: SieveContext,
 	autoReply?: AutoReplyConfig
 ): string {
-	const activeRules = rules.filter((r) => r.enabled);
+	// Only rules that may run: one waiting for its owner to rewrite it is
+	// left out, as it is by the app's own engine.
+	const activeRules = rules.filter(isRunnable);
 	const autoReplyActive = !!autoReply?.enabled && autoReply.body.trim().length > 0;
 
 	// Nothing to emit — keep the minimum require line so the server still
@@ -101,17 +88,10 @@ export function compileRulesToSieve(
 	}
 
 	for (const rule of activeRules) {
-		// A Jev condition has no Sieve form, and dropping it would widen the
-		// rule ("from @shop AND Jev: receipt → move" would move everything
-		// from @shop). The app's own engine applies these rules instead.
-		if (hasJevCondition(rule)) {
-			lines.push(`# Rule: ${rule.name} — has a Jev condition, applied by the app`);
-			lines.push('');
-			continue;
-		}
-
 		// Drop empty/unusable conditions; skip the rule entirely if none
-		// remain so we never emit a filter that matches every message.
+		// remain so we never emit a filter that matches every message. (An
+		// empty text value would compile to `:contains "Header" ""`, which
+		// matches every message.)
 		const usableConditions = rule.conditions.filter(isUsableCondition);
 		if (usableConditions.length === 0) continue;
 

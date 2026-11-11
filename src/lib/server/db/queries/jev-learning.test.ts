@@ -8,18 +8,14 @@ process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'ameera-jevlearn-'))
 
 import { getDb } from '../index';
 import { runMigrations } from '../migrate';
-import { enqueueEmails, recordDecision } from './jev-decisions';
 import {
 	deletePin,
 	forgetSenderMoves,
 	getPinCategory,
-	hasRuleFeedback,
 	listPins,
 	normalizePinSender,
 	pinFor,
-	recordRuleFeedback,
 	recordSenderMoves,
-	ruleStats,
 	senderHistory,
 	setPin
 } from './jev-learning';
@@ -86,23 +82,5 @@ describe('sender history', () => {
 		expect(senderHistory(ACCT, 'shop@example.com')).toBe(
 			'You have moved 3 earlier emails from this sender to Promotions.'
 		);
-	});
-});
-
-describe('rule feedback', () => {
-	it('sets misses against the rule’s hits', () => {
-		const check = (fired: boolean) => [
-			{ ruleId: 'bills', ruleName: 'Bills', statement: 's', probability: 0.9, threshold: 0.8, negate: false, fired }
-		];
-		enqueueEmails(ACCT, ['e1', 'e2', 'e3']);
-		recordDecision(ACCT, 'e1', { category: null, confidence: null, applied: null, answers: {}, facts: {}, rules: check(true), model: 'm', inputTokens: 1 });
-		recordDecision(ACCT, 'e2', { category: null, confidence: null, applied: null, answers: {}, facts: {}, rules: check(true), model: 'm', inputTokens: 1 });
-		recordDecision(ACCT, 'e3', { category: null, confidence: null, applied: null, answers: {}, facts: {}, rules: check(false), model: 'm', inputTokens: 1 });
-
-		recordRuleFeedback(ACCT, 'bills', 'e2');
-		recordRuleFeedback(ACCT, 'bills', 'e2'); // once per email
-		expect(hasRuleFeedback(ACCT, 'bills', 'e2')).toBe(true);
-		expect(hasRuleFeedback(ACCT, 'bills', 'e1')).toBe(false);
-		expect(ruleStats(ACCT)).toEqual({ bills: { hits: 2, misses: 1 } });
 	});
 });

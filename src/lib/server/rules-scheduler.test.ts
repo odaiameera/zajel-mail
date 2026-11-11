@@ -49,7 +49,6 @@ vi.mock('./db/queries/rules', () => ({
 	getRulesCursor: () => state.cursor,
 	setRulesCursor: (_user: string, iso: string) => state.setCursors.push(iso)
 }));
-vi.mock('./jev/rules', () => ({ jevHandlesRules: () => false }));
 
 import type { AuthState } from '$lib/jmap/types';
 import { applyRulesForUser, applyRulesNow } from './rules-scheduler';
@@ -94,21 +93,21 @@ beforeEach(() => {
 describe('the auto-apply cursor', () => {
 	it('steps back a second behind a full page, so the rest of the last second is read next time', async () => {
 		state.emails = page(100, (i) => (i < 99 ? '2026-10-20T07:00:00Z' : '2026-10-20T07:00:05Z'));
-		await applyRulesForUser(auth, 'me@example.test', 'acct');
+		await applyRulesForUser(auth, 'me@example.test');
 		expect(state.setCursors).toEqual(['2026-10-20T07:00:04.000Z']);
 	});
 
 	it('moves on when a whole page shares one second, instead of re-reading it forever', async () => {
 		state.cursor = '2026-10-20T07:00:00.000Z';
 		state.emails = page(100, () => '2026-10-20T07:00:00Z');
-		await applyRulesForUser(auth, 'me@example.test', 'acct');
+		await applyRulesForUser(auth, 'me@example.test');
 		expect(state.setCursors).toEqual(['2026-10-20T07:00:00Z']);
 	});
 
 	it('jumps to the second before now after a partial page', async () => {
 		state.emails = page(3, () => '2026-10-20T07:00:00Z');
 		const before = Date.now();
-		await applyRulesForUser(auth, 'me@example.test', 'acct');
+		await applyRulesForUser(auth, 'me@example.test');
 		// Mail landing later in this run's second, after its query, is read next time.
 		expect(Date.parse(state.setCursors[0])).toBe(Math.floor(before / 1000) * 1000 - 1000);
 	});
@@ -116,13 +115,35 @@ describe('the auto-apply cursor', () => {
 	it('reads its own second again without acting twice on what it already handled', async () => {
 		const user = 'twice@example.test';
 		state.emails = page(2, () => '2026-10-20T07:00:00Z');
-		await applyRulesForUser(auth, user, 'acct');
+		await applyRulesForUser(auth, user);
 		expect(state.sets).toHaveLength(1);
 
 		// The second message of that second landed after the first run's query.
 		state.emails = [...page(2, () => '2026-10-20T07:00:00Z'), ...page(3, () => '2026-10-20T07:00:00Z').slice(2)];
-		await applyRulesForUser(auth, user, 'acct');
+		await applyRulesForUser(auth, user);
 		expect(Object.keys(state.sets[1])).toEqual(['m2']);
+	});
+});
+
+describe('rules that may not run', () => {
+	it('are passed over, even switched on: a rule waiting to be rewritten, and one with a condition Jev judged', async () => {
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		// Flagged by the upgrade, then switched back on without being fixed.
+		const flagged = { ...markRead, attention: 'jev_condition', enabled: true };
+		// As an old browser tab would save it, the Jev condition still there.
+		const unconverted = {
+			...markRead,
+			id: 'r2',
+			conditions: [...markRead.conditions, { id: 'j1', field: 'jev', op: 'contains', value: 'an invoice', negate: false }]
+		};
+		state.rules = [flagged, unconverted];
+		await applyRulesForUser(auth, 'flagged@example.test');
+		expect(state.sets).toEqual([]);
+
+		// The same mail, once the rule is an ordinary one again.
+		state.rules = [markRead];
+		await applyRulesForUser(auth, 'flagged@example.test');
+		expect(state.sets.map((u) => Object.keys(u))).toEqual([['m0', 'm1']]);
 	});
 });
 
@@ -133,12 +154,12 @@ describe('applyRulesNow', () => {
 		state.gate = new Promise<void>((resolve) => (release = resolve));
 		state.emails = page(1, () => '2026-10-20T07:00:00Z');
 		const queried = new Promise<void>((resolve) => (state.queried = resolve));
-		const first = applyRulesForUser(auth, user, 'acct');
+		const first = applyRulesForUser(auth, user);
 		await queried;
 
 		// Mail lands just after the first run read the Inbox.
 		state.emails = page(2, () => '2026-10-20T07:00:00Z');
-		const now = applyRulesNow(auth, user, 'acct');
+		const now = applyRulesNow(auth, user);
 		release();
 		state.gate = null;
 		await first;

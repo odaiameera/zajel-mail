@@ -250,9 +250,8 @@
 			replies removed. With them, facts this app works out: whether the sender is in your contacts,
 			whether you’ve written to them or in the conversation, whether the email was addressed to you
 			directly, its mailing-list, bulk and auto-submitted markers, whether it comes from a no-reply
-			address, whether it carries a sign-in code, and where you moved this sender’s mail before. Also the
-			statements in rules you wrote for Jev, and, while Telegram alerts are on, the question of whether
-			it’s urgent. With spam checks on, for new mail: its authentication results, whether its Reply-To or
+			address, whether it carries a sign-in code, and where you moved this sender’s mail before. Also,
+			while Telegram alerts are on, the question of whether it’s urgent. With spam checks on, for new mail: its authentication results, whether its Reply-To or
 			display name points at another domain, up to five domains the body links to (read from its first
 			16 KB), and Stalwart’s spam score and rule names. Jev returns only probabilities; the app keeps
 			those and the facts, never the email text. TypeSafe says it doesn’t train on customer data; its
@@ -264,7 +263,7 @@
 		{@const tabsOn = current(account, 'inboxTabs')}
 		<SettingRow
 			title={`Let Jev read new mail · ${account.email}`}
-			description={`${tabsOn ? 'Sorts it into tabs' : 'Would sort it into tabs (they’re off)'}, and checks rules with a Jev condition. Starts with mail that arrives from now on; Jev never moves mail you’ve put in a tab. ${monthLine(account.month)}`}
+			description={`${tabsOn ? 'Sorts it into tabs' : 'Would sort it into tabs (they’re off)'}. Starts with mail that arrives from now on; Jev never moves mail you’ve put in a tab. ${monthLine(account.month)}`}
 			state={states[`${account.id}:sort`] ?? 'idle'}
 			errorMessage={errors[`${account.id}:sort`]}
 		>

@@ -1,5 +1,6 @@
 import { getDb } from './index';
 import { repairAiSettingsColumns } from '$lib/server/ai/settings';
+import { retireStoredJevConditions } from '$lib/server/rules-upgrade';
 import { errorFields, logEvent } from '$lib/server/log';
 
 /**
@@ -15,6 +16,19 @@ const MIGRATION_SOURCES = import.meta.glob('./migrations/*.sql', {
 	import: 'default',
 	eager: true
 }) as Record<string, string>;
+
+/**
+ * Changes to stored rows that SQL can't make: the rules are JSON a browser
+ * sent, and changing what a rule may contain means rewriting it. Each step
+ * runs once, after the migrations that create what it reads, in a
+ * transaction with its own marker in `_migrations`, and is safe to run
+ * again should that marker ever be lost.
+ */
+const DATA_STEPS: { name: string; needs: string[]; run: () => void }[] = [
+	// Rules are exact-match only: rules with a condition Jev judged are
+	// switched off and flagged for their owner (see rules-upgrade.ts).
+	{ name: 'data/rules_exact_only', needs: ['004_rules.sql'], run: retireStoredJevConditions }
+];
 
 /** A migration that did not apply. The server refuses requests until it does. */
 export class MigrationError extends Error {
@@ -76,4 +90,20 @@ export function runMigrations(sources: Record<string, string> = MIGRATION_SOURCE
 	// runs once by name, so databases that ran the first version are patched
 	// here. Only once 026 itself has run: before that there is no ai_settings.
 	if (seen.get('026_search_index.sql')) repairAiSettingsColumns();
+
+	for (const step of DATA_STEPS) {
+		if (seen.get(step.name) || !step.needs.every((name) => seen.get(name))) continue;
+		const tx = db.transaction(() => {
+			step.run();
+			mark.run(step.name);
+		});
+		try {
+			tx();
+		} catch (err) {
+			const cause = err instanceof Error ? err.message : String(err);
+			console.error(`[migrate] ${step.name} failed and was not applied:`, cause);
+			logEvent('error', 'db', 'migration_failed', { migration: step.name, ...errorFields(err) });
+			throw new MigrationError(step.name, cause);
+		}
+	}
 }
