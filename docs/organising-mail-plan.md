@@ -18,7 +18,7 @@ Decisions already made by the owner:
 4. **Folders and labels stay two things**: a folder is where a message lives; a label is a tag.
 5. **Jev's spam layer and urgent alerts stay**, as separate optional add-ons.
 6. **Two settings pages**: "Folders & labels" and "Inbox tabs".
-7. **Staged.** Nothing is implemented until the owner picks a stage to start.
+7. **Staged.** Each stage is its own change, starting with stages 1 and 2.
 
 Intended outcome: one definition of each concept, one engine for rules, one pipeline for new mail, and far less code.
 
@@ -72,11 +72,21 @@ Two behaviour changes follow from this:
 - `spam.ts`: gains the spam plan. `urgent.ts`: moved from `telegram/urgent.ts`.
 - `health.ts`: rate-limit and outage state. `step.ts`: the short orchestration. `backfill.ts`, `record.ts`.
 
-**New: `src/lib/server/auto-reply.ts`**: deploys the out-of-office on its own.
+**New: `src/lib/server/auto-reply.ts`**: out-of-office sent by the app (see "Out-of-office" below).
 
-**Deleted**: `rules-scheduler.ts`, `rules-store.ts`, `rules.ts` (the JMAP-filter matcher), `jev/rules.ts`, the rule half of `sieve.ts`, `/api/rules/jev-test`, `/api/rules/deploy`, `/api/jev/rule-feedback`, `/api/preferences/rules`, `/api/preferences/labels`. The two pickers, `FolderPicker` and `FolderLocationPicker`, become one `MailboxPicker`.
+**Deleted**: `rules-scheduler.ts`, `rules-store.ts`, `rules.ts` (the JMAP-filter matcher), `jev/rules.ts`, `sieve.ts`, `/api/rules/jev-test`, `/api/rules/deploy`, `/api/jev/rule-feedback`, `/api/preferences/rules`, `/api/preferences/labels`. The two pickers, `FolderPicker` and `FolderLocationPicker`, become one `MailboxPicker`.
 
-**Sieve**: rules leave Sieve; only the out-of-office stays. Sieve can't share the engine's matching (it differs on body, attachments and size), can't sort existing mail, and saving rules currently deactivates any script made in another mail client. Stage 0 confirms what the server actually does first.
+**Sieve is removed entirely.** Stage 0 was run on the owner's server: out-of-office was switched on and saved without error (so the script was uploaded and activated), a message was sent from Outlook, and no reply arrived in Outlook's Inbox or Junk. Stalwart on this deployment is not running the user's Sieve script at delivery, which matches the comment at `src/lib/server/rules-scheduler.ts:12-13`. So:
+- The Sieve copy of the rules has never done anything; removing it changes no behaviour.
+- Out-of-office has never worked. It moves into the app.
+- The `mailrules` script already on the server is deactivated once per account, so it can't start acting if the server's configuration changes later.
+
+**Out-of-office, sent by the app** (owner's choice): the new-mail pipeline sends the reply itself.
+- Sent with `sendEmail` (`src/lib/jmap/email.ts:267`), marked `Auto-Submitted: auto-replied`, with `In-Reply-To` set.
+- At most one reply per sender per day (a small `auto_reply_sent` table).
+- Never to automatic or bulk mail: reuses the header facts already computed for Jev (`src/lib/server/jev/facts.ts:28-45`: `Auto-Submitted`, `Precedence`, list headers, no-reply senders).
+- Only to mail addressed to the account directly, never to mail that went to Junk, never to the account's own addresses.
+- It replies only while the app is running, like rules. The settings page says so.
 
 ## Data model
 
@@ -88,6 +98,7 @@ Next migration number is 028. Old tables stay until the last stage, so an interr
   - **Rules with a Jev condition** are disabled and listed under "Needs your attention", never silently dropped.
   - **Rules that only set a tab** become sender pins when they are a simple sender match; otherwise they are listed for attention.
   - Deleting a folder or label deletes its rules (the confirmation says how many).
+- **`auto_reply_sent`** (with stage 4, numbered in order of shipping): account, sender address, day. One row per reply, so a sender gets at most one a day; pruned after a week.
 - **029 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).
 - **030**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows).
 - **031**: drop `user_rules`, `rules_cursor`, `label_meta`, `folder_meta`, `jev_rule_feedback` and the unused Jev columns.
@@ -104,17 +115,18 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 
 | # | Goal | Main risk |
 |---|---|---|
-| 0 | Find out on the real server whether Stalwart runs the Sieve script at delivery (turn on out-of-office, send a test) | None; decides how stage 3 handles out-of-office |
+| 0 | **Done.** Tested on the real server: Stalwart does not run the Sieve script at delivery | — |
 | 1 | Rules become exact-match only; Jev rule conditions and their endpoints removed | Accounts with Jev rules switch runner |
 | 2 | Tabs belong to Jev: "set tab" removed from rules, tab rules become pins | Pins now act with Jev off |
-| 3 | One engine: preview and apply share it; rules leave Sieve | If Sieve was running, filing moves from delivery to seconds later |
-| 4 | Rules table (028) and validated saves | Splitting multi-target rules |
-| 5 | Folders and labels consistent: `filing.ts`, one metadata API (029), one picker | Moves now leave every folder, not just the Inbox |
-| 6 | One new-mail pipeline (030); `jev/worker.ts` split | The largest change |
-| 7 | The two settings pages | UI only |
-| 8 | Clean-up (031): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
+| 3 | One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
+| 4 | Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
+| 5 | Rules table (028) and validated saves | Splitting multi-target rules |
+| 6 | Folders and labels consistent: `filing.ts`, one metadata API (029), one picker | Moves now leave every folder, not just the Inbox |
+| 7 | One new-mail pipeline (030); `jev/worker.ts` split | The largest change |
+| 8 | The two settings pages | UI only |
+| 9 | Clean-up (031): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
 
-Stages 1 and 2 remove the most complexity for the least risk, and can ship before anything structural moves. The README's Jev section and `docs/jev-plan.md` are updated in each stage.
+Stages 1 and 2 remove the most complexity for the least risk, and can ship before anything structural moves. Between stages 3 and 4 the Auto-reply settings page is hidden, since it does nothing today either. The README's Jev section and `docs/jev-plan.md` are updated in each stage.
 
 ## Verification
 
@@ -124,7 +136,7 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 - **Stage 4–5**: migration fixtures in the style of `src/lib/server/db/migrate.test.ts` (multi-target, Trash, missing target, interrupted run); extend `moves.test.ts` and `labels.test.ts`.
 - **Stage 6**: port `worker.test.ts` by behaviour; add tests for the rules-only hold, cursor seeding and a restart mid-pass.
 - **On the owner's Stalwart** (none is available in CI):
-  1. Does the Sieve script run at delivery? (Stage 0.)
+  1. Out-of-office (stage 4): a message from another address gets one reply; a second the same day gets none; a newsletter gets none.
   2. An exact rule files mail while Jev is unreachable.
   3. With Jev off, a pinned sender lands in its tab without flashing in Important.
   4. New mail reaches its tab within seconds; a dropped event stream falls back to the minute run.
@@ -132,10 +144,10 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 
 ## Open questions for the owner
 
-1. **Out-of-office**: if stage 0 shows Stalwart does not run Sieve, out-of-office is not working today and should move to the server's own vacation setting.
+1. **Out-of-office per account?** The setting is stored per login today, so it would apply to every linked mail account. Should each account have its own?
 2. **Rules to Junk**: should a rule be allowed to move mail to Junk?
 3. **Mail delivered straight to another folder** (not the Inbox) is never seen by rules. Keep it that way?
 
 ## Status
 
-Plan only. No stage has started; the owner picks which to begin with. Stage 0 needs nothing built: turn on out-of-office, send the account a message from another address, and see whether a reply comes back.
+Stage 0 is done. Stages 1 and 2 are being implemented together; later stages follow one PR at a time.
