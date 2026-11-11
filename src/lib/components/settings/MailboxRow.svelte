@@ -109,7 +109,7 @@
 	}
 </script>
 
-<div>
+<div role="group" aria-label={mailbox.name}>
 	<div class="flex items-center gap-1 py-1.5" style="padding-left: {depth * 16}px">
 		{#if target}
 			<button
@@ -211,10 +211,11 @@
 		<MailboxIcon node={iconNode} fallback={kind === 'label' ? 'dot' : 'folder'} {color} />
 	{/if}
 	<span class="min-w-0 truncate text-sm {kind === 'system' ? 'text-text-secondary' : 'text-text'}">{mailbox.name}</span>
+	<!-- On a phone the name comes first: the unread count gives way to it. -->
 	{#if mailbox.unreadEmails > 0}
-		<span class="text-xs text-text-tertiary shrink-0 tabular-nums">{mailbox.unreadEmails} unread</span>
+		<span class="max-md:hidden text-xs text-text-tertiary shrink-0 tabular-nums">{mailbox.unreadEmails} unread</span>
 	{/if}
 	{#if rules.length > 0}
-		<span class="text-xs text-text-tertiary shrink-0">· {rulesCount}</span>
+		<span class="text-xs text-text-tertiary shrink-0">{mailbox.unreadEmails > 0 ? '· ' : ''}{rulesCount}</span>
 	{/if}
 {/snippet}

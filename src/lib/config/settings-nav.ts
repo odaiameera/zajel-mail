@@ -28,9 +28,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
 	{ slug: 'notifications',      group: 'Mail',               label: 'Notifications' },
 	{ slug: 'auto-reply',         group: 'Mail',               label: 'Auto-reply' },
 
-	{ slug: 'folders',            group: 'Organization',       label: 'Folders' },
-	{ slug: 'labels',             group: 'Organization',       label: 'Labels' },
-	{ slug: 'rules',              group: 'Organization',       label: 'Filters & Rules' },
+	{ slug: 'folders-labels',     group: 'Organization',       label: 'Folders & labels' },
 	{ slug: 'jev',                group: 'Organization',       label: 'Jev' },
 	{ slug: 'agent',              group: 'Organization',       label: 'Agent' },
 	{ slug: 'calendar',           group: 'Organization',       label: 'Calendar' },

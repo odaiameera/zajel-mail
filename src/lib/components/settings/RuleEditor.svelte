@@ -19,8 +19,8 @@
 	 * One rule, being written: its name, its conditions, and what it does
 	 * ("Then": one place to file mail, mark as read, star, stop). Nothing is
 	 * sent until Save; the server checks the rule (parseRule) and what it
-	 * finds wrong is shown beside the part it is about. Used by the rules
-	 * page, and meant for the folders and labels page too.
+	 * finds wrong is shown beside the part it is about. Used in the rule
+	 * dialog of Settings → Folders & labels.
 	 */
 	let {
 		rule,
@@ -360,7 +360,8 @@
 
 	<!-- Match count + buttons -->
 	<div class="rounded-xl border border-border bg-surface-hover/40 p-4 flex items-center gap-3 flex-wrap">
-		<div class="flex items-center gap-2">
+		<!-- The buttons wrap together, under the count, when they don't fit beside it. -->
+		<div class="flex-1 min-w-[14rem] flex items-center gap-2">
 			{#if previewLoading}
 				<span class="w-3 h-3 rounded-full border-2 border-accent/40 border-t-accent animate-spin"></span>
 				<span class="text-xs text-text-tertiary">Counting…</span>
@@ -380,7 +381,7 @@
 				<span class="text-xs text-text-tertiary">No preview</span>
 			{/if}
 		</div>
-		<div class="flex-1"></div>
+		<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
 		{#if rule}
 			<button onclick={remove} disabled={saving} class="btn btn-secondary">Delete</button>
 		{/if}
@@ -398,5 +399,6 @@
 			</button>
 			<button onclick={() => save(true)} disabled={saving} class="btn btn-primary">Save &amp; apply</button>
 		{/if}
+		</div>
 	</div>
 </div>

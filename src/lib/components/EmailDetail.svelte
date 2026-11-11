@@ -1403,7 +1403,9 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 									</button>
 								{/each}
 								{#if allLabels.length === 0}
-									<p class="px-3 py-2 text-xs text-text-tertiary">No labels yet. Create one in Settings.</p>
+									<p class="px-3 py-2 text-xs text-text-tertiary">
+										No labels yet. <a href="/settings/folders-labels" class="text-accent-fg hover:underline">Create one in Settings</a>.
+									</p>
 								{/if}
 							</div>
 						{/if}

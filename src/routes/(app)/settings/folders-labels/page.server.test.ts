@@ -6,9 +6,9 @@ vi.mock('$lib/server/rules/store', () => ({
 
 import { load } from './+page.server';
 
-describe('the rules page’s load', () => {
+describe('the folders and labels page’s load', () => {
 	it('reads the active account’s rules itself, not from the app layout', async () => {
-		const parent = async () => ({ labels: [], mailboxes: [], rules: [{ id: 'from-the-layout' }] });
+		const parent = async () => ({ labels: [], mailboxes: [], mailboxMeta: {}, rules: [{ id: 'from-the-layout' }] });
 		const data = (await load({ parent, locals: { activeAccountId: 'acct' } } as never)) as { rules: { id: string }[] };
 		expect(data.rules).toEqual([{ id: 'rule-of-acct' }]);
 		const none = (await load({ parent, locals: {} } as never)) as { rules: unknown[] };
