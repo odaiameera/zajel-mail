@@ -4,8 +4,10 @@ import type { Mailbox, MethodCall } from '$lib/jmap/types';
 
 const jev = vi.hoisted(() => ({
 	mode: 'live' as 'live' | 'mock' | 'off',
-	settings: { inboxTabs: true, jevEnabled: true }
+	settings: { inboxTabs: true, jevEnabled: true },
+	pins: [] as { sender: string; category: string }[]
 }));
+vi.mock('$lib/server/db/queries/jev-learning', () => ({ listPins: () => jev.pins }));
 vi.mock('./client', () => ({ jevMode: () => jev.mode }));
 vi.mock('$lib/server/db/queries/jev-settings', () => ({
 	getJevSettings: () => jev.settings,
@@ -41,6 +43,7 @@ const mailbox = (id: string, role: string | null, unreadEmails: number): Mailbox
 beforeEach(() => {
 	jev.mode = 'live';
 	jev.settings = { inboxTabs: true, jevEnabled: true };
+	jev.pins = [];
 	forgetInboxHolds();
 });
 
@@ -58,6 +61,24 @@ describe('inboxHoldOn', () => {
 		jev.mode = 'mock';
 		expect(inboxHoldOn('acct')).toBe(true);
 		expect(inboxHoldOn(undefined)).toBe(false);
+	});
+
+	it('holds new mail for sender pins too, with Jev off or not configured', () => {
+		jev.pins = [{ sender: '@linkedin.com', category: 'updates' }];
+		// Switched off for the account: the pin still sorts, so mail still waits for it.
+		jev.settings = { inboxTabs: true, jevEnabled: false };
+		expect(inboxHoldOn('acct')).toBe(true);
+		// No key on the server at all.
+		jev.settings = { inboxTabs: true, jevEnabled: true };
+		jev.mode = 'off';
+		expect(inboxHoldOn('acct')).toBe(true);
+		// A pin puts mail in a tab: without tabs there is nothing to wait for.
+		jev.settings = { inboxTabs: false, jevEnabled: false };
+		expect(inboxHoldOn('acct')).toBe(false);
+		// And without a pin, with Jev off, nothing would sort it.
+		jev.settings = { inboxTabs: true, jevEnabled: false };
+		jev.pins = [];
+		expect(inboxHoldOn('acct')).toBe(false);
 	});
 });
 

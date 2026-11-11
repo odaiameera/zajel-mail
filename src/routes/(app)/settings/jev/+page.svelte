@@ -250,9 +250,8 @@
 			replies removed. With them, facts this app works out: whether the sender is in your contacts,
 			whether you’ve written to them or in the conversation, whether the email was addressed to you
 			directly, its mailing-list, bulk and auto-submitted markers, whether it comes from a no-reply
-			address, whether it carries a sign-in code, and where you moved this sender’s mail before. Also the
-			statements in rules you wrote for Jev, and, while Telegram alerts are on, the question of whether
-			it’s urgent. With spam checks on, for new mail: its authentication results, whether its Reply-To or
+			address, whether it carries a sign-in code, and where you moved this sender’s mail before. Also,
+			while Telegram alerts are on, the question of whether it’s urgent. With spam checks on, for new mail: its authentication results, whether its Reply-To or
 			display name points at another domain, up to five domains the body links to (read from its first
 			16 KB), and Stalwart’s spam score and rule names. Jev returns only probabilities; the app keeps
 			those and the facts, never the email text. TypeSafe says it doesn’t train on customer data; its
@@ -264,7 +263,7 @@
 		{@const tabsOn = current(account, 'inboxTabs')}
 		<SettingRow
 			title={`Let Jev read new mail · ${account.email}`}
-			description={`${tabsOn ? 'Sorts it into tabs' : 'Would sort it into tabs (they’re off)'}, and checks rules with a Jev condition. Starts with mail that arrives from now on; Jev never moves mail you’ve put in a tab. ${monthLine(account.month)}`}
+			description={`${tabsOn ? 'Sorts it into tabs' : 'Would sort it into tabs (they’re off)'}. Starts with mail that arrives from now on; Jev never moves mail you’ve put in a tab. ${monthLine(account.month)}`}
 			state={states[`${account.id}:sort`] ?? 'idle'}
 			errorMessage={errors[`${account.id}:sort`]}
 		>
@@ -325,16 +324,17 @@
 		<p class="text-xs text-text-tertiary mb-3">
 			Mail from a pinned sender always goes to its tab — Jev isn’t asked. Pin one from the message
 			that appears after you move an email, or add it here; <span class="font-mono">@domain</span> pins
-			everyone at a domain, and an address pin wins over its domain’s. Pins are applied by the same
-			pass that sorts new mail, so they act while Inbox tabs and “Let Jev read new mail” are both on.
+			everyone at a domain, and an address pin wins over its domain’s. Pins are yours, not Jev’s: they
+			act on new mail whenever Inbox tabs are on for the account, with “Let Jev read new mail” on or
+			off, and nothing is sent anywhere for them.
 		</p>
 		{#each data.jevAccounts as account (account.id)}
 			{#if data.jevAccounts.length > 1}
 				<p class="text-xs font-medium text-text-secondary mt-3 mb-1.5">{account.email}</p>
 			{/if}
-			{#if account.pins.length > 0 && !(current(account, 'inboxTabs') && current(account, 'jevEnabled'))}
+			{#if account.pins.length > 0 && !current(account, 'inboxTabs')}
 				<p class="text-xs text-warning mb-1.5">
-					These pins do nothing until Inbox tabs and “Let Jev read new mail” are on for {account.email}.
+					These pins do nothing until Inbox tabs are on for {account.email}.
 				</p>
 			{/if}
 			{#if account.pins.length > 0}

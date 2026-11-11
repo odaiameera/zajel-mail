@@ -2,8 +2,8 @@ import { getDb } from '../index';
 import { isInboxCategory, INBOX_CATEGORIES, type InboxCategory } from '$lib/types/categories';
 
 /**
- * What Jev learns from you: sender pins, your moves between tabs, and
- * feedback on rules. See migration 014_jev_learning.sql.
+ * What Jev learns from you: sender pins and your moves between tabs. See
+ * migration 014_jev_learning.sql.
  */
 
 export interface SenderPin {
@@ -41,22 +41,6 @@ function prepareStmts() {
 		moves: db.prepare(
 			`SELECT category, moves FROM jev_sender_moves
 			 WHERE account_id = ? AND sender = ? ORDER BY moves DESC, last_moved_at DESC`
-		),
-		addFeedback: db.prepare(
-			`INSERT INTO jev_rule_feedback (account_id, rule_id, email_id, created_at) VALUES (?, ?, ?, ?)
-			 ON CONFLICT (account_id, rule_id, email_id) DO NOTHING`
-		),
-		hasFeedback: db.prepare(
-			`SELECT 1 FROM jev_rule_feedback WHERE account_id = ? AND rule_id = ? AND email_id = ?`
-		),
-		ruleHits: db.prepare(
-			`SELECT json_extract(j.value, '$.ruleId') AS rule_id, COUNT(DISTINCT d.email_id) AS hits
-			 FROM jev_decisions d, json_each(d.rules_json) j
-			 WHERE d.account_id = ? AND d.rules_json IS NOT NULL AND json_extract(j.value, '$.fired') = 1
-			 GROUP BY rule_id`
-		),
-		ruleMisses: db.prepare(
-			`SELECT rule_id, COUNT(*) AS misses FROM jev_rule_feedback WHERE account_id = ? GROUP BY rule_id`
 		)
 	};
 }
@@ -135,24 +119,4 @@ export function senderHistory(accountId: string, sender: string): string | null 
 			: `${r.moves} to ${label(r.category)}`
 	);
 	return `You have moved ${parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`}.`;
-}
-
-export function recordRuleFeedback(accountId: string, ruleId: string, emailId: string, now = Date.now()): void {
-	stmts().addFeedback.run(accountId, ruleId, emailId, now);
-}
-
-export function hasRuleFeedback(accountId: string, ruleId: string, emailId: string): boolean {
-	return !!stmts().hasFeedback.get(accountId, ruleId, emailId);
-}
-
-/** Per rule: how many emails it fired on through Jev, and how many you said it shouldn't have. */
-export function ruleStats(accountId: string): Record<string, { hits: number; misses: number }> {
-	const out: Record<string, { hits: number; misses: number }> = {};
-	for (const r of stmts().ruleHits.all(accountId) as { rule_id: string; hits: number }[]) {
-		out[r.rule_id] = { hits: r.hits, misses: 0 };
-	}
-	for (const r of stmts().ruleMisses.all(accountId) as { rule_id: string; misses: number }[]) {
-		out[r.rule_id] = { hits: out[r.rule_id]?.hits ?? 0, misses: r.misses };
-	}
-	return out;
 }

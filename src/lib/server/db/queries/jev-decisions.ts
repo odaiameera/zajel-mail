@@ -22,8 +22,6 @@ export interface JevDecisionRow {
 	model: string | null;
 	inputTokens: number | null;
 	correctedTo: InboxCategory | null;
-	/** What Jev said about each rule condition it was asked about. */
-	rules: JevRuleCheck[] | null;
 	/** The sender pin that decided the tab, when one did. */
 	pinnedBy: string | null;
 	/** Jev's spam answers, when spam checking was on. */
@@ -39,19 +37,6 @@ export interface JevDecisionRow {
 	decidedAt: number | null;
 }
 
-/** One rule condition Jev was asked about for an email. */
-export interface JevRuleCheck {
-	ruleId: string;
-	ruleName: string;
-	statement: string;
-	probability: number;
-	/** The probability the condition needed, from its strictness. */
-	threshold: number;
-	negate: boolean;
-	/** Whether the rule as a whole fired. */
-	fired: boolean;
-}
-
 interface RawRow {
 	email_id: string;
 	status: JevDecisionRow['status'];
@@ -65,7 +50,6 @@ interface RawRow {
 	model: string | null;
 	input_tokens: number | null;
 	corrected_to: string | null;
-	rules_json: string | null;
 	pinned_by: string | null;
 	spam: number | null;
 	phishing: number | null;
@@ -85,15 +69,6 @@ function parseJson(raw: string | null): Record<string, unknown> | null {
 	}
 }
 
-function parseJsonArray(raw: string): unknown[] | null {
-	try {
-		const value = JSON.parse(raw);
-		return Array.isArray(value) ? value : null;
-	} catch {
-		return null;
-	}
-}
-
 function toRow(r: RawRow): JevDecisionRow {
 	return {
 		emailId: r.email_id,
@@ -108,7 +83,6 @@ function toRow(r: RawRow): JevDecisionRow {
 		model: r.model,
 		inputTokens: r.input_tokens,
 		correctedTo: r.corrected_to as InboxCategory | null,
-		rules: r.rules_json ? (parseJsonArray(r.rules_json) as JevRuleCheck[] | null) : null,
 		pinnedBy: r.pinned_by,
 		spam: r.spam,
 		phishing: r.phishing,
@@ -128,7 +102,7 @@ function prepareStmts() {
 	return {
 		// A new arrival is queued once. The one row it may revive is the record
 		// of a tab you chose before the pass queued it (done, with no answer of
-		// Jev's): it is still checked for spam, rules and urgency, tab aside.
+		// Jev's): it is still checked for spam and urgency, tab aside.
 		enqueue: db.prepare(
 			`INSERT INTO jev_decisions (account_id, email_id, status, backfill, created_at)
 			 VALUES (?, ?, 'pending', ?, ?)
@@ -164,11 +138,15 @@ function prepareStmts() {
 			`UPDATE jev_decisions SET status = 'skipped', decided_at = ?
 			 WHERE account_id = ? AND status = 'pending'`
 		),
+		dropNewArrivals: db.prepare(
+			`UPDATE jev_decisions SET status = 'skipped', decided_at = ?
+			 WHERE account_id = ? AND status = 'pending' AND backfill = 0`
+		),
 		done: db.prepare(
 			`UPDATE jev_decisions SET
 			   status = 'done', last_error = NULL, attempts = attempts + 1,
 			   category = @category, confidence = @confidence, applied = @applied,
-			   answers_json = @answers, facts_json = @facts, rules_json = @rules, pinned_by = @pinnedBy, model = @model,
+			   answers_json = @answers, facts_json = @facts, pinned_by = @pinnedBy, model = @model,
 			   spam = @spam, phishing = @phishing, stalwart_spam = @stalwartSpam, spam_action = @spamAction,
 			   input_tokens = @inputTokens, decided_at = @now
 			 WHERE account_id = @accountId AND email_id = @emailId`
@@ -322,6 +300,15 @@ export function dropQueue(accountId: string, now = Date.now()): void {
 	stmts().dropQueue.run(now, accountId);
 }
 
+/**
+ * Withdraw the new arrivals still queued, leaving a queued sort of existing
+ * mail where it is. For a pass that starts over from the present: what was
+ * queued before it is older than it may reach back to.
+ */
+export function dropNewArrivals(accountId: string, now = Date.now()): void {
+	stmts().dropNewArrivals.run(now, accountId);
+}
+
 export function recordDecision(
 	accountId: string,
 	emailId: string,
@@ -331,7 +318,6 @@ export function recordDecision(
 		applied: InboxCategory | null;
 		answers: unknown;
 		facts: unknown;
-		rules?: JevRuleCheck[];
 		/** The pin that decided the tab instead of Jev. */
 		pinnedBy?: string | null;
 		/** Null when there was nothing to ask, so Jev wasn't called. */
@@ -350,7 +336,6 @@ export function recordDecision(
 		applied: d.applied,
 		answers: JSON.stringify(d.answers),
 		facts: JSON.stringify(d.facts),
-		rules: d.rules?.length ? JSON.stringify(d.rules) : null,
 		pinnedBy: d.pinnedBy ?? null,
 		spam: d.spam?.spam ?? null,
 		phishing: d.spam?.phishing ?? null,

@@ -3,15 +3,16 @@ import type { AuthState } from '$lib/jmap/types';
 import { listSchedulableAuths, markNeedsReauth } from '$lib/server/auth/accounts';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
 import { jevMode } from './client';
+import { inboxHoldOn } from './hold';
 
 /**
- * Jev judging new mail within seconds of delivery, not on the next
- * one-minute run. For each account that lets Jev read its mail, the server
- * holds the mail server's push channel open (the one /api/events proxies
- * for the browser) and runs a sorting pass a moment after each Email
- * change. That is what keeps the Inbox's hold on new mail (see
- * `$lib/inbox-hold`) down to seconds. The one-minute run stays, for a
- * stream that is down.
+ * Sorting new mail within seconds of delivery, not on the next one-minute
+ * run. For each account whose new mail a pass sorts (Jev reads it, or its
+ * Inbox has tabs and sender pins), the server holds the mail server's push
+ * channel open (the one /api/events proxies for the browser) and runs a
+ * sorting pass a moment after each Email change. That is what keeps the
+ * Inbox's hold on new mail (see `$lib/inbox-hold`) down to seconds. The
+ * one-minute run stays, for a stream that is down.
  *
  * Jev's own writes are Email changes too, so a pass that sorted something
  * is followed by one that finds nothing new and writes nothing, which ends
@@ -162,17 +163,24 @@ function state(): StreamState | undefined {
 	return (globalThis as Record<symbol, StreamState | undefined>)[STATE_KEY];
 }
 
-/** Accounts that let Jev read their mail, while Jev can answer at all. */
+/**
+ * Accounts a pass has work for: those that let Jev read their mail, while
+ * Jev can answer at all, and those whose Inbox is holding new mail for
+ * their sender pins. The second kind needs no Jev: without a stream, every
+ * new message in such an Inbox would wait for the once-a-minute run.
+ */
 function desiredTargets(): Map<string, Target> {
 	const out = new Map<string, Target>();
-	if (jevMode() === 'off') return out;
+	const jevAnswers = jevMode() !== 'off';
 	for (const { account, auth } of listSchedulableAuths()) {
-		if (getJevSettings(account.id).jevEnabled) out.set(account.id, { id: account.id, email: account.email, auth });
+		if ((jevAnswers && getJevSettings(account.id).jevEnabled) || inboxHoldOn(account.id)) {
+			out.set(account.id, { id: account.id, email: account.email, auth });
+		}
 	}
 	return out;
 }
 
-/** Open or close streams to match which accounts Jev reads now. */
+/** Open or close streams to match which accounts have new mail to sort now. */
 export function refreshJevWatchers(): void {
 	const s = state();
 	if (!s) return;

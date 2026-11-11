@@ -1,18 +1,21 @@
 /**
- * The Inbox's short hold on new mail while Jev sorts it.
+ * The Inbox's short hold on new mail while it is sorted into its tab.
  *
- * With tabs on and Jev reading an account's mail, a message that has just
+ * With tabs on and something sorting an account's new mail (Jev reading
+ * it, or sender pins, which act with Jev off too), a message that has just
  * arrived would otherwise show in Important for the few seconds (or, if
- * the fast path is down, the minute) until Jev puts it in Updates,
- * Newsletters or Promotions, then jump. Instead the Inbox tabs, their
- * unread counts, the Inbox's unread badge and new-mail notifications leave
- * a new message out until Jev has finished with it, which it marks with
- * JEV_SORTED_KEYWORD, whatever the outcome — "stays in Important" included.
+ * the fast path is down, the minute) until the sorting pass puts it in
+ * Updates, Newsletters or Promotions, then jump. Instead the Inbox tabs,
+ * their unread counts, the Inbox's unread badge and new-mail notifications
+ * leave a new message out until the pass has finished with it, which it
+ * marks with JEV_SORTED_KEYWORD, whatever the outcome — "stays in
+ * Important" included. (Which accounts that is: `inboxHoldOn`, on the
+ * server.)
  *
  * The hold is only ever this short: a message older than INBOX_HOLD_MS
- * shows whether Jev got to it or not, so an unreachable, slow, rate-limited
- * or switched-off Jev can delay mail by at most that long and never hide
- * it. Mail from before the hold window is never held, so nothing already
+ * shows whether the pass got to it or not, so an unreachable, slow,
+ * rate-limited or switched-off Jev can delay mail by at most that long and
+ * never hide it. Mail from before the hold window is never held, so nothing already
  * in the Inbox disappears. Search, All Mail and every other view show held
  * mail as usual; only the Inbox tabs wait.
  *
@@ -26,7 +29,7 @@
  * `after` at the boundary.
  */
 
-/** Set on a message once Jev is done with it. Lowercase and `$`-prefixed, like the tab keywords. */
+/** Set on a message once the sorting pass is done with it. Lowercase and `$`-prefixed, like the tab keywords. */
 export const JEV_SORTED_KEYWORD = '$jev_sorted';
 
 /**

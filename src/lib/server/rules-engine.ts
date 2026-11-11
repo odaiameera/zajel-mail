@@ -1,19 +1,5 @@
 import type { Email } from '$lib/jmap/types';
-import {
-	effectiveActions,
-	isUsableCondition,
-	ruleHolds,
-	type Rule,
-	type RuleCondition
-} from '$lib/types/rules';
-import { categoryKeywordPatch, isInboxCategory, type InboxCategory } from '$lib/types/categories';
-
-/**
- * Jev's answers for one email, by condition id: the probability it gave the
- * condition's statement. A `jev` condition with no entry is unknown and
- * doesn't hold — the rule can't fire on an answer Jev never gave.
- */
-export type JevConditionAnswers = Map<string, number>;
+import { isRunnable, isUsableCondition, ruleHolds, type Rule, type RuleCondition } from '$lib/types/rules';
 
 export interface RuleActionCtx {
 	inboxId?: string;
@@ -55,8 +41,8 @@ export function extractBodyText(email: Email): string {
 	return email.preview ?? '';
 }
 
-/** An exact condition's result before NOT is applied. */
-function exactValue(email: Email, c: RuleCondition, bodyText: string): boolean {
+/** Whether a condition matches the email, before NOT is applied. */
+function conditionMatches(email: Email, c: RuleCondition, bodyText: string): boolean {
 	let res: boolean;
 
 	if (c.field === 'hasAttachment') {
@@ -91,43 +77,8 @@ function exactValue(email: Email, c: RuleCondition, bodyText: string): boolean {
 	return res;
 }
 
-/**
- * A condition's raw value for one email: a boolean for an exact condition,
- * Jev's probability for a `jev` one (undefined when it wasn't asked).
- */
-export function conditionValue(
-	email: Email,
-	c: RuleCondition,
-	bodyText: string,
-	jev?: JevConditionAnswers
-): boolean | number | undefined {
-	return c.field === 'jev' ? jev?.get(c.id) : exactValue(email, c, bodyText);
-}
-
-function matchesRule(email: Email, rule: Rule, bodyText: string, jev?: JevConditionAnswers): boolean {
-	return ruleHolds(rule, (c) => conditionValue(email, c, bodyText, jev));
-}
-
-/**
- * The `jev` conditions worth asking about for one email: those of rules
- * whose exact conditions leave the outcome open. An all-of rule with a
- * failing exact condition can't match whatever Jev says; an any-of rule
- * with a holding one matches already.
- */
-export function jevConditionsToAsk(email: Email, rules: Rule[], bodyText: string): RuleCondition[] {
-	const out: RuleCondition[] = [];
-	for (const rule of rules) {
-		const conds = rule.conditions.filter(isUsableCondition);
-		const jevConds = conds.filter((c) => c.field === 'jev');
-		if (jevConds.length === 0) continue;
-		const exact = conds
-			.filter((c) => c.field !== 'jev')
-			.map((c) => (c.negate ? !exactValue(email, c, bodyText) : exactValue(email, c, bodyText)));
-		if (rule.logic === 'allof' && exact.some((r) => !r)) continue;
-		if (rule.logic === 'anyof' && exact.some((r) => r)) continue;
-		out.push(...jevConds);
-	}
-	return out;
+function matchesRule(email: Email, rule: Rule, bodyText: string): boolean {
+	return ruleHolds(rule, (c) => conditionMatches(email, c, bodyText));
 }
 
 /**
@@ -140,8 +91,6 @@ export interface RuleOutcome {
 	addMailboxIds: Set<string>;
 	removeMailboxIds: Set<string>;
 	keywords: Record<string, boolean>;
-	/** The Inbox tab a rule chose — it overrides Jev's own pick. */
-	category?: InboxCategory;
 	/** Ids of the rules that matched, in order. */
 	firedRuleIds: string[];
 }
@@ -151,11 +100,11 @@ export function emptyOutcome(): RuleOutcome {
 }
 
 /**
- * Fold one rule's actions into an outcome. Used directly by the manual
- * apply endpoint (which pre-matches emails via Email/query) and via
- * {@link evaluateRulesForEmail} by the scheduler.
+ * Fold one rule's actions into an outcome. An action of a kind rules no
+ * longer have (an old "move to an Inbox tab") does nothing: tabs are never
+ * a rule's to set.
  */
-export function applyActionsToOutcome(
+function applyActionsToOutcome(
 	email: Email,
 	actions: Rule['actions'],
 	ctx: RuleActionCtx,
@@ -174,12 +123,6 @@ export function applyActionsToOutcome(
 				break;
 			case 'markImportant':
 				outcome.keywords['$flagged'] = true;
-				break;
-			case 'setCategory':
-				if (isInboxCategory(action.value)) {
-					Object.assign(outcome.keywords, categoryKeywordPatch(action.value));
-					outcome.category = action.value;
-				}
 				break;
 			case 'moveToFolder':
 				if (action.value && targetExists(ctx, action.value)) {
@@ -207,19 +150,22 @@ export function applyActionsToOutcome(
  * Evaluate the (enabled, ordered) rules against one email. Honors
  * `stopProcessing`. The outcome is idempotent by construction — converting
  * it with {@link outcomeToUpdate} only writes real differences.
+ *
+ * A rule that may not run is passed over here as well as by the callers
+ * that load the rules: one waiting for its owner to rewrite it stays off
+ * even if it was switched back on, whichever way the rules got here.
  */
 export function evaluateRulesForEmail(
 	email: Email,
 	enabledRules: Rule[],
 	ctx: RuleActionCtx,
-	bodyText: string,
-	jev?: JevConditionAnswers
+	bodyText: string
 ): RuleOutcome {
 	const outcome = emptyOutcome();
 	for (const rule of enabledRules) {
-		if (!matchesRule(email, rule, bodyText, jev)) continue;
+		if (!isRunnable(rule) || !matchesRule(email, rule, bodyText)) continue;
 		outcome.firedRuleIds.push(rule.id);
-		if (applyActionsToOutcome(email, effectiveActions(rule), ctx, outcome).stop) break;
+		if (applyActionsToOutcome(email, rule.actions, ctx, outcome).stop) break;
 	}
 	return outcome;
 }

@@ -6,15 +6,14 @@
 	import { onDestroy } from 'svelte';
 	import type { PageData } from './$types';
 	import {
-		hasJevCondition,
-		JEV_OFF_LIMITS_ROLES,
-		JEV_STRICTNESS,
-		ruleHolds,
-		type JevStrictness,
+		isUsableCondition,
+		needsRewrite,
+		type LegacyRule,
 		type Rule,
-		type RuleAction
+		type RuleAction,
+		type TabNote
 	} from '$lib/types/rules';
-	import { INBOX_CATEGORIES } from '$lib/types/categories';
+	import { INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
 
 	let { data }: { data: PageData } = $props();
@@ -24,6 +23,10 @@
 	let selectedId = $state<string | null>(data.rules[0]?.id ?? null);
 
 	const selectedIdx = $derived(localRules.findIndex((r) => r.id === selectedId));
+
+	// Rules an upgrade had to change, listed apart so they aren't missed.
+	const attentionRules = $derived(localRules.filter((r) => r.attention));
+	const otherRules = $derived(localRules.filter((r) => !r.attention));
 
 	// Sort user folders (moveToFolder targets) and labels once.
 	const labelsParentId = $derived(findLabelsParentId(data.mailboxes));
@@ -36,11 +39,6 @@
 		data.mailboxes.filter((m) => m.role === 'archive' || m.role === 'junk' || m.role === 'trash')
 	);
 	const labelOptions = $derived(data.labels);
-
-	/** Trash or Junk: a rule Jev judges never moves mail there (the worker skips the action). */
-	function isOffLimitsTarget(mailboxId: string | undefined): boolean {
-		return data.mailboxes.some((m) => m.id === mailboxId && JEV_OFF_LIMITS_ROLES.has(m.role ?? ''));
-	}
 
 	/**
 	 * A saved action can point at a folder/label that was deleted after the
@@ -132,24 +130,6 @@
 		await persistAll();
 	}
 
-	/** A rule Jev judges: one plain-English condition to fill in. */
-	async function createJevRule() {
-		const rule: Rule = {
-			id: newRuleId(),
-			name: 'New Jev rule',
-			enabled: true,
-			logic: 'allof',
-			conditions: [
-				{ id: 'c_' + Date.now(), field: 'jev', op: 'contains', value: '', negate: false, strictness: 'normal' }
-			],
-			actions: [{ type: 'applyLabel' }],
-			createdAt: Date.now()
-		};
-		localRules = [...localRules, rule];
-		selectedId = rule.id;
-		await persistAll();
-	}
-
 	async function toggleEnabled(id: string) {
 		localRules = localRules.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r));
 		await persistAll();
@@ -159,8 +139,143 @@
 		const r = localRules.find((x) => x.id === id);
 		if (!r) return;
 		if (!confirm(`Delete rule "${r.name}"? This cannot be undone.`)) return;
+		await removeRule(id);
+	}
+
+	/** Take a rule out of the list and save. Unasked for what is left of a rule that became a pin. */
+	async function removeRule(id: string) {
 		localRules = localRules.filter((x) => x.id !== id);
 		if (selectedId === id) selectedId = localRules[0]?.id ?? null;
+		await persistAll();
+	}
+
+	/**
+	 * Make the pin a flagged tab rule names (its sender, to the rule's tab),
+	 * and remove the rule: the pin does what it did. The pin is saved first,
+	 * so a failure leaves the rule where it is.
+	 */
+	async function pinInstead(id: string) {
+		const pin = localRules.find((r) => r.id === id)?.tabNote?.pin;
+		if (!pin) return;
+		deployError = '';
+		const res = await fetch('/api/jev/pins', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ sender: pin.sender, category: pin.category })
+		}).catch(() => null);
+		if (!res?.ok) {
+			const body = await res?.json().catch(() => null);
+			deployError = body?.error ?? 'Couldn’t save the pin. Try again.';
+			return;
+		}
+		await removeRule(id);
+	}
+
+	// --- Rules that need attention ---
+
+	const FIELD_LABELS: Record<string, string> = {
+		from: 'From',
+		to: 'To',
+		subject: 'Subject',
+		body: 'Body'
+	};
+	const OP_LABELS: Record<string, string> = {
+		contains: 'contains',
+		not_contains: 'doesn’t contain',
+		is: 'is exactly',
+		starts_with: 'starts with',
+		ends_with: 'ends with'
+	};
+
+	/** One condition of a rule as it was before an upgrade changed it, in words. */
+	function legacyConditionText(c: LegacyRule['conditions'][number]): string {
+		const not = c.negate ? 'NOT ' : '';
+		const value = (c.value ?? '').trim();
+		if (c.field === 'jev') {
+			const how = c.strictness && c.strictness !== 'normal' ? ` (${c.strictness})` : '';
+			return `${not}Jev judged: “${value}”${how}`;
+		}
+		if (c.field === 'hasAttachment') return `${not}Has attachment`;
+		if (c.field === 'size') return `${not}Size at least ${value} KB`;
+		return `${not}${FIELD_LABELS[c.field] ?? c.field} ${OP_LABELS[c.op ?? 'contains'] ?? c.op} “${value}”`;
+	}
+
+	/** The Inbox tab a rule used to put mail in, before rules stopped setting tabs: "the Updates tab", or null. */
+	function legacyTab(rule: Rule): string | null {
+		const tab = (rule.legacy?.actions ?? [])
+			.filter((a) => a.type === 'setCategory')
+			.map((a) => a.value)
+			.filter(isInboxCategory)
+			.at(-1);
+		const label = INBOX_CATEGORIES.find((c) => c.key === tab)?.label;
+		return label ? `the ${label} tab` : null;
+	}
+
+	const tabName = (key: string | undefined) => INBOX_CATEGORIES.find((c) => c.key === key)?.label ?? 'an Inbox tab';
+
+	/** The mail a sender pin acts on, in words: a pin matches a whole address or a whole domain, nothing looser. */
+	function pinReach(sender: string): string {
+		return sender.startsWith('@')
+			? `any address at ${sender.slice(1)} (the part after the @ has to be exactly that, so not its subdomains)`
+			: `exactly the address ${sender}`;
+	}
+
+	/** Where a pin and the rule it stands in for differ, for the rule's owner to check. */
+	function pinDifference(note: TabNote): string {
+		const what = note.pin?.sender.startsWith('@') ? 'that domain' : 'that address';
+		if (note.op === 'contains') {
+			return `The rule matched any sender containing “${note.said}”; the pin matches only ${what}. Mail it doesn’t match stays in Important.`;
+		}
+		if (note.op === 'ends_with') {
+			return `The rule matched any sender whose address ended with “${note.said}”. The pin matches only ${what}.`;
+		}
+		if (note.op === 'is') {
+			return 'The rule matched this address only when the sender showed no name. The pin matches it with or without one.';
+		}
+		return '';
+	}
+
+	/** Why the upgrade left a rule that only set a tab switched off instead of making it a pin. */
+	function whyNotPinned(note: TabNote | undefined): string {
+		switch (note?.why) {
+			case 'switched_off':
+				return `This rule put mail in ${tabName(note.tab)}. It was switched off, so no pin was made.`;
+			case 'after_stop':
+				return 'An earlier rule stops processing, so this rule may never have run. No pin was made.';
+			case 'pinned_elsewhere':
+				return note.kept
+					? `${note.kept.sender} is already pinned to ${tabName(note.kept.category)}, which was kept. This rule’s tab (${tabName(note.tab)}) is no longer applied.`
+					: 'Rules can’t set a tab any more. This one can’t be turned into a sender pin automatically.';
+			case 'no_account':
+				return 'No mail account was found for these rules.';
+			default:
+				return 'Rules can’t set a tab any more. This one can’t be turned into a sender pin automatically.';
+		}
+	}
+
+	/** Enough of a rule to run: something to match on, and something to do. */
+	function canRunAsExact(rule: Rule): boolean {
+		return rule.conditions.some(isUsableCondition) && rule.actions.length > 0;
+	}
+
+	/**
+	 * The owner has rewritten a flagged rule with exact conditions: the flag
+	 * and the old copy go, and the rule is switched back on.
+	 */
+	async function saveAsExactRule(id: string) {
+		const idx = localRules.findIndex((r) => r.id === id);
+		if (idx < 0) return;
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as Rule;
+		localRules[idx] = { ...rule, enabled: true };
+		await saveOnly();
+	}
+
+	/** A note about a rule that still runs: read, so the note and the old copy go. */
+	async function dismissAttention(id: string) {
+		const idx = localRules.findIndex((r) => r.id === id);
+		if (idx < 0) return;
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as Rule;
+		localRules[idx] = rule;
 		await persistAll();
 	}
 
@@ -215,7 +330,9 @@
 
 	async function runPreview() {
 		if (selectedIdx < 0) return;
-		const rule = localRules[selectedIdx];
+		// A rule being rewritten is counted as it reads now, without its flag:
+		// the server counts nothing for a rule that is still switched off.
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[selectedIdx]) as Rule;
 		previewLoading = true;
 		previewError = '';
 		try {
@@ -257,94 +374,10 @@
 		if (selectedIdx < 0) return;
 		const ok = await persistAll();
 		if (!ok) return;
-		const rule = localRules[selectedIdx];
-		// A Jev rule applies to the tested emails it matches, not to a search.
-		await streamApply(rule, hasJevCondition(rule) ? jevMatches.map((r) => r.id) : undefined);
+		await streamApply(localRules[selectedIdx]);
 	}
 
-	// --- Testing a rule Jev judges ---
-
-	interface JevTestRow {
-		id: string;
-		from: string;
-		subject: string;
-		values: Record<string, boolean | number | null>;
-		error: string | null;
-	}
-	interface JevTest {
-		ruleId: string;
-		/** Statement per Jev condition when tested — a change makes the test stale. */
-		statements: Record<string, string>;
-		total: number;
-		narrowed: boolean;
-		inputTokens: number;
-		costUsd: number;
-		mock: boolean;
-		rows: JevTestRow[];
-	}
-
-	let jevTest = $state<JevTest | null>(null);
-	let jevTesting = $state(false);
-	let jevTestError = $state('');
-
-	const selectedRule = $derived(selectedIdx >= 0 ? localRules[selectedIdx] : null);
-	const selectedIsJev = $derived(!!selectedRule && hasJevCondition(selectedRule));
-
-	function jevStatements(rule: Rule): Record<string, string> {
-		return Object.fromEntries(rule.conditions.filter((c) => c.field === 'jev').map((c) => [c.id, c.value.trim()]));
-	}
-
-	// The current test, if it was run on this rule as it now reads.
-	const currentJevTest = $derived.by(() => {
-		if (!jevTest || !selectedRule || jevTest.ruleId !== selectedRule.id) return null;
-		const now = jevStatements(selectedRule);
-		const same =
-			Object.keys(now).length === Object.keys(jevTest.statements).length &&
-			Object.entries(now).every(([id, text]) => jevTest!.statements[id] === text);
-		return same ? jevTest : null;
-	});
-
-	// Decided with the same logic as the engine, so changing a condition's
-	// strictness re-sorts the list at once, without asking Jev again.
-	const jevMatches = $derived.by(() => {
-		if (!currentJevTest || !selectedRule) return [];
-		const rule = selectedRule;
-		return currentJevTest.rows.filter(
-			(row) => !row.error && ruleHolds(rule, (c) => row.values[c.id] ?? undefined)
-		);
-	});
-
-	async function runJevTest() {
-		if (!selectedRule) return;
-		const rule = $state.snapshot(selectedRule) as Rule;
-		jevTesting = true;
-		jevTestError = '';
-		try {
-			const res = await fetch('/api/rules/jev-test', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ rule })
-			});
-			const body = await res.json().catch(() => null);
-			if (!res.ok) throw new Error(body?.error ?? 'The test failed. Try again.');
-			jevTest = { ...(body as Omit<JevTest, 'ruleId' | 'statements'>), ruleId: rule.id, statements: jevStatements(rule) };
-		} catch (err) {
-			jevTestError = err instanceof Error ? err.message : 'The test failed. Try again.';
-		} finally {
-			jevTesting = false;
-		}
-	}
-
-	function setStrictness(conditionId: string, value: string) {
-		if (!selectedRule) return;
-		const c = selectedRule.conditions.find((x) => x.id === conditionId);
-		if (c) c.strictness = value as JevStrictness;
-	}
-
-	const percent = (n: number) => `${Math.round(n * 100)}%`;
-	const costLine = (usd: number) => (usd < 0.01 ? 'Cost under $0.01.' : `Cost ≈ $${usd.toFixed(2)}.`);
-
-	async function streamApply(rule: Rule, ids?: string[]) {
+	async function streamApply(rule: Rule) {
 		progress = { status: 'running', scanned: 0, matched: 0, applied: 0, total: 0 };
 		progressVisible = true;
 		abortCtrl = new AbortController();
@@ -353,7 +386,7 @@
 			const res = await fetch('/api/rules/apply', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(ids ? { rules: [rule], ids } : { rules: [rule] }),
+				body: JSON.stringify({ rules: [rule] }),
 				signal: abortCtrl.signal
 			});
 			if (!res.ok || !res.body) {
@@ -454,10 +487,6 @@
 			}
 			case 'markRead': return 'Mark as read';
 			case 'markImportant': return 'Mark important';
-			case 'setCategory': {
-				const tab = INBOX_CATEGORIES.find((c) => c.key === a.value);
-				return tab ? `Move to the ${tab.label} tab` : 'Move to an Inbox tab';
-			}
 			case 'delete': return 'Delete';
 			case 'stopProcessing': return 'Stop processing';
 		}
@@ -466,6 +495,39 @@
 
 <svelte:head><title>{pageTitle({ page: 'Filters & Rules', subtitle: 'Settings' })}</title></svelte:head>
 
+{#snippet ruleRow(rule: Rule)}
+	<li
+		class="group relative flex items-center gap-2 pl-3 pr-1 py-2 rounded-lg cursor-pointer transition-all
+			{selectedId === rule.id
+				? 'bg-accent/10 border-l-2 border-accent text-text'
+				: 'border-l-2 border-transparent text-text-secondary hover:bg-surface-hover hover:text-text hover:translate-x-0.5'}"
+		onclick={() => { selectedId = rule.id; }}
+	>
+		{#if needsRewrite(rule)}
+			<!-- Switched off until it is rewritten: there is nothing to toggle. -->
+			<span class="shrink-0 text-warning" title="Switched off until you rewrite it">
+				<Icon name="error" size={12} aria-label="Switched off until you rewrite it" />
+			</span>
+		{:else}
+			<button
+				onclick={(e) => { e.stopPropagation(); toggleEnabled(rule.id); }}
+				title={rule.enabled ? 'Disable rule' : 'Enable rule'}
+				class="w-2.5 h-2.5 rounded-full shrink-0 border cursor-pointer transition-colors
+					{rule.enabled ? 'bg-success border-success' : 'bg-transparent border-text-tertiary/50'}"
+				aria-label={rule.enabled ? 'Disable rule' : 'Enable rule'}
+			></button>
+		{/if}
+		<span class="flex-1 truncate text-sm">{rule.name || 'Untitled rule'}</span>
+		<button
+			onclick={(e) => { e.stopPropagation(); deleteRule(rule.id); }}
+			title="Delete rule"
+			class="opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 text-text-tertiary hover:text-danger p-1 rounded-md cursor-pointer transition-opacity"
+		>
+			<Icon name="close" size={14} />
+		</button>
+	</li>
+{/snippet}
+
 <div class="h-full flex flex-col overflow-hidden">
 	<!-- Title flush with the content edge and sized like every other settings
 	     page; the way back to mail is in the settings menu. -->
@@ -473,15 +535,6 @@
 		<h1 class="text-xl font-semibold text-text">Rules</h1>
 		<p class="text-xs text-text-tertiary">{localRules.length} {localRules.length === 1 ? 'rule' : 'rules'}</p>
 		<div class="flex-1"></div>
-		{#if data.jev.mode !== 'off'}
-			<button
-				onclick={createJevRule}
-				title="A rule with a condition Jev judges, written in plain English"
-				class="btn btn-secondary"
-			>
-				+ New Jev rule
-			</button>
-		{/if}
 		<button
 			onclick={createRule}
 			class="btn btn-primary"
@@ -505,31 +558,20 @@
 					No rules yet. Click “New rule” to get started.
 				</p>
 			{:else}
+				{#if attentionRules.length > 0}
+					<h2 class="px-3 pb-1.5 text-2xs font-semibold text-warning uppercase tracking-wide">Needs your attention</h2>
+					<ul class="flex flex-col gap-0.5 mb-3">
+						{#each attentionRules as rule (rule.id)}
+							{@render ruleRow(rule)}
+						{/each}
+					</ul>
+					{#if otherRules.length > 0}
+						<h2 class="px-3 pb-1.5 text-2xs font-semibold text-text-tertiary uppercase tracking-wide">Rules</h2>
+					{/if}
+				{/if}
 				<ul class="flex flex-col gap-0.5">
-					{#each localRules as rule (rule.id)}
-						<li
-							class="group relative flex items-center gap-2 pl-3 pr-1 py-2 rounded-lg cursor-pointer transition-all
-								{selectedId === rule.id
-									? 'bg-accent/10 border-l-2 border-accent text-text'
-									: 'border-l-2 border-transparent text-text-secondary hover:bg-surface-hover hover:text-text hover:translate-x-0.5'}"
-							onclick={() => { selectedId = rule.id; }}
-						>
-							<button
-								onclick={(e) => { e.stopPropagation(); toggleEnabled(rule.id); }}
-								title={rule.enabled ? 'Disable rule' : 'Enable rule'}
-								class="w-2.5 h-2.5 rounded-full shrink-0 border cursor-pointer transition-colors
-									{rule.enabled ? 'bg-success border-success' : 'bg-transparent border-text-tertiary/50'}"
-								aria-label={rule.enabled ? 'Disable rule' : 'Enable rule'}
-							></button>
-							<span class="flex-1 truncate text-sm">{rule.name || 'Untitled rule'}</span>
-							<button
-								onclick={(e) => { e.stopPropagation(); deleteRule(rule.id); }}
-								title="Delete rule"
-								class="opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 text-text-tertiary hover:text-danger p-1 rounded-md cursor-pointer transition-opacity"
-							>
-								<Icon name="close" size={14} />
-							</button>
-						</li>
+					{#each otherRules as rule (rule.id)}
+						{@render ruleRow(rule)}
 					{/each}
 				</ul>
 			{/if}
@@ -544,6 +586,126 @@
 			{:else}
 				{@const rule = localRules[selectedIdx]}
 				<div class="px-6 py-5 flex flex-col gap-5 max-w-[720px]">
+					{#if rule.attention === 'jev_condition'}
+						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
+							<p class="text-sm font-medium text-text">This rule is switched off</p>
+							<p class="text-xs text-text-secondary">
+								It had a condition Jev judged, and rules now match exactly: by sender, recipient,
+								subject, body, size or attachment. Without that condition it would act on more mail
+								than you wrote it for, so it no longer runs. This is what it said:
+							</p>
+							{#if rule.legacy}
+								<ul class="text-xs text-text list-disc pl-5 flex flex-col gap-0.5">
+									{#each rule.legacy.conditions as c}
+										<li>{legacyConditionText(c)}</li>
+									{/each}
+								</ul>
+								<p class="text-2xs text-text-tertiary">
+									It matched {rule.legacy.logic === 'anyof' ? 'ANY' : 'ALL'} of these{rule.legacy.enabled ? '' : ', and was already switched off'}.
+								</p>
+							{/if}
+							{#if legacyTab(rule)}
+								<p class="text-xs text-text-secondary">
+									It also moved that mail to {legacyTab(rule)}, which a rule can no longer do.
+								</p>
+							{/if}
+							<p class="text-xs text-text-secondary">
+								Rewrite it below with exact conditions and press
+								<span class="text-text">Save as exact rule</span> to switch it back on, or delete it.
+							</p>
+						</div>
+					{:else if rule.attention === 'tab_rule'}
+						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
+							<p class="text-sm font-medium text-text">This rule is switched off</p>
+							<p class="text-xs text-text">{whyNotPinned(rule.tabNote)}</p>
+							<p class="text-xs text-text-secondary">
+								All it did was move mail to {legacyTab(rule) ?? 'an Inbox tab'}, and rules no longer
+								put mail in a tab: sender pins do that now, whether Jev is on or off. It matched mail
+								like this:
+							</p>
+							{#if rule.legacy}
+								<ul class="text-xs text-text list-disc pl-5 flex flex-col gap-0.5">
+									{#each rule.legacy.conditions as c}
+										<li>{legacyConditionText(c)}</li>
+									{/each}
+								</ul>
+								{#if rule.legacy.conditions.length > 1}
+									<p class="text-2xs text-text-tertiary">
+										It matched {rule.legacy.logic === 'anyof' ? 'ANY' : 'ALL'} of these.
+									</p>
+								{/if}
+							{/if}
+							{#if rule.tabNote?.pin}
+								{@const pin = rule.tabNote.pin}
+								<p class="text-xs text-text-secondary">
+									A pin can do this instead. It would act on new mail from {pinReach(pin.sender)}.
+									{pinDifference(rule.tabNote)}
+								</p>
+								<button onclick={() => pinInstead(rule.id)} disabled={saving} class="btn btn-primary self-start">
+									{rule.tabNote.kept?.sender === pin.sender
+										? `Pin to ${tabName(pin.category)} instead`
+										: `Pin ${pin.sender} to ${tabName(pin.category)}`}
+								</button>
+								<p class="text-xs text-text-secondary">
+									That makes the pin and removes this rule. Or give the rule something else to do
+									below, a label or a folder, and press <span class="text-text">Save as exact rule</span>.
+								</p>
+							{:else}
+								<p class="text-xs text-text-secondary">
+									To keep those senders in their tab, pin them under
+									<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a> and delete
+									this rule. Or give it something else to do below, a label or a folder, and press
+									<span class="text-text">Save as exact rule</span>.
+								</p>
+							{/if}
+						</div>
+					{:else if rule.attention === 'tab_pinned'}
+						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
+							{#if rule.tabNote?.pin}
+								{@const pin = rule.tabNote.pin}
+								<p class="text-sm font-medium text-text">
+									{rule.tabNote.existing
+										? `${pin.sender} was already pinned to ${tabName(pin.category)}.`
+										: `This rule became a sender pin: ${pin.sender} → ${tabName(pin.category)}.`}
+								</p>
+								<p class="text-xs text-text-secondary">
+									{rule.tabNote.existing
+										? 'All it did was move mail to that tab, and you had already pinned this sender there, so your pin does its work now.'
+										: 'All it did was move mail to that tab. Rules no longer do that; a pin does, whether Jev is on or off.'}
+									The pin acts on new mail from {pinReach(pin.sender)}.
+									{pinDifference(rule.tabNote)}
+								</p>
+							{:else}
+								<p class="text-sm font-medium text-text">This rule became a sender pin</p>
+							{/if}
+							<p class="text-xs text-text-secondary">
+								You can change or remove the pin under
+								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a>. The rule is
+								switched off and has nothing left to do; it stays here only until you have seen this.
+							</p>
+							<button onclick={() => removeRule(rule.id)} disabled={saving} class="btn btn-secondary self-start">
+								Got it
+							</button>
+						</div>
+					{:else if rule.attention === 'tab_removed'}
+						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
+							<p class="text-sm font-medium text-text">
+								This rule no longer puts mail in {legacyTab(rule) ?? 'an Inbox tab'}.
+							</p>
+							<p class="text-xs text-text-secondary">
+								It used to move mail to {legacyTab(rule) ?? 'an Inbox tab'} as well. Rules no longer
+								put mail in a tab, so that part was removed; the rest of the rule runs as before. To
+								keep a sender’s mail in that tab, pin the sender under
+								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a>.
+							</p>
+							<button onclick={() => dismissAttention(rule.id)} disabled={saving} class="btn btn-secondary self-start">
+								Got it
+							</button>
+						</div>
+					{/if}
+
+					<!-- What is left of a rule that became a pin is only its note: there is nothing to edit. -->
+					{#if rule.attention !== 'tab_pinned'}
 					<!-- Name -->
 					<div class="flex flex-col gap-1.5">
 						<label for="rule-name" class="text-xs font-semibold text-text-tertiary uppercase tracking-wide">Name</label>
@@ -583,29 +745,8 @@
 									<option value="body">Body</option>
 									<option value="size">Size (KB)</option>
 									<option value="hasAttachment">Has attachment</option>
-									{#if data.jev.mode !== 'off' || condition.field === 'jev'}
-										<option value="jev">Jev judges</option>
-									{/if}
 								</select>
-								{#if condition.field === 'jev'}
-									<input
-										bind:value={condition.value}
-										placeholder="it’s an invoice or a request for payment"
-										aria-label="Statement for Jev to judge"
-										class="flex-1 min-w-[200px] bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent"
-									/>
-									<select
-										value={condition.strictness ?? 'normal'}
-										onchange={(e) => setStrictness(condition.id, e.currentTarget.value)}
-										title="How sure Jev must be that the statement is true"
-										aria-label="Strictness"
-										class="bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent"
-									>
-										{#each Object.entries(JEV_STRICTNESS) as [key, level] (key)}
-											<option value={key}>{level.label} · {percent(level.threshold)}</option>
-										{/each}
-									</select>
-								{:else if condition.field !== 'hasAttachment'}
+								{#if condition.field !== 'hasAttachment'}
 									<select bind:value={condition.op} class="bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
 										<option value="contains">contains</option>
 										<option value="not_contains">doesn't contain</option>
@@ -651,25 +792,9 @@
 									<option value="moveToFolder">Move to folder</option>
 									<option value="markRead">Mark as read</option>
 									<option value="markImportant">Mark important</option>
-									<option value="setCategory">Move to Inbox tab</option>
-									{#if !hasJevCondition(rule) || action.type === 'delete'}
-										<option value="delete">Move to trash</option>
-									{/if}
+									<option value="delete">Move to trash</option>
 									<option value="stopProcessing">Stop processing</option>
 								</select>
-								{#if action.type === 'setCategory'}
-									<select bind:value={action.value} class="flex-1 min-w-[140px] bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
-										<option value="">Select a tab…</option>
-										{#each INBOX_CATEGORIES as tab (tab.key)}
-											<option value={tab.key}>{tab.label}</option>
-										{/each}
-									</select>
-								{/if}
-								{#if action.type === 'delete' && hasJevCondition(rule)}
-									<span class="w-full text-2xs text-warning">
-										⚠ A rule Jev judges never deletes — Trash empties itself, so a wrong call would be permanent. This action is skipped.
-									</span>
-								{/if}
 								{#if action.type === 'applyLabel'}
 									<select bind:value={action.value} class="flex-1 min-w-[140px] bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
 										<option value="">Select a label…</option>
@@ -690,19 +815,11 @@
 										{#if systemFolderOptions.length > 0}
 											<optgroup label="System">
 												{#each systemFolderOptions as mb}
-													<!-- Trash and Junk are off limits to a rule Jev judges; one already pointing there stays visible, with the warning below. -->
-													{#if !hasJevCondition(rule) || !JEV_OFF_LIMITS_ROLES.has(mb.role ?? '') || action.value === mb.id}
-														<option value={mb.id}>{mb.name}</option>
-													{/if}
+													<option value={mb.id}>{mb.name}</option>
 												{/each}
 											</optgroup>
 										{/if}
 									</select>
-								{/if}
-								{#if action.type === 'moveToFolder' && hasJevCondition(rule) && isOffLimitsTarget(action.value)}
-									<span class="w-full text-2xs text-warning">
-										⚠ A rule Jev judges never moves mail to Trash or Junk — a wrong call there is as good as a delete. This action is skipped.
-									</span>
 								{/if}
 								{#if isStaleTarget(action)}
 									<span class="w-full text-2xs text-warning">
@@ -730,96 +847,6 @@
 						{rule.actions.map(actionSummary).join(' · ') || 'No actions'}
 					</p>
 
-					{#if selectedIsJev}
-						<!-- Jev rule: tested on recent mail rather than counted. -->
-						<div class="rounded-xl border border-border bg-surface-hover/40 p-4 flex flex-col gap-3">
-							{#if data.jev.stats[rule.id]}
-								{@const stats = data.jev.stats[rule.id]}
-								<p class="text-xs text-text-secondary">
-									So far it fired on <span class="font-semibold text-text">{stats.hits}</span>
-									{stats.hits === 1 ? 'email' : 'emails'}; you marked
-									<span class="font-semibold text-text">{stats.misses}</span> as shouldn’t have.
-									{#if stats.hits >= 5 && stats.misses / stats.hits >= 0.2 && rule.conditions.some((c) => c.field === 'jev' && (c.strictness ?? 'normal') !== 'strict')}
-										That’s a lot of misses — try a stricter setting, or a narrower statement.
-									{/if}
-								</p>
-							{/if}
-							{#if data.jev.mode === 'off'}
-								<p class="text-xs text-warning">Jev isn’t configured on this server, so this rule never fires.</p>
-							{:else if !data.jev.enabled}
-								<p class="text-xs text-warning">
-									This rule only runs once you let Jev read this account’s new mail
-									(<a href="/settings/jev" class="underline">Settings → Jev</a>). Until then it never fires.
-								</p>
-							{/if}
-							<div class="flex items-start gap-3">
-								<p class="flex-1 text-xs text-text-tertiary">
-									No search can count matches for a rule Jev judges. Test it on your newest Inbox
-									emails{rule.logic === 'allof' ? ' that pass its other conditions' : ''} instead — it
-									changes nothing{data.jev.mode === 'live' ? ', and sends those emails to TypeSafe once' : ''}.
-								</p>
-								<button
-									onclick={runJevTest}
-									disabled={jevTesting || data.jev.mode === 'off'}
-									class="btn btn-secondary shrink-0"
-								>
-									{jevTesting ? 'Asking Jev…' : currentJevTest ? 'Test again' : 'Test on recent mail'}
-								</button>
-							</div>
-							{#if jevTestError}
-								<p class="text-xs text-danger">{jevTestError}</p>
-							{/if}
-							{#if jevTest && jevTest.ruleId === rule.id && !currentJevTest}
-								<p class="text-xs text-text-tertiary">The statement changed since the last test — test again.</p>
-							{/if}
-							{#if currentJevTest}
-								<p class="text-xs text-text-secondary">
-									<span class="text-sm font-semibold text-text">{jevMatches.length}</span>
-									of {currentJevTest.total} recent emails match at this strictness.
-									{currentJevTest.mock ? 'Mock answers — nothing was sent.' : costLine(currentJevTest.costUsd)}
-								</p>
-								<ul class="max-h-80 overflow-y-auto rounded-lg border border-border divide-y divide-border bg-surface">
-									{#each currentJevTest.rows as row (row.id)}
-										{@const matches = jevMatches.some((m) => m.id === row.id)}
-										<li class="flex items-center gap-3 px-3 py-2 text-xs">
-											<Icon name={matches ? 'check' : 'rule-miss'} size={12} class={matches ? 'text-success' : 'text-text-tertiary'} aria-label={matches ? 'Matches' : 'Doesn’t match'} />
-											<div class="flex-1 min-w-0">
-												<p class="truncate {matches ? 'text-text' : 'text-text-secondary'}">{row.subject}</p>
-												<p class="truncate text-text-tertiary">{row.from}</p>
-											</div>
-											{#if row.error}
-												<span class="shrink-0 text-danger" title={row.error}>No answer</span>
-											{:else}
-												{#each rule.conditions.filter((c) => c.field === 'jev') as c (c.id)}
-													{@const p = row.values[c.id]}
-													{#if typeof p === 'number'}
-														<span class="shrink-0 tabular-nums text-text-tertiary" title={c.value}>{percent(p)}</span>
-													{/if}
-												{/each}
-											{/if}
-										</li>
-									{/each}
-								</ul>
-							{/if}
-							<div class="flex items-center gap-3 justify-end">
-								<button
-									onclick={saveOnly}
-									disabled={saving}
-									class="btn btn-secondary"
-								>
-									{saving ? 'Saving…' : 'Save'}
-								</button>
-								<button
-									onclick={saveAndApply}
-									disabled={saving || !currentJevTest || jevMatches.length === 0}
-									title={currentJevTest ? 'Apply this rule’s actions to the matching emails above' : 'Test the rule first'}
-									class="btn btn-primary"
-								>
-									Save &amp; apply to {jevMatches.length} {jevMatches.length === 1 ? 'match' : 'matches'}
-								</button>
-							</div>
-						</div>
-					{:else}
 					<!-- Match preview + save bar -->
 					<div class="rounded-xl border border-border bg-surface-hover/40 p-4 flex items-center gap-3 flex-wrap">
 						<div class="flex items-center gap-2">
@@ -831,27 +858,43 @@
 							{:else if previewCount !== null}
 								<span class="text-sm font-semibold text-text">{previewCount.toLocaleString()}</span>
 								<span class="text-xs text-text-tertiary">
-									existing {previewCount === 1 ? 'email matches' : 'emails match'} this rule
+									existing {previewCount === 1 ? 'email matches' : 'emails match'} this rule{needsRewrite(rule) ? ' as it reads now' : ''}
 								</span>
 							{:else}
 								<span class="text-xs text-text-tertiary">No preview</span>
 							{/if}
 						</div>
 						<div class="flex-1"></div>
-						<button
-							onclick={saveOnly}
-							disabled={saving}
-							class="btn btn-secondary"
-						>
-							{saving ? 'Saving…' : 'Save'}
-						</button>
-						<button
-							onclick={saveAndApply}
-							disabled={saving}
-							class="btn btn-primary"
-						>
-							Save &amp; apply now
-						</button>
+						{#if needsRewrite(rule)}
+							<button onclick={() => deleteRule(rule.id)} disabled={saving} class="btn btn-secondary">
+								Delete rule
+							</button>
+							<button
+								onclick={() => saveAsExactRule(rule.id)}
+								disabled={saving || !canRunAsExact(rule)}
+								title={canRunAsExact(rule)
+									? 'Switch the rule back on, matching only the conditions above'
+									: 'Give the rule at least one condition and one action first'}
+								class="btn btn-primary"
+							>
+								{saving ? 'Saving…' : 'Save as exact rule'}
+							</button>
+						{:else}
+							<button
+								onclick={saveOnly}
+								disabled={saving}
+								class="btn btn-secondary"
+							>
+								{saving ? 'Saving…' : 'Save'}
+							</button>
+							<button
+								onclick={saveAndApply}
+								disabled={saving}
+								class="btn btn-primary"
+							>
+								Save &amp; apply now
+							</button>
+						{/if}
 					</div>
 					{/if}
 				</div>

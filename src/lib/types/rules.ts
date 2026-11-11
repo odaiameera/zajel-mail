@@ -1,14 +1,25 @@
-import { isInboxCategory } from './categories';
+import type { InboxCategory } from './categories';
 
 /**
- * `jev` is a condition Jev judges: `value` is a plain-English statement
- * about the email ("it's an invoice or a request for payment") and
- * `strictness` how sure Jev must be. The others match text exactly.
+ * A rule matches mail exactly: by sender, recipient, subject, body, size or
+ * attachment, and files it: into a folder, under a label, read, flagged or
+ * in Trash. Rules once also took a plain-English condition that Jev judged,
+ * and could put mail in an Inbox tab. Both are gone: the tabs belong to
+ * Jev and to sender pins. A stored rule that relied on either is listed for
+ * its owner (see `RuleAttention`).
  */
-export type RuleConditionField = 'from' | 'to' | 'subject' | 'body' | 'size' | 'hasAttachment' | 'jev';
+export type RuleConditionField = 'from' | 'to' | 'subject' | 'body' | 'size' | 'hasAttachment';
 export type RuleConditionOp = 'contains' | 'not_contains' | 'is' | 'starts_with' | 'ends_with';
 export type RuleLogic = 'allof' | 'anyof';
-export type JevStrictness = 'loose' | 'normal' | 'strict';
+
+const CONDITION_FIELDS: ReadonlySet<string> = new Set<RuleConditionField>([
+	'from',
+	'to',
+	'subject',
+	'body',
+	'size',
+	'hasAttachment'
+]);
 
 export interface RuleCondition {
 	id: string;
@@ -16,8 +27,6 @@ export interface RuleCondition {
 	op: RuleConditionOp;
 	value: string;
 	negate: boolean;
-	/** For `jev` conditions; `normal` when unset. */
-	strictness?: JevStrictness;
 }
 
 export type RuleActionType =
@@ -25,14 +34,88 @@ export type RuleActionType =
 	| 'applyLabel'
 	| 'markRead'
 	| 'markImportant'
-	| 'setCategory'
 	| 'delete'
 	| 'stopProcessing';
 
 export interface RuleAction {
 	type: RuleActionType;
-	/** Mailbox id for folder/label actions; the tab for `setCategory`. */
+	/** Mailbox id for folder/label actions. */
 	value?: string;
+}
+
+/**
+ * Why a rule is listed under "Needs your attention" on the rules page.
+ *
+ * - `jev_condition`: it had a condition Jev judged, which rules no longer
+ *   have. The rule is switched off, and never runs until its owner has
+ *   rewritten it with exact conditions: without the Jev condition it would
+ *   match more mail than it was written for.
+ * - `tab_rule`: all it did was put mail in an Inbox tab, which rules no
+ *   longer do, and the upgrade didn't turn it into a sender pin (`TabNote`
+ *   says why). It is switched off too: with its only action gone there is
+ *   nothing for it to do.
+ * - `tab_pinned`: all it did was put one sender's mail in a tab, and it
+ *   became that sender's pin. What is left is a switched-off stub that says
+ *   so, with exactly what the pin matches, until the owner dismisses it.
+ * - `tab_removed`: it put mail in a tab beside something else (a label,
+ *   say). The tab part is gone and the rest still runs; this is only a note
+ *   for the owner, who can dismiss it.
+ *
+ * No conversion is silent: every rule an upgrade changes in a way its owner
+ * could notice carries one of these until they have seen it.
+ */
+export type RuleAttention = 'jev_condition' | 'tab_rule' | 'tab_pinned' | 'tab_removed';
+
+/** A sender pin: an address or `@domain`, and the tab its new mail goes to. */
+export interface RulePin {
+	sender: string;
+	category: InboxCategory;
+}
+
+/**
+ * Why the upgrade left a rule that only set a tab as a rule (`tab_rule`)
+ * instead of making it a pin:
+ *
+ * - `not_one_sender`: its conditions don't single out one sender.
+ * - `switched_off`: it was off, and a pin would start what it wasn't doing.
+ * - `no_account`: no mail account was found to keep the pin for.
+ * - `after_stop`: an earlier rule stops processing, so this one didn't see
+ *   all of the sender's mail, and a pin would.
+ * - `pinned_elsewhere`: a pin of yours already decides this sender's mail
+ *   differently (`kept`). The rule used to win; the pin was kept.
+ */
+export type TabRuleReason = 'not_one_sender' | 'switched_off' | 'no_account' | 'after_stop' | 'pinned_elsewhere';
+
+/** What became of a rule that only put mail in a tab, for its owner to read. */
+export interface TabNote {
+	/** The tab the rule put mail in. */
+	tab: InboxCategory;
+	/**
+	 * `tab_pinned`: the pin the rule became. `tab_rule`: the pin one click
+	 * would make of it, when its one condition names a sender.
+	 */
+	pin?: RulePin;
+	/** How the rule matched that sender, and the text it matched on, as written. */
+	op?: string;
+	said?: string;
+	/** `tab_pinned`: the sender was pinned to this tab already, by you. */
+	existing?: boolean;
+	/** `tab_rule`: why it wasn't made a pin. */
+	why?: TabRuleReason;
+	/** `pinned_elsewhere`: your pin that was kept. */
+	kept?: RulePin;
+}
+
+/**
+ * A rule as it was before an upgrade changed it, kept so its owner can read
+ * what it said. Its parts are no longer valid rule parts (a `jev` condition,
+ * say), so they are typed loosely and only ever shown, never run.
+ */
+export interface LegacyRule {
+	enabled: boolean;
+	logic: RuleLogic;
+	conditions: { field: string; op?: string; value?: string; negate?: boolean; strictness?: string }[];
+	actions: { type: string; value?: string }[];
 }
 
 export interface Rule {
@@ -43,20 +126,12 @@ export interface Rule {
 	conditions: RuleCondition[];
 	actions: RuleAction[];
 	createdAt: number;
-}
-
-/**
- * The probability Jev must give a statement for a `jev` condition to hold.
- * Bigger moves need more: Junk takes 0.9 (docs/jev-plan.md).
- */
-export const JEV_STRICTNESS: Record<JevStrictness, { label: string; threshold: number }> = {
-	loose: { label: 'Loose', threshold: 0.6 },
-	normal: { label: 'Normal', threshold: 0.8 },
-	strict: { label: 'Strict', threshold: 0.95 }
-};
-
-export function jevThreshold(c: RuleCondition): number {
-	return JEV_STRICTNESS[c.strictness ?? 'normal']?.threshold ?? JEV_STRICTNESS.normal.threshold;
+	/** Set by an upgrade that had to change this rule; cleared when its owner deals with it. */
+	attention?: RuleAttention;
+	/** The rule as it was before that upgrade. */
+	legacy?: LegacyRule;
+	/** For `tab_rule` and `tab_pinned`: what became of the rule's tab. */
+	tabNote?: TabNote;
 }
 
 /**
@@ -70,7 +145,6 @@ export function isUsableCondition(c: RuleCondition): boolean {
 		case 'to':
 		case 'subject':
 		case 'body':
-		case 'jev':
 			return c.value.trim().length > 0;
 		case 'size':
 			return Number.isFinite(parseInt(c.value, 10));
@@ -81,61 +155,49 @@ export function isUsableCondition(c: RuleCondition): boolean {
 	}
 }
 
-export function hasJevCondition(rule: Pick<Rule, 'conditions'>): boolean {
-	return rule.conditions.some((c) => c.field === 'jev' && isUsableCondition(c));
+/**
+ * Whether every condition is of a kind rules still have. Stored rules are
+ * whatever a browser last sent, so one can carry a condition this version
+ * doesn't know (a `jev` one from before they were removed). Such a rule
+ * must not run on its other conditions alone: that would widen it.
+ */
+export function hasOnlyKnownConditions(rule: Pick<Rule, 'conditions'>): boolean {
+	return Array.isArray(rule.conditions) && rule.conditions.every((c) => CONDITION_FIELDS.has(c?.field));
 }
 
 /**
- * Whether one condition holds, given its raw value: a boolean for an exact
- * condition, Jev's probability for a `jev` one, or undefined when unknown.
- * Unknown never holds — not even negated — so a rule can't fire on an
- * answer Jev never gave.
+ * Whether an upgrade switched the rule off for good: it never runs again as
+ * it is. Its owner rewrites it, deletes it or, for a rule that became a
+ * pin, just dismisses what is left of it.
  */
-export function conditionHolds(c: RuleCondition, value: boolean | number | undefined): boolean {
-	if (value === undefined) return false;
-	const result = typeof value === 'number' ? value >= jevThreshold(c) : value;
-	return c.negate ? !result : result;
+export function needsRewrite(rule: Pick<Rule, 'attention'>): boolean {
+	return rule.attention === 'jev_condition' || rule.attention === 'tab_rule' || rule.attention === 'tab_pinned';
 }
 
 /**
- * Whether a rule matches, given each usable condition's raw value. Shared by
- * the engine and the rules editor's test view so both decide alike.
+ * Whether a rule may act on mail at all: switched on, not waiting for its
+ * owner to rewrite it (even if someone switched it back on without doing
+ * so), and made only of conditions this version can match.
  */
+export function isRunnable(rule: Rule): boolean {
+	// Stored rules are whatever a browser sent: an entry may not be a rule at all.
+	if (!rule || typeof rule !== 'object') return false;
+	return !!rule.enabled && !needsRewrite(rule) && hasOnlyKnownConditions(rule);
+}
+
+/** Whether one condition holds, given whether it matched: NOT flips it. */
+export function conditionHolds(c: RuleCondition, matched: boolean): boolean {
+	return c.negate ? !matched : matched;
+}
+
+/** Whether a rule matches, given whether each usable condition matched. */
 export function ruleHolds(
 	rule: Pick<Rule, 'conditions' | 'logic'>,
-	valueOf: (c: RuleCondition) => boolean | number | undefined
+	matches: (c: RuleCondition) => boolean
 ): boolean {
+	if (!hasOnlyKnownConditions(rule)) return false; // never on part of a rule
 	const conds = rule.conditions.filter(isUsableCondition);
 	if (conds.length === 0) return false; // never match-everything
-	const results = conds.map((c) => conditionHolds(c, valueOf(c)));
+	const results = conds.map((c) => conditionHolds(c, matches(c)));
 	return rule.logic === 'anyof' ? results.some(Boolean) : results.every(Boolean);
-}
-
-/**
- * The actions a rule may take. A rule with a Jev condition never deletes:
- * Trash empties itself, so a misjudged delete would become permanent.
- */
-export function effectiveActions(rule: Rule): RuleAction[] {
-	const actions = hasJevCondition(rule) ? rule.actions.filter((a) => a.type !== 'delete') : rule.actions;
-	return actions.filter((a) => a.type !== 'setCategory' || isInboxCategory(a.value));
-}
-
-/**
- * Mailbox roles a rule Jev judges may never move mail into, for the reason
- * it never deletes: Trash empties itself, and Junk is as good as deleted for
- * mail nobody reads. The editor hides them as targets; the worker drops them.
- */
-export const JEV_OFF_LIMITS_ROLES: ReadonlySet<string> = new Set(['trash', 'junk']);
-
-/**
- * The rule as the Jev worker may run it: a rule Jev judges loses any folder
- * or label action aimed at one of `offLimits` (the Trash and Junk ids). Other
- * rules, and rules with nothing to drop, come back as they are.
- */
-export function withoutOffLimitsTargets(rule: Rule, offLimits: ReadonlySet<string>): Rule {
-	if (!hasJevCondition(rule)) return rule;
-	const actions = rule.actions.filter(
-		(a) => !((a.type === 'moveToFolder' || a.type === 'applyLabel') && a.value && offLimits.has(a.value))
-	);
-	return actions.length === rule.actions.length ? rule : { ...rule, actions };
 }

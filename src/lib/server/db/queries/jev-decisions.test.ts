@@ -118,7 +118,7 @@ describe('jev decisions', () => {
 		expect(decisionStats(ACCT, 4400)).toEqual({ sorted: 0, corrected: 0 });
 
 		// Sorted by you before the pass queued it, it is still queued as new mail
-		// (for spam, rules and urgency), keeping your choice; once judged, never again.
+		// (for spam and urgency), keeping your choice; once judged, never again.
 		expect(enqueueEmails(ACCT, ['mine'], 4600)).toBe(1);
 		expect(getDecision(ACCT, 'mine')).toMatchObject({ status: 'pending', correctedTo: 'important' });
 		recordDecision(ACCT, 'mine', { ...answer, category: null, confidence: null, applied: null, model: null }, 4700);

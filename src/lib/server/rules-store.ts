@@ -1,6 +1,7 @@
 import type { Cookies } from '@sveltejs/kit';
 import type { Rule } from '$lib/types/rules';
 import { getRules, setRules, hasRulesRow } from './db/queries/rules';
+import { pinBookFor, upgradeRules } from './rules-upgrade';
 
 const LEGACY_COOKIE = 'mail_rules';
 
@@ -17,9 +18,10 @@ export function loadRules(userEmail: string, cookies: Cookies): Rule[] {
 		try {
 			const parsed = JSON.parse(decodeURIComponent(raw));
 			if (Array.isArray(parsed)) {
-				setRules(userEmail, parsed as Rule[]);
+				const rules = upgradeRules(parsed, pinBookFor(userEmail));
+				setRules(userEmail, rules);
 				cookies.delete(LEGACY_COOKIE, { path: '/' });
-				return parsed as Rule[];
+				return rules;
 			}
 		} catch {
 			// Malformed cookie — ignore and fall through to empty.
@@ -28,8 +30,14 @@ export function loadRules(userEmail: string, cookies: Cookies): Rule[] {
 	return getRules(userEmail);
 }
 
-/** Persist a user's rules to SQLite and drop the legacy cookie if present. */
+/**
+ * Persist a user's rules to SQLite and drop the legacy cookie if present.
+ * What is stored is brought up to this version first: the rules come from
+ * a browser, and a tab left open across an upgrade sends them as they were
+ * (which can mean a rule that only set an Inbox tab arrives here, and
+ * leaves as a sender pin).
+ */
 export function saveRules(userEmail: string, rules: Rule[], cookies: Cookies): void {
-	setRules(userEmail, rules);
+	setRules(userEmail, upgradeRules(rules, pinBookFor(userEmail)));
 	if (cookies.get(LEGACY_COOKIE)) cookies.delete(LEGACY_COOKIE, { path: '/' });
 }
