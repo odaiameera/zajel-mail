@@ -5,7 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'zajel-rules-routes-')), 'test.db');
 vi.mock('$lib/server/log', () => ({ logEvent: vi.fn(), errorFields: (e: unknown) => ({ error: String(e) }) }));
-vi.mock('$lib/server/jev/stream', () => ({ refreshJevWatchers: vi.fn() }));
+vi.mock('$lib/server/mail-pipeline', () => ({ refreshPipeline: vi.fn() }));
 
 // The account's mailboxes, and a mail server that destroys what it is asked to.
 const boxes = vi.hoisted(() => [

@@ -31,7 +31,7 @@ beforeAll(() => {
 
 describe('jev settings', () => {
 	it('defaults to everything off for an account with no row', () => {
-		expect(getJevSettings('acct-1')).toEqual({ inboxTabs: false, jevEnabled: false, sortCursor: null, spamMode: 'off' });
+		expect(getJevSettings('acct-1')).toEqual({ inboxTabs: false, jevEnabled: false, jevSince: null, spamMode: 'off' });
 	});
 
 	it('keeps each account separate', () => {
@@ -49,22 +49,22 @@ describe('jev settings', () => {
 		expect(getJevSettings('acct-3')).toEqual({
 			inboxTabs: true,
 			jevEnabled: true,
-			sortCursor: on.toISOString(),
+			jevSince: on.toISOString(),
 			spamMode: 'off'
 		});
 		expect(sortingEnabled(getJevSettings('acct-3'))).toBe(true);
 
 		// Saving it on again doesn't rewind the cursor.
 		updateJevSettings('acct-3', { jevEnabled: true }, new Date('2026-10-18T10:00:00Z'));
-		expect(getJevSettings('acct-3').sortCursor).toBe(on.toISOString());
+		expect(getJevSettings('acct-3').jevSince).toBe(on.toISOString());
 
 		updateJevSettings('acct-3', { jevEnabled: false });
-		expect(getJevSettings('acct-3')).toMatchObject({ jevEnabled: false, sortCursor: null });
+		expect(getJevSettings('acct-3')).toMatchObject({ jevEnabled: false, jevSince: null });
 	});
 
 	it('only sorts while the tabs are on too', () => {
-		expect(sortingEnabled({ inboxTabs: false, jevEnabled: true, sortCursor: null, spamMode: 'off' })).toBe(false);
-		expect(sortingEnabled({ inboxTabs: true, jevEnabled: false, sortCursor: null, spamMode: 'off' })).toBe(false);
+		expect(sortingEnabled({ inboxTabs: false, jevEnabled: true, jevSince: null, spamMode: 'off' })).toBe(false);
+		expect(sortingEnabled({ inboxTabs: true, jevEnabled: false, jevSince: null, spamMode: 'off' })).toBe(false);
 	});
 
 	it('keeps the spam mode', () => {

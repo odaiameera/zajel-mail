@@ -4,17 +4,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
 	hasAppUser: true,
 	session: null as { id: string; user_id: string; extended?: boolean } | null,
-	runMigrations: vi.fn()
+	runMigrations: vi.fn(),
+	requestPass: vi.fn(async () => {}),
+	accounts: [] as Record<string, unknown>[],
+	reminders: vi.fn()
 }));
 
 vi.mock('$lib/server/db/migrate', () => ({ runMigrations: mocks.runMigrations }));
 vi.mock('$lib/server/reminder-scheduler', () => ({
 	startReminderScheduler: vi.fn(),
-	processDueRemindersForUser: vi.fn()
+	processDueRemindersForUser: mocks.reminders
 }));
-vi.mock('$lib/server/rules-scheduler', () => ({ startRulesScheduler: vi.fn(), applyRulesForUserSafe: vi.fn() }));
 vi.mock('$lib/server/trash-retention', () => ({ startTrashRetentionScheduler: vi.fn() }));
-vi.mock('$lib/server/jev/worker', () => ({ startJevScheduler: vi.fn(), sortNewMailSafe: vi.fn() }));
+vi.mock('$lib/server/mail-pipeline', () => ({ startMailPipeline: vi.fn(), requestPass: mocks.requestPass }));
 vi.mock('$lib/server/scheduled-send', () => ({ startScheduledSendWorker: vi.fn() }));
 vi.mock('$lib/server/push/worker', () => ({ startPushWorker: vi.fn() }));
 vi.mock('$lib/server/telegram/worker', () => ({ startTelegramWorker: vi.fn() }));
@@ -27,8 +29,8 @@ vi.mock('$lib/server/auth/user', () => ({
 	hasAppUser: () => mocks.hasAppUser
 }));
 vi.mock('$lib/server/auth/accounts', () => ({
-	listAccounts: () => [],
-	authStateForAccount: vi.fn(),
+	listAccounts: () => mocks.accounts,
+	authStateForAccount: (a: { id: string }) => ({ accountId: `jmap-${a.id}` }),
 	toPublic: (a: unknown) => a
 }));
 
@@ -283,5 +285,43 @@ describe('a failed migration', () => {
 		expect(resolve).not.toHaveBeenCalled();
 		// Not retried per request: the operator fixes the database and restarts.
 		expect(mocks.runMigrations).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('the new-mail catch-up', () => {
+	it('asks for one pass for the account in use, at most every 20 seconds per account', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		try {
+			vi.setSystemTime(new Date('2026-11-11T10:00:00Z'));
+			mocks.requestPass.mockClear();
+			mocks.session = { id: 's1', user_id: 'u1' };
+			const accountA = { id: 'acct-a', email: 'same@example.test', needs_reauth: 0 };
+			// Another account with the same address: the catch-up is the account's, not the address's.
+			const accountB = { id: 'acct-b', email: 'same@example.test', needs_reauth: 0 };
+			mocks.accounts = [accountA, accountB];
+			const load = async (active: string) => {
+				const url = new URL('http://localhost/inbox');
+				const cookies = { get: (name: string) => (name === 'session' ? 's1' : name === 'active_account' ? active : undefined), set: vi.fn(), delete: vi.fn() };
+				const event = { url, request: new Request(url), cookies, locals: {} } as unknown as Parameters<typeof handle>[0]['event'];
+				await handle({ event, resolve: async () => new Response('ok') });
+			};
+
+			await load('acct-a');
+			await load('acct-a');
+			expect(mocks.requestPass).toHaveBeenCalledTimes(1);
+			expect(mocks.requestPass).toHaveBeenCalledWith('acct-a', { accountId: 'jmap-acct-a' });
+
+			await load('acct-b');
+			expect(mocks.requestPass).toHaveBeenCalledTimes(2);
+			expect(mocks.requestPass).toHaveBeenLastCalledWith('acct-b', { accountId: 'jmap-acct-b' });
+
+			vi.setSystemTime(new Date('2026-11-11T10:00:21Z'));
+			await load('acct-a');
+			expect(mocks.requestPass).toHaveBeenCalledTimes(3);
+		} finally {
+			mocks.accounts = [];
+			mocks.session = null;
+			vi.useRealTimers();
+		}
 	});
 });

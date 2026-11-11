@@ -69,7 +69,7 @@ vi.mock('../auth/accounts', () => ({
 vi.mock('../db/queries/app-prefs', () => ({ getPrefs: () => ({ notifications: 'on' }) }));
 vi.mock('../db/queries/push', () => ({ usersWithPushSubscriptions: () => [] }));
 vi.mock('../calendar/service', () => ({ upcomingReminders: async () => [] }));
-vi.mock('../jev/hold', () => ({ inboxHoldOn: () => mail.hold }));
+vi.mock('../mail-pipeline/hold', () => ({ inboxHoldOn: () => mail.hold }));
 vi.mock('./send', () => ({
 	sendPushToUser: async (_user: string, _account: string, payload: { title: string; tag?: string }) => {
 		mail.sent.push(payload);

@@ -3,7 +3,7 @@
 
 	/**
 	 * "Sort the mail already in your Inbox": how much is unsorted and what it
-	 * would cost, then progress while the worker judges it in the background.
+	 * would cost, then progress while the new-mail pass judges it in the background.
 	 */
 	let { accountEmail }: { accountEmail: string } = $props();
 

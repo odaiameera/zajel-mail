@@ -49,14 +49,14 @@ const mailboxList = () => [
 vi.mock('$lib/jmap/identities', () => ({ getIdentities: async () => [] }));
 vi.mock('$lib/server/labels', () => ({ listLabels: async () => [], migrateKeywordLabelsIfNeeded: async () => {} }));
 vi.mock('$lib/server/auth/unread-badges', () => ({ unreadBadges: async () => ({}) }));
-vi.mock('$lib/server/jev/hold', async (orig) => ({
-	...(await orig<typeof import('$lib/server/jev/hold')>()),
+vi.mock('$lib/server/mail-pipeline/hold', async (orig) => ({
+	...(await orig<typeof import('$lib/server/mail-pipeline/hold')>()),
 	inboxHoldOn: () => state.hold
 }));
 
 import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
-import { forgetInboxHolds } from '$lib/server/jev/hold';
+import { forgetInboxHolds } from '$lib/server/mail-pipeline/hold';
 import { setMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
 import { INBOX_HOLD_MS } from '$lib/inbox-hold';
 import { load } from './+layout.server';

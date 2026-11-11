@@ -1,14 +1,12 @@
 import type { JMAPClient } from '$lib/jmap/client';
-import { getMailboxes } from '$lib/jmap/mailbox';
-import type { Email, Mailbox } from '$lib/jmap/types';
+import type { Email } from '$lib/jmap/types';
 import { categoryKeywordPatch, categoryOf } from '$lib/types/categories';
 import type { SpamMode } from '$lib/server/db/queries/jev-settings';
 import { pinFor, type SenderPin } from '$lib/server/db/queries/jev-learning';
 import { correctedEmailIds, markSkipped, recordFailure } from '$lib/server/db/queries/jev-decisions';
-import { emptyOutcome, outcomeToUpdate, type RuleOutcome } from '$lib/server/rules/engine';
-import { isHeld, JEV_SORTED_KEYWORD } from '$lib/inbox-hold';
-import { hasUnknownMailbox } from '$lib/mailboxes';
-import { currentPlacement, writeUpdates, type WriteOutcome } from '$lib/server/mail-pipeline/write';
+import { emptyOutcome, type RuleOutcome } from '$lib/server/rules/engine';
+import { isHeld } from '$lib/inbox-hold';
+import type { Change, Flushed } from '$lib/server/mail-pipeline/write';
 import { senderAddress } from './facts';
 import { fetchEmailsForJev, judgeEmails, notAsked, tabQuestion, type JudgeContext, type JudgedEmail } from './judge';
 import { planSpam, SPAM_QUESTIONS } from './spam';
@@ -19,38 +17,40 @@ import { recordJudged, sendUrgentAlerts, type Decided } from './record';
 
 /**
  * Jev's step of a pass over new mail: queued emails are fetched, asked
- * everything there is to ask about each in one call, planned (spam first,
- * then the tab), written, recorded, and urgent ones alerted.
+ * everything there is to ask about each in one call (tab, spam and urgent
+ * together), and planned: spam first, then the tab (see decideTab). What
+ * comes of it is handed back as changes for the pass to write, with the
+ * "sorted" marker for held Inbox mail; once written, `finish` records it
+ * and sends urgent alerts.
  */
 
-export interface Batch {
+export interface StepContext {
 	client: JMAPClient;
 	accountId: string;
 	accountRowId: string;
 	inboxId: string;
-	/** Every mailbox on the account, for the filing rules a move follows. */
-	mailboxes: Mailbox[];
-	/** Whether `mailboxes` has been fetched again in this pass (at most once). */
-	mailboxesRefreshed: boolean;
 	/** Watched while spam checking is on. */
 	junkId: string | null;
 	spamMode: SpamMode;
 	/**
 	 * What may be asked of Jev in this pass. `ask`: everything. `wait`:
-	 * nothing for now (TypeSafe asked for a pause); the mail stays queued.
-	 * `off`: nothing, as Jev doesn't read this account; only pins act.
+	 * nothing for now (TypeSafe asked for a pause, or is failing and this is
+	 * a stream pass); the mail stays queued. `off`: nothing, as Jev can't
+	 * read this account; only pins act.
 	 */
 	jev: 'ask' | 'wait' | 'off';
 	judge: () => Promise<JudgeContext>;
 	pins: SenderPin[];
+	/** The Inbox's hold is on: held mail the step is done with gets the marker. */
+	hold: boolean;
 	now: Date;
-	/** Both batches' writes, logged once for the pass. */
-	writes: WriteOutcome;
 }
 
-interface Plan extends Decided {
-	/** What to do to the message — applied to where it is when it is written. */
-	outcome: RuleOutcome;
+export interface StepResult {
+	/** What to write, by message. */
+	changes: Map<string, Change>;
+	/** After the write: record each email, then send urgent alerts. */
+	finish: (written: Flushed) => Promise<void>;
 }
 
 /** A move to Junk or back to the Inbox: like any other move, the message keeps its labels and leaves every other folder. */
@@ -60,8 +60,6 @@ function moveOutcome(to: string): RuleOutcome {
 	return outcome;
 }
 
-const hasWork = (o: RuleOutcome) => o.moveTo !== null || o.labels.size > 0 || Object.keys(o.keywords).length > 0;
-
 /** The outcome of a tab choice: its keywords, Important meaning none. */
 function tabOutcome(tab: Decided['tab']): RuleOutcome {
 	const outcome = emptyOutcome();
@@ -69,25 +67,39 @@ function tabOutcome(tab: Decided['tab']): RuleOutcome {
 	return outcome;
 }
 
-/** Judge queued emails, apply what follows, and record it. */
-export async function judgeAndApply(
-	b: Batch,
+interface Plan extends Decided {
+	outcome: RuleOutcome;
+	/** Bound for Junk: no marker, no alert. */
+	toJunk?: boolean;
+}
+
+/**
+ * Plan queued emails: `tabs` while the Inbox has tabs, `checkSpam` and
+ * `alertUrgent` for new mail only.
+ */
+export async function planJevStep(
+	b: StepContext,
 	ids: string[],
-	wantsTabs: boolean,
-	checkSpam: boolean,
-	alertUrgent: boolean
-): Promise<void> {
-	if (ids.length === 0) return;
+	opts: { tabs: boolean; checkSpam: boolean; alertUrgent: boolean }
+): Promise<StepResult> {
+	const { tabs: wantsTabs, checkSpam, alertUrgent } = opts;
 	const now = b.now.getTime();
+	const nothing: StepResult = { changes: new Map(), finish: async () => {} };
+	if (ids.length === 0) return nothing;
 	const fetched = new Map((await fetchEmailsForJev(b.client, b.accountId, ids)).map((e) => [e.id, e]));
 	const inJunk = (email: Email) => !!b.junkId && !!email.mailboxIds[b.junkId] && !email.mailboxIds[b.inboxId];
 	const judgeable: Email[] = [];
+	// Left the Inbox (or Junk) before Jev got to it, or gone.
+	const skipped: string[] = [];
 	for (const id of ids) {
 		const email = fetched.get(id);
 		if (email?.mailboxIds[b.inboxId] || (email && checkSpam && inJunk(email))) judgeable.push(email);
-		else markSkipped(b.accountRowId, id, now);
+		else skipped.push(id);
 	}
-	if (judgeable.length === 0) return;
+	const skip = () => {
+		for (const id of skipped) markSkipped(b.accountRowId, id, now);
+	};
+	if (judgeable.length === 0) return { changes: new Map(), finish: async () => skip() };
 
 	const pinOf = (email: Email) => pinFor(b.pins, senderAddress(email));
 	// Mail you put in a tab yourself keeps it — Important included, which
@@ -143,13 +155,14 @@ export async function judgeAndApply(
 	// Plan each email. A failed call is retried next run, until it has failed
 	// for good. Spam goes first: mail that goes to Junk gets no tab.
 	const plans = new Map<string, Plan>();
-	const toJunk = new Set<string>();
+	// Failed on its own: charged an attempt once the pass has written.
+	const charged: JudgedEmail[] = [];
 	for (const j of judged) {
 		if (j.error || b.jev === 'wait') {
 			// No answer from Jev, for now: the email stays queued. One that failed
 			// on its own is charged an attempt; an outage or a rate limit is
 			// TypeSafe's doing, not the email's.
-			if (j.error && !outage && j.errorStatus !== 429) recordFailure(b.accountRowId, j.email.id, j.error, now);
+			if (j.error && !outage && j.errorStatus !== 429) charged.push(j);
 			// A pinned sender's tab was never Jev's to decide, so it doesn't wait
 			// for Jev either: the message goes to its tab now, and shows there.
 			// Whatever else was to be asked about it is asked on a later pass.
@@ -169,8 +182,7 @@ export async function judgeAndApply(
 				spam: spam.record
 			});
 		} else if (spam.move === 'junk' && b.junkId) {
-			toJunk.add(j.email.id);
-			plans.set(j.email.id, { outcome: moveOutcome(b.junkId), tab: null, pin: null, spam: spam.record });
+			plans.set(j.email.id, { outcome: moveOutcome(b.junkId), tab: null, pin: null, spam: spam.record, toJunk: true });
 		} else {
 			const choice = tabFor(j.email, j.decision?.apply ?? null);
 			plans.set(j.email.id, { outcome: tabOutcome(choice.tab), tab: choice.tab, pin: choice.pin, spam: spam.record });
@@ -179,60 +191,39 @@ export async function judgeAndApply(
 
 	// Done with: the Inbox can stop holding it (see inbox-hold), whatever
 	// came of it, Important included. Only mail young enough to be held
-	// needs the mark, which spares a write on everything else.
-	if (wantsTabs) {
-		for (const [id, plan] of plans) {
-			const email = fetched.get(id)!;
-			const staysInInbox = plan.outcome.moveTo === b.inboxId || (!inJunk(email) && !toJunk.has(id));
-			if (staysInInbox && isHeld(email, now)) plan.outcome.keywords[JEV_SORTED_KEYWORD] = true;
-		}
+	// needs the mark, which spares a write on everything else. Mail Jev
+	// hasn't answered for has no plan, and waits out the hold.
+	const changes = new Map<string, Change>();
+	for (const [id, plan] of plans) {
+		const email = fetched.get(id)!;
+		const junked = inJunk(email);
+		const staysInInbox = plan.outcome.moveTo === b.inboxId || (!junked && !plan.toJunk);
+		changes.set(id, {
+			home: junked && b.junkId ? b.junkId : b.inboxId,
+			tabWas: categoryOf(email.keywords),
+			jev: plan.outcome,
+			marker: b.hold && staysInInbox && isHeld(email, now)
+		});
 	}
 
-	// Apply. The snapshot judged above is minutes old by now: read where each
-	// message is, and which tab it has, again, and write only what differs
-	// from that, so nothing done to it meanwhile is written over. One that
-	// left its mailbox or changed tabs in between was moved by you, or by a
-	// rule: it stays as it was put, and Jev's answer is recorded unapplied.
-	const withWork = [...plans].filter(([, p]) => hasWork(p.outcome));
-	const placement = await currentPlacement(b.client, b.accountId, withWork.map(([id]) => id));
-	// The mailbox list is from the start of the pass. A message now in a
-	// mailbox it doesn't know (a label made meanwhile) needs a fresh one, or
-	// the move couldn't tell that label from a folder. Once per pass at most.
-	if (!b.mailboxesRefreshed && hasUnknownMailbox([...placement.values()].map((p) => p.mailboxIds), b.mailboxes)) {
-		b.mailboxes = await getMailboxes(b.client, b.accountId);
-		b.mailboxesRefreshed = true;
-	}
-	const updates: [string, Record<string, unknown>][] = [];
-	const moved = new Set<string>();
-	for (const [id, plan] of withWork) {
-		const snapshot = fetched.get(id)!;
-		const current = placement.get(id);
-		const home = inJunk(snapshot) && b.junkId ? b.junkId : b.inboxId;
-		if (!current?.mailboxIds[home] || categoryOf(current.keywords) !== categoryOf(snapshot.keywords)) {
-			moved.add(id);
-			// Still done with, so a message put in a tab meanwhile isn't held.
-			if (plan.outcome.keywords[JEV_SORTED_KEYWORD] && current?.mailboxIds[b.inboxId]) {
-				updates.push([id, { [`keywords/${JEV_SORTED_KEYWORD}`]: true }]);
+	return {
+		changes,
+		finish: async ({ notWritten, moved }) => {
+			skip();
+			for (const j of charged) recordFailure(b.accountRowId, j.email.id, j.error!, now);
+			recordJudged({
+				accountRowId: b.accountRowId,
+				judged,
+				decided: plans,
+				waiting: b.jev === 'wait',
+				jevOff: b.jev === 'off',
+				notWritten,
+				moved,
+				now
+			});
+			if (alertUrgent && b.jev === 'ask') {
+				await sendUrgentAlerts(b.accountRowId, judged, (email) => inJunk(email) || !!plans.get(email.id)?.toJunk);
 			}
-			continue;
 		}
-		const update = outcomeToUpdate({ ...snapshot, ...current }, plan.outcome, b.mailboxes);
-		if (Object.keys(update).length > 0) updates.push([id, update]);
-	}
-	const notWritten = await writeUpdates(b.client, b.accountId, updates, b.writes);
-
-	recordJudged({
-		accountRowId: b.accountRowId,
-		judged,
-		decided: plans,
-		waiting: b.jev === 'wait',
-		jevOff: b.jev === 'off',
-		notWritten,
-		moved,
-		now
-	});
-
-	if (alertUrgent && b.jev === 'ask') {
-		await sendUrgentAlerts(b.accountRowId, judged, (email) => inJunk(email) || toJunk.has(email.id));
-	}
+	};
 }

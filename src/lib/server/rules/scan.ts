@@ -10,7 +10,7 @@ import { matcherProperties, ruleContext, updatesForEmails } from './engine';
  *
  * The match count ("how many emails match") and "Save & apply" both come
  * from here, so they cannot disagree: each judges the Inbox, newest first,
- * with the matcher the scheduler uses on new mail. The count used to come
+ * with the matcher the new-mail pass uses. The count used to come
  * from the mail server's search over every folder, which is word based and
  * has nothing for "is", "starts with" or "ends with", so it told the owner
  * one number and then the apply moved another.

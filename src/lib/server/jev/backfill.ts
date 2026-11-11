@@ -1,5 +1,6 @@
 import { listPendingEmailIds } from '$lib/server/db/queries/jev-decisions';
-import { judgeAndApply, type Batch } from './step';
+import { flush, type WriteContext } from '$lib/server/mail-pipeline/write';
+import { planJevStep, type StepContext } from './step';
 
 /**
  * Sorting the mail that was already in the Inbox when you asked Jev to
@@ -11,6 +12,8 @@ import { judgeAndApply, type Batch } from './step';
 /** Queued existing emails judged per pass, after the new ones. */
 const BACKFILL_BATCH = 100;
 
-export async function runBackfill(b: Batch): Promise<void> {
-	await judgeAndApply(b, listPendingEmailIds(b.accountRowId, BACKFILL_BATCH, true), true, false, false);
+export async function runBackfill(step: StepContext, write: WriteContext): Promise<void> {
+	const ids = listPendingEmailIds(step.accountRowId, BACKFILL_BATCH, true);
+	const planned = await planJevStep(step, ids, { tabs: true, checkSpam: false, alertUrgent: false });
+	await planned.finish(await flush(write, planned.changes));
 }

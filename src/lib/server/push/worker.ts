@@ -11,7 +11,7 @@ import {
 import { getPrefs } from '../db/queries/app-prefs';
 import { usersWithPushSubscriptions } from '../db/queries/push';
 import { upcomingReminders } from '../calendar/service';
-import { inboxHoldOn } from '../jev/hold';
+import { inboxHoldOn } from '../mail-pipeline/hold';
 import { heldCondition, holdRecheckDelay, splitHeld } from '$lib/inbox-hold';
 import { sendPushToUser, type PushPayload } from './send';
 

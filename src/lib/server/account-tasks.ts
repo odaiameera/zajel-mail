@@ -1,13 +1,14 @@
 import { createClient, fetchSession } from '$lib/jmap/auth';
 import type { AuthState } from '$lib/jmap/types';
-import { accountIdForEmail, isAccountTaskDone, markAccountTaskDone } from './db/queries/account-tasks';
+import { isAccountTaskDone, markAccountTaskDone } from './db/queries/account-tasks';
 import { errorFields, logEvent } from './log';
 
 /**
- * One-time jobs for a mail account that need its credentials, run from the
- * rules scheduler (see runApply there), which has them. Each runs until it
- * succeeds once and is then never run again for that account. A failure
- * never stops the rules; the task is tried again an hour later, not on
+ * One-time jobs for a mail account that need its credentials, run at the
+ * start of the account's new-mail pass (see mail-pipeline/pass.ts), which
+ * has them. Each runs until it succeeds once and is then never run again
+ * for that account. A failure never stops the pass; the task is tried
+ * again an hour later, not on
  * every minute's run, so a server that keeps failing isn't asked (and the
  * log isn't written) sixty times an hour. The wait is kept in memory: a
  * restart may try once more straight away.
@@ -72,9 +73,7 @@ const TASKS: { name: string; run: (auth: AuthState) => Promise<void> }[] = [
 ];
 
 /** Run the account's tasks that haven't succeeded yet and aren't waiting after a failure. Never throws. */
-export async function runAccountTasks(auth: AuthState, accountEmail: string, now = Date.now()): Promise<void> {
-	const accountId = accountIdForEmail(accountEmail);
-	if (!accountId) return;
+export async function runAccountTasks(auth: AuthState, accountId: string, now = Date.now()): Promise<void> {
 	for (const task of TASKS) {
 		if (isAccountTaskDone(accountId, task.name)) continue;
 		const key = `${accountId}:${task.name}`;
@@ -90,7 +89,7 @@ export async function runAccountTasks(auth: AuthState, accountEmail: string, now
 			const warn = !waiting || now - waiting.warnedAt >= DAY;
 			backoff.set(key, { retryAt: now + HOUR, warnedAt: warn ? now : waiting.warnedAt });
 			if (warn) {
-				console.warn(`[rules] ${accountEmail}: ${task.name} failed, will try again in an hour`, err);
+				console.warn(`[mail] account ${accountId}: ${task.name} failed, will try again in an hour`, err);
 				logEvent('warn', 'rules', 'account_task_failed', { task: task.name, account: accountId, ...errorFields(err) });
 			}
 		}

@@ -13,7 +13,7 @@ import { syncIdentities } from '$lib/server/db/queries/identities';
 import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
-import { applyInboxHold, inboxHoldOn, knownInboxId, readInboxHold } from '$lib/server/jev/hold';
+import { applyInboxHold, inboxHoldOn, knownInboxId, readInboxHold } from '$lib/server/mail-pipeline/hold';
 import { INBOX_HOLD_MS } from '$lib/inbox-hold';
 import { parseMarkReadDelay } from '$lib/mail-prefs';
 import { LIST_COOKIE, LIST_WIDTH, SIDEBAR_COOKIE, SIDEBAR_WIDTH, parseWidth } from '$lib/stores/paneWidths';

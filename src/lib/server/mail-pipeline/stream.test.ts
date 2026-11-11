@@ -12,13 +12,13 @@ vi.mock('$lib/server/auth/accounts', () => ({
 	listSchedulableAuths: () => accounts.list,
 	markNeedsReauth: accounts.reauth
 }));
-vi.mock('$lib/server/db/queries/jev-settings', () => ({
-	getJevSettings: (id: string) => ({ jevEnabled: accounts.jevOn.has(id) })
+// What each account's pass has to do: Jev reads it (while Jev can answer at
+// all), or its Inbox holds new mail.
+vi.mock('./needs', () => ({
+	pipelineNeeds: (id: string) => ({ jev: accounts.mode !== 'off' && accounts.jevOn.has(id), hold: accounts.holding.has(id) })
 }));
-vi.mock('./client', () => ({ jevMode: () => accounts.mode }));
-vi.mock('./hold', () => ({ inboxHoldOn: (id: string) => accounts.holding.has(id) }));
 
-import { refreshJevWatchers, startJevWatchers, stopJevWatchers } from './stream';
+import { refreshStreams, startStreams, stopStreams } from './stream';
 
 /** An event stream the test writes to, as the mail server would. */
 function openStream() {
@@ -45,25 +45,25 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	stopJevWatchers();
+	stopStreams();
 	vi.unstubAllGlobals();
 });
 
-describe('Jev’s event streams', () => {
+describe('the new-mail event streams', () => {
 	it('runs a pass when a stream opens and again shortly after each Email change', async () => {
 		const stream = openStream();
 		const fetchMock = vi.fn().mockResolvedValue(stream.response);
 		vi.stubGlobal('fetch', fetchMock);
 		const runPass = vi.fn(async () => {});
 
-		startJevWatchers(runPass);
+		startStreams(runPass);
 
 		// Only the account Jev reads gets a stream.
 		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 		expect(fetchMock.mock.calls[0][0]).toBe('https://mail.example/jmap/a/eventsource/?types=Email&closeafter=no&ping=60');
 		// Mail may have landed while no stream was open.
 		await vi.waitFor(() => expect(runPass).toHaveBeenCalledTimes(1), { timeout: 3000 });
-		expect(runPass).toHaveBeenCalledWith('a', 'a@example.test', accounts.list[0].auth, { fromStream: true });
+		expect(runPass).toHaveBeenCalledWith('a', accounts.list[0].auth, { fromStream: true });
 
 		stream.push(': ping\n\n');
 		stream.push('event: state\ndata: {"@type":"StateChange","changed":{"acc":{"Email":"s2"}}}\n\n');
@@ -75,7 +75,7 @@ describe('Jev’s event streams', () => {
 		const fetchMock = vi.fn();
 		vi.stubGlobal('fetch', fetchMock);
 
-		startJevWatchers(vi.fn());
+		startStreams(vi.fn());
 		await new Promise((resolve) => setTimeout(resolve, 50));
 
 		expect(fetchMock).not.toHaveBeenCalled();
@@ -89,12 +89,12 @@ describe('Jev’s event streams', () => {
 		vi.stubGlobal('fetch', fetchMock);
 		const runPass = vi.fn(async () => {});
 
-		startJevWatchers(runPass);
+		startStreams(runPass);
 
 		// Without it every new message in that Inbox would wait for the minute's run.
 		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 		expect(fetchMock.mock.calls[0][0]).toBe('https://mail.example/jmap/b/eventsource/?types=Email&closeafter=no&ping=60');
-		await vi.waitFor(() => expect(runPass).toHaveBeenCalledWith('b', 'b@example.test', accounts.list[1].auth, { fromStream: true }), {
+		await vi.waitFor(() => expect(runPass).toHaveBeenCalledWith('b', accounts.list[1].auth, { fromStream: true }), {
 			timeout: 3000
 		});
 	});
@@ -102,7 +102,7 @@ describe('Jev’s event streams', () => {
 	it('stops and flags the account when the mail server refuses its password', async () => {
 		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 401 })));
 
-		startJevWatchers(vi.fn());
+		startStreams(vi.fn());
 
 		await vi.waitFor(() => expect(accounts.reauth).toHaveBeenCalledWith('a'));
 	});
@@ -111,11 +111,11 @@ describe('Jev’s event streams', () => {
 		let calls = 0;
 		const fetchMock = vi.fn(async () => (++calls === 1 ? new Response('', { status: 401 }) : openStream().response));
 		vi.stubGlobal('fetch', fetchMock);
-		startJevWatchers(vi.fn(async () => {}));
+		startStreams(vi.fn(async () => {}));
 		await vi.waitFor(() => expect(accounts.reauth).toHaveBeenCalledWith('a'));
 
 		// Linked again before the next reconcile: the account is schedulable.
-		refreshJevWatchers();
+		refreshStreams();
 
 		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 	});
@@ -133,7 +133,7 @@ describe('Jev’s event streams', () => {
 				return new Response(body, { status: 200 });
 			});
 			vi.stubGlobal('fetch', fetchMock);
-			startJevWatchers(vi.fn(async () => {}));
+			startStreams(vi.fn(async () => {}));
 			await vi.advanceTimersByTimeAsync(10);
 			expect(fetchMock).toHaveBeenCalledTimes(1);
 
@@ -142,7 +142,7 @@ describe('Jev’s event streams', () => {
 			expect(fetchMock).toHaveBeenCalledTimes(2);
 			expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
 		} finally {
-			stopJevWatchers();
+			stopStreams();
 			vi.useRealTimers();
 		}
 	});

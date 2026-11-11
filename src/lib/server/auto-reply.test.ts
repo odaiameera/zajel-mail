@@ -598,12 +598,12 @@ describe('the hourly cap', () => {
 describe('the account’s out-of-office', () => {
 	it('is on for the account when its login’s setting is active', () => {
 		patchPrefs('user-1', { auto_reply_enabled: 'on', auto_reply_body: 'Away', auto_reply_since: iso(NOW) });
-		expect(outOfOfficeFor('me@example.test', NOW)).toMatchObject({ accountRowId: 'acct-1', userId: 'user-1' });
+		expect(outOfOfficeFor('acct-1', NOW)).toMatchObject({ accountRowId: 'acct-1', userId: 'user-1' });
 		patchPrefs('user-1', { auto_reply_until: '2026-11-19' });
-		expect(outOfOfficeFor('me@example.test', NOW)).toBeNull();
+		expect(outOfOfficeFor('acct-1', NOW)).toBeNull();
 		patchPrefs('user-1', { auto_reply_until: undefined, auto_reply_enabled: 'off' });
-		expect(outOfOfficeFor('me@example.test', NOW)).toBeNull();
-		expect(outOfOfficeFor('nobody@example.test', NOW)).toBeNull();
+		expect(outOfOfficeFor('acct-1', NOW)).toBeNull();
+		expect(outOfOfficeFor('acct-nobody', NOW)).toBeNull();
 	});
 
 	it('keeps its log a month', () => {

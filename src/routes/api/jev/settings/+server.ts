@@ -3,7 +3,7 @@ import type { RequestHandler } from './$types';
 import { listAccounts } from '$lib/server/auth/accounts';
 import { isSpamMode, updateJevSettings, type JevSettings } from '$lib/server/db/queries/jev-settings';
 import { jevMode } from '$lib/server/jev/client';
-import { refreshJevWatchers } from '$lib/server/jev/stream';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 
 /** Change one linked account's Jev settings: `inboxTabs`, `jevEnabled` and/or `spamMode`. */
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -46,7 +46,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const settings = updateJevSettings(accountId, patch);
 	// Tabs or Jev going on or off changes whether this account's new mail is
 	// sorted (and held for it): its push stream follows now, not a minute on.
-	refreshJevWatchers();
+	refreshPipeline();
 	return json({
 		success: true,
 		settings: { inboxTabs: settings.inboxTabs, jevEnabled: settings.jevEnabled, spamMode: settings.spamMode }

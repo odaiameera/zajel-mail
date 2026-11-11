@@ -22,7 +22,7 @@ vi.mock('$lib/server/user', () => ({ userEmailFromAuth: () => 'me@example.test' 
 vi.mock('$lib/server/db/queries/app-prefs', () => ({ getDefaultPageSize: () => 50, getDefaultSort: () => 'date_desc' }));
 vi.mock('$lib/server/db/queries/reminders', () => ({ listMarkedIds: () => [] }));
 vi.mock('$lib/server/db/queries/jev-settings', () => ({ getJevSettings: () => ({ inboxTabs: state.tabs }) }));
-vi.mock('$lib/server/jev/hold', () => ({ inboxHoldOn: () => state.hold }));
+vi.mock('$lib/server/mail-pipeline/hold', () => ({ inboxHoldOn: () => state.hold }));
 
 import { load } from './+page.server';
 import { JEV_SORTED_KEYWORD } from '$lib/inbox-hold';

@@ -6,7 +6,8 @@ import { getJevSettings } from '$lib/server/db/queries/jev-settings';
  * off on the server, switched off for the account, or the account's stored
  * password stopped working (the background passes skip it until the user
  * signs in again). Urgent alerts depend on it, since urgency is Jev's call.
- * Mirrors the gates in sortNewMail and listSchedulableAuths.
+ * Mirrors the gates in pipelineNeeds (mail-pipeline/needs.ts) and
+ * listSchedulableAuths.
  */
 export type JevBlock = 'server' | 'account' | 'sign-in';
 

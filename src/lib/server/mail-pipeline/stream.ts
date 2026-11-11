@@ -1,23 +1,21 @@
 import { JMAPAuthError } from '$lib/jmap/client';
 import type { AuthState } from '$lib/jmap/types';
 import { listSchedulableAuths, markNeedsReauth } from '$lib/server/auth/accounts';
-import { getJevSettings } from '$lib/server/db/queries/jev-settings';
-import { jevMode } from './client';
-import { inboxHoldOn } from './hold';
+import { pipelineNeeds } from './needs';
 
 /**
- * Sorting new mail within seconds of delivery, not on the next one-minute
- * run. For each account whose new mail a pass sorts (Jev reads it, or its
- * Inbox has tabs and sender pins), the server holds the mail server's push
- * channel open (the one /api/events proxies for the browser) and runs a
- * sorting pass a moment after each Email change. That is what keeps the
+ * Handling new mail within seconds of delivery, not on the next one-minute
+ * run. For each account a pass has work for, the server holds the mail
+ * server's push channel open (the one /api/events proxies for the browser)
+ * and runs a pass a moment after each Email change. That is what keeps the
  * Inbox's hold on new mail (see `$lib/inbox-hold`) down to seconds. The
  * one-minute run stays, for a stream that is down.
  *
- * Jev's own writes are Email changes too, so a pass that sorted something
- * is followed by one that finds nothing new and writes nothing, which ends
- * it. That is also why these passes judge new mail only, and why they stop
- * calling TypeSafe while it is failing (see the worker's PassOptions).
+ * The pass's own writes are Email changes too, so a pass that changed
+ * something is followed by one that finds nothing new and writes nothing,
+ * which ends it. That is also why these passes leave existing mail alone,
+ * and why they stop calling TypeSafe while it is failing (see PassOptions
+ * in pass.ts).
  */
 
 /** Gathers a burst of changes (a delivery, then the server's own filing) into one pass. */
@@ -29,13 +27,8 @@ const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
 const RECONCILE_MS = 60_000;
 
-/** The worker's pass, told it was asked for by the stream (new mail only, see the worker). */
-export type RunPass = (
-	accountRowId: string,
-	accountEmail: string,
-	auth: AuthState,
-	opts: { fromStream: true }
-) => Promise<void>;
+/** The pipeline's never-throwing pass, told it was asked for by the stream (see PassOptions in pass.ts). */
+export type RunPass = (accountRowId: string, auth: AuthState, opts: { fromStream: true }) => Promise<void>;
 
 interface Target {
 	id: string;
@@ -76,9 +69,9 @@ class Watcher {
 		if (this.debounce) clearTimeout(this.debounce);
 		this.debounce = setTimeout(() => {
 			this.debounce = null;
-			const { id, email, auth } = this.target;
+			const { id, auth } = this.target;
 			// The pass never throws; this is only a guard.
-			this.runPass(id, email, auth, { fromStream: true }).catch(() => {});
+			this.runPass(id, auth, { fromStream: true }).catch(() => {});
 		}, PASS_DEBOUNCE_MS);
 		this.debounce.unref?.();
 	}
@@ -98,7 +91,7 @@ class Watcher {
 					return;
 				}
 				if (backoff > MIN_BACKOFF_MS || (err as Error).name !== 'AbortError') {
-					console.warn(`[jev] event stream for ${this.target.email}: ${(err as Error).message}`);
+					console.warn(`[mail] event stream for ${this.target.email}: ${(err as Error).message}`);
 				}
 			}
 			if (this.stopped) return;
@@ -157,7 +150,7 @@ interface StreamState {
 
 // On globalThis, so a dev-server reload doesn't open a second set of
 // streams (restart the dev server after changing this file).
-const STATE_KEY = Symbol.for('zajel.jevStreams');
+const STATE_KEY = Symbol.for('zajel.mailStreams');
 
 function state(): StreamState | undefined {
 	return (globalThis as Record<symbol, StreamState | undefined>)[STATE_KEY];
@@ -165,23 +158,23 @@ function state(): StreamState | undefined {
 
 /**
  * Accounts a pass has work for: those that let Jev read their mail, while
- * Jev can answer at all, and those whose Inbox is holding new mail for
- * their sender pins. The second kind needs no Jev: without a stream, every
- * new message in such an Inbox would wait for the once-a-minute run.
+ * Jev can answer at all, and those whose Inbox is holding new mail. The
+ * second kind needs no Jev: without a stream, every new message in such an
+ * Inbox would wait for the once-a-minute run.
  */
 function desiredTargets(): Map<string, Target> {
 	const out = new Map<string, Target>();
-	const jevAnswers = jevMode() !== 'off';
 	for (const { account, auth } of listSchedulableAuths()) {
-		if ((jevAnswers && getJevSettings(account.id).jevEnabled) || inboxHoldOn(account.id)) {
+		const needs = pipelineNeeds(account.id);
+		if (needs.jev || needs.hold) {
 			out.set(account.id, { id: account.id, email: account.email, auth });
 		}
 	}
 	return out;
 }
 
-/** Open or close streams to match which accounts have new mail to sort now. */
-export function refreshJevWatchers(): void {
+/** Open or close streams to match which accounts have new mail to handle now. */
+export function refreshStreams(): void {
 	const s = state();
 	if (!s) return;
 	try {
@@ -205,20 +198,20 @@ export function refreshJevWatchers(): void {
 			watcher.start();
 		}
 	} catch (err) {
-		console.error('[jev] event streams: reconcile failed', err);
+		console.error('[mail] event streams: reconcile failed', err);
 	}
 }
 
-/** Start watching; `runPass` is the worker's never-throwing pass. */
-export function startJevWatchers(runPass: RunPass): void {
+/** Start watching; `runPass` is the pipeline's never-throwing pass. */
+export function startStreams(runPass: RunPass): void {
 	if (state()) return;
 	(globalThis as Record<symbol, StreamState>)[STATE_KEY] = { watchers: new Map(), runPass };
-	refreshJevWatchers();
-	setInterval(refreshJevWatchers, RECONCILE_MS).unref?.();
+	refreshStreams();
+	setInterval(refreshStreams, RECONCILE_MS).unref?.();
 }
 
 /** Close every stream and forget them: for tests. */
-export function stopJevWatchers(): void {
+export function stopStreams(): void {
 	const s = state();
 	if (!s) return;
 	for (const watcher of s.watchers.values()) watcher.stop();

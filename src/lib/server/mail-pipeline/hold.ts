@@ -1,9 +1,7 @@
 import { JMAPAuthError, type JMAPClient } from '$lib/jmap/client';
 import type { Email, Mailbox } from '$lib/jmap/types';
-import { getJevSettings, sortingEnabled } from '$lib/server/db/queries/jev-settings';
-import { listPins } from '$lib/server/db/queries/jev-learning';
 import { heldCondition, holdEndsAt } from '$lib/inbox-hold';
-import { jevMode } from './client';
+import { pipelineNeeds } from './needs';
 
 /**
  * Server side of the Inbox's hold on new mail (see `$lib/inbox-hold`): for
@@ -11,22 +9,20 @@ import { jevMode } from './client';
  */
 
 /**
- * Whether new mail in this account's Inbox waits to be sorted: only while
- * the Inbox has tabs and something will put new mail in them. That is Jev,
- * when it may read the account's mail, or your sender pins, which act with
- * Jev off or not configured at all: without the hold, a pinned sender's
- * mail would show in Important for a moment and then jump to its tab.
+ * Whether new mail in this account's Inbox waits for the new-mail pass:
+ * only while the Inbox has tabs and something will put new mail in them.
+ * That is Jev, when it may read the account's mail, or your sender pins,
+ * which act with Jev off or not configured at all: without the hold, a
+ * pinned sender's mail would show in Important for a moment and then jump
+ * to its tab.
  *
  * With tabs but neither, nothing is held, as nothing would ever sort it.
- * This is the same test the sorting pass makes before it runs (see
- * sortNewMail), so mail is only ever held for a pass that will mark it.
+ * The pass decides from the same answer (pipelineNeeds), so mail is only
+ * ever held for a pass that will mark it.
  */
 export function inboxHoldOn(accountRowId: string | null | undefined): boolean {
 	if (!accountRowId) return false;
-	const settings = getJevSettings(accountRowId);
-	if (!settings.inboxTabs) return false;
-	if (jevMode() !== 'off' && sortingEnabled(settings)) return true;
-	return listPins(accountRowId).length > 0;
+	return pipelineNeeds(accountRowId).hold;
 }
 
 export interface InboxHold {
@@ -90,7 +86,7 @@ export async function readInboxHold(
 		return await heldInInbox(client, accountId, inboxId, now);
 	} catch (err) {
 		if (err instanceof JMAPAuthError) throw err;
-		console.warn('[jev] could not read the Inbox hold', err instanceof Error ? err.message : err);
+		console.warn('[mail] could not read the Inbox hold', err instanceof Error ? err.message : err);
 		return null;
 	}
 }

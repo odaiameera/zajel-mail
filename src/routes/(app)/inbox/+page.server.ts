@@ -5,7 +5,7 @@ import { countUnreadByCategory, queryAndFetchEmails } from '$lib/jmap/email';
 import { userEmailFromAuth } from '$lib/server/user';
 import { getDefaultPageSize, getDefaultSort } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
-import { inboxHoldOn } from '$lib/server/jev/hold';
+import { inboxHoldOn } from '$lib/server/mail-pipeline/hold';
 import { shownCondition } from '$lib/inbox-hold';
 import { listMarkedIds } from '$lib/server/db/queries/reminders';
 import { allOf, parseListFilter, listFilterCondition } from '$lib/email-filters';

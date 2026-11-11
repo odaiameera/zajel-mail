@@ -33,7 +33,7 @@ beforeEach(() => {
 	mocks.updateJevSettings.mockImplementation((_id: string, patch: object) => ({
 		inboxTabs: false,
 		jevEnabled: false,
-		sortCursor: null,
+		jevSince: null,
 		...patch
 	}));
 });

@@ -1,6 +1,6 @@
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
-import { inboxHoldOn, withInboxHold } from '$lib/server/jev/hold';
+import { inboxHoldOn, withInboxHold } from '$lib/server/mail-pipeline/hold';
 import { authStateForAccount, type MailAccountRow } from './accounts';
 
 /**
