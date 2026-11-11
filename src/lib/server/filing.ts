@@ -149,17 +149,17 @@ function assertLabel(labelId: string, mailboxes: Mailbox[]): void {
 	if (!label || mailboxKind(label, mailboxes) !== 'label') throw new FilingError('Not a label');
 }
 
-/** Add a label. Nothing else about the messages changes. */
+/** Add a label. Nothing else about the messages changes (but `keywords`, written in the same write). */
 export async function addLabel(
 	client: JMAPClient,
 	accountId: string,
 	ids: string[],
 	labelId: string,
-	opts?: FilingOptions
+	opts?: FilingOptions & { keywords?: Keywords }
 ): Promise<void> {
 	const mailboxes = await loadMailboxes(client, accountId, opts);
 	assertLabel(labelId, mailboxes);
-	await file(client, accountId, ids, stepFor({ addLabel: labelId }, mailboxes), null);
+	await file(client, accountId, ids, stepFor({ addLabel: labelId }, mailboxes), null, opts?.keywords);
 }
 
 /**

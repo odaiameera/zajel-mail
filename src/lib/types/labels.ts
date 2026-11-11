@@ -36,9 +36,6 @@ export interface LabelsContext {
 /** Default color for labels that have no meta entry. */
 export const DEFAULT_LABEL_COLOR = '#0969da';
 
-/** Cookie marker for the one-shot keyword→mailbox migration (value `v1`). */
-export const LABEL_MIGRATION_COOKIE = 'mail_labels_migrated';
-
 /** Legacy cookie holding the pre-migration keyword-based labels. */
 export const LEGACY_LABELS_COOKIE = 'mail_labels';
 

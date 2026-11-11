@@ -1,11 +1,7 @@
 <script lang="ts">
 	import type { Mailbox } from '$lib/jmap/types';
-	import {
-		buildFolderTree,
-		descendantIds,
-		flattenFolderTree,
-		type FolderOption
-	} from '$lib/utils/folder-tree';
+	import { folderOptions, type FolderOption } from '$lib/mailboxes';
+	import { descendantIds } from '$lib/utils/folder-tree';
 
 	let {
 		value,
@@ -20,8 +16,8 @@
 	} = $props();
 
 	const options = $derived.by<FolderOption[]>(() => {
-		const tree = buildFolderTree(mailboxes);
-		const flat = flattenFolderTree(tree);
+		// The same folders, in the same order, as "Move to…" and the rule editor.
+		const flat = folderOptions(mailboxes);
 		if (!excludeId) return flat;
 		const excluded = descendantIds(mailboxes, excludeId);
 		return flat.filter((opt) => !excluded.has(opt.id));

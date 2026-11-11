@@ -14,7 +14,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	import { emailFrameCsp, prepareEmailForReading } from '$lib/utils/email-images';
 	import { parseListUnsubscribe, type UnsubInfo } from '$lib/utils/list-unsubscribe';
 	import { detectEmailVerificationCode } from '$lib/utils/otp';
-	import FolderPicker from './FolderPicker.svelte';
+	import MailboxPicker from './MailboxPicker.svelte';
 	import SenderAvatar from './SenderAvatar.svelte';
 	import { isPhone } from '$lib/stores/viewport';
 	import AttachmentBar from './AttachmentBar.svelte';
@@ -535,6 +535,12 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			);
 		})
 	);
+
+	/** "Move to…" → a label: the label is added and the message stays where it is. */
+	async function addLabelFromPicker(labelId: string) {
+		showMovePicker = false;
+		if (email.mailboxIds[labelId] !== true) await toggleLabel(labelId);
+	}
 
 	async function toggleLabel(labelId: string) {
 		const isApplied = email.mailboxIds[labelId] === true;
@@ -1185,13 +1191,15 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 				<Icon name="move-to-folder" size={16} />
 			</button>
 			{#if showMovePicker}
-				<FolderPicker
+				<MailboxPicker
 					{mailboxes}
 					labels={allLabels}
 					excludeIds={sourceMailboxId ? [sourceMailboxId] : []}
+					appliedLabelIds={appliedLabels.map((l) => l.id)}
 					anchor={moveTriggerEl ?? null}
 					align="right"
-					onPick={handleMove}
+					onMove={handleMove}
+					onAddLabel={addLabelFromPicker}
 					onClose={() => { showMovePicker = false; }}
 				/>
 			{/if}

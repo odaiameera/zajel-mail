@@ -51,9 +51,9 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			userEmail.split('@')[0] ??
 			'';
 
-		// One-shot migration from keyword-based labels to JMAP mailbox labels.
-		// Idempotent; the marker cookie makes subsequent loads a no-op. Must
-		// finish before the label fetch below sees the mailboxes it creates.
+		// Old keyword labels become label mailboxes, only while the old
+		// `mail_labels` cookie is there (see migrateKeywordLabelsIfNeeded).
+		// Must finish before the label fetch below sees the mailboxes it creates.
 		await migrateKeywordLabelsIfNeeded(client, locals.auth.accountId, locals.activeAccountId, cookies);
 
 		// Refresh the identity cache on every navigation. Single Identity/get

@@ -74,7 +74,7 @@ Two behaviour changes follow from this:
 
 **New: `src/lib/server/auto-reply.ts`**: out-of-office sent by the app (see "Out-of-office" below).
 
-**Deleted**: `rules-scheduler.ts`, `rules-store.ts`, `rules.ts` (the JMAP-filter matcher), `jev/rules.ts`, `sieve.ts`, `/api/rules/jev-test`, `/api/rules/deploy`, `/api/jev/rule-feedback`, `/api/preferences/rules`, `/api/preferences/labels`. The two pickers, `FolderPicker` and `FolderLocationPicker`, become one `MailboxPicker`.
+**Deleted**: `rules-scheduler.ts`, `rules-store.ts`, `rules.ts` (the JMAP-filter matcher), `jev/rules.ts`, `sieve.ts`, `/api/rules/jev-test`, `/api/rules/deploy`, `/api/jev/rule-feedback`, `/api/preferences/rules`, `/api/preferences/labels`. `FolderPicker` becomes `MailboxPicker` (stage 6); `FolderLocationPicker` keeps its select, built from the same folder list.
 
 **Sieve is removed entirely.** Stage 0 was run on the owner's server: out-of-office was switched on and saved without error (so the script was uploaded and activated), a message was sent from Outlook, and no reply arrived in Outlook's Inbox or Junk. Stalwart on this deployment is not running the user's Sieve script at delivery, which matches the comment at `src/lib/server/rules-scheduler.ts:12-13`. So:
 - The Sieve copy of the rules has never done anything; removing it changes no behaviour.
@@ -121,7 +121,7 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 | 3 | **Done.** One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
 | 4 | **Done.** Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
 | 5 | **Done.** Rules table (030) and validated saves | Splitting multi-target rules |
-| 6 | Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
+| 6 | **Done.** Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
 | 7 | One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
 | 8 | The two settings pages | UI only |
 | 9 | Clean-up (033): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
@@ -150,7 +150,7 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 
 ## Status
 
-Stages 0 to 5 are done. Later stages follow one PR at a time.
+Stages 0 to 6 are done. Later stages follow one PR at a time.
 
 ## Design notes
 
@@ -348,3 +348,107 @@ Deleting a folder or label (`/api/folders`, the label delete in `src/lib/jmap/la
 - The data step never gives an account another spelling's list when a `user_rules` row with its exact address exists, even an empty or unreadable one: the old engine read only that one.
 - The preview counts a draft whose only problems are its name or target, and returns the problems with the count; problems with its conditions count nothing.
 - Deleting a folder or label deletes the rules that only file into it. A rule that also marks read, stars or stops later rules is kept with its target set to none, so the rules below it don't start acting on mail it used to stop. The delete responses report `rulesDeleted` and `rulesKept`; the confirmations work both out from `GET /api/rules` before asking and name each count that isn't 0.
+
+### Stage 6 design: folders and labels behave one way everywhere
+
+#### Why
+"Where does this message live" is decided differently depending on who asks:
+- A hand move leaves the source folder, or every folder, or (from a label view) the **label**, depending on the caller. A rule's move leaves only the Inbox. The assistant's snooze leaves one folder; the app's snooze leaves all.
+- "Move to…" offers labels, Remind Me Later and Scheduled as if they were folders. Picking a label there takes the message out of its folder. The move endpoints and the assistant accept the `Labels` container as a destination.
+- Removing a message's only label sends it to Archive from the app, and silently does nothing from the assistant.
+- Colour and icon live in two tables keyed by mail address, written through three APIs (label colour is written twice on edit); deleting a folder leaves its row behind; the sidebar reads label colour from the server and folder colour from a client store.
+- Six pieces of code each decide what kind of mailbox something is, and disagree.
+
+#### The rules, in one place
+A message is in **exactly one folder** and **any number of labels**.
+
+Kinds of mailbox (one function decides, see below):
+- `system`: has a role (Inbox, Archive, Sent, Drafts, Junk, Trash…).
+- `special`: Remind Me Later and Scheduled (found as today, by role or by name at the top level).
+- `labels-root`: the top-level mailbox named `Labels`.
+- `label`: a direct child of `labels-root`.
+- `folder`: everything else.
+
+Operations:
+1. **Move to a folder.** Allowed destinations: a `folder`, or the system folders Inbox, Archive, Junk, Trash. Never a label, the labels root, Remind Me Later, Scheduled, Drafts or Sent. Afterwards the message is in the destination and keeps all its labels; it has left every other non-label mailbox, whichever one the caller thought it was in.
+2. **Add a label.** The label is added; nothing else changes.
+3. **Remove a label.** The label is removed. If that would leave the message in no mailbox at all, it goes to Archive. Always, from every caller.
+4. Trash, Archive, Spam, Not spam, Snooze are moves under rule 1 with their existing extras (`$junk` / `$notjunk` keywords, destroying mail already in Trash, creating the reminder). Reminder return and cancel stay as they are (the message is only in Remind Me Later, plus labels).
+5. Scheduled send's own handling of Drafts/Sent is out of scope.
+
+#### Code
+
+**New `src/lib/mailboxes.ts`** (pure, used by server and client):
+- `mailboxKind(mailbox, mailboxes)` → the five kinds above. Replaces the inline checks in `src/lib/utils/folder-tree.ts` (`filterUserFolders` is rebuilt on it), `src/routes/api/folders/+server.ts` (`isSystem` / `isLabel`), `src/lib/server/rules/schema.ts` (`parseTarget`), `src/lib/server/agent/tools.ts` (`list_folders`), `Sidebar.svelte` (`pseudoRole`), and the scattered Remind Me Later name checks. `src/lib/types/labels.ts`'s `findLabelsParentId` / `isLabelMailbox` / `labelMailboxIds` stay as the low-level helpers it uses.
+- `canMoveInto(mailbox, mailboxes)` → rule 1's destination test.
+- `nextMailboxIds(current, op, mailboxes)` → the resulting `mailboxIds` for `{move: id}`, `{addLabel: id}`, `{removeLabel: id, archiveId}`. The one place the rules above are written. Extracted from `updateEmailMailboxes` (`src/lib/jmap/email.ts` ~654-670).
+- `folderOptions(mailboxes)` → the folder tree as a flat, indented list (from `buildFolderTree`), for pickers.
+
+**New `src/lib/server/filing.ts`**: `moveToFolder(client, accountId, ids, targetId)`, `addLabel(...)`, `removeLabel(...)`. Each loads the mailboxes, refuses a bad target with a plain error, computes with `nextMailboxIds`, writes whole `mailboxIds` objects (the existing Stalwart all-digit-id workaround), and reports rejected writes.
+- `src/lib/jmap/email.ts`: `moveAway` and the `leave` / `sourceMailboxId` logic are deleted. `moveEmail(s)`, `trashEmail`, `archiveEmail`, `markAsSpam`, `markAsNotSpam` and their bulk forms are rebuilt on `filing.ts` (or replaced by it where the caller is server code); `sourceMailboxId` parameters disappear from them and from the endpoints' bodies (accepted and ignored for one release so an open tab doesn't break).
+- `src/lib/jmap/labels.ts` `applyLabel` / `removeLabel` become the `filing.ts` functions; `deleteLabelMailbox`'s detach keeps its Archive fallback through `nextMailboxIds`.
+- Callers moved onto `filing.ts`: `src/routes/api/email/[id]/+server.ts`, `src/routes/api/email/bulk/+server.ts`, `src/routes/api/email/[id]/label/+server.ts`, `src/routes/api/reminders` (snooze), `src/lib/server/agent/tools.ts` (`move_to_folder`, `set_label`, `archive`, `move_to_trash`, `snooze`), `src/lib/server/jobs/runner.ts`, `src/lib/server/telegram/notifier.ts`, the Jev worker's Junk move and rescue, and the rules engine (`src/lib/server/rules/engine.ts`: a rule's move now uses `nextMailboxIds`, so it leaves every folder, not just the Inbox).
+- A `moveTo` request whose target is a label is treated as **add label** (the sidebar's drop on a label, and old clients). A target that is the labels root, Remind Me Later, Scheduled, Drafts or Sent is refused with 400.
+- `/api/folders`: Remind Me Later and Scheduled can no longer be renamed, moved or deleted.
+
+**Pickers**
+- New `src/lib/components/MailboxPicker.svelte` replaces `FolderPicker.svelte` (used in `EmailList.svelte` and `EmailDetail.svelte`). Two sections: **Move to** (Inbox, Archive, Junk, Trash, then the folder tree, indented) and **Label** (the labels; picking one adds the label and does not move the message). No Remind Me Later, Scheduled or labels root.
+- `modals/FolderLocationPicker.svelte` and the target select in `settings/RuleEditor.svelte` keep their `<select>` form but are built from `folderOptions` / `mailboxKind`, so all three list the same folders in the same order.
+- The sidebar: dropping on Remind Me Later is no longer allowed (it created no reminder).
+
+**Metadata**
+- Migration `031_mailbox_meta.sql`: `mailbox_meta(account_id, mailbox_id, color, icon, display_name, created_at, updated_at)`, all three values nullable, primary key `(account_id, mailbox_id)`, cascading from `mail_accounts`. Filled in the same migration from `label_meta` and `folder_meta` by joining the address to `mail_accounts.email` (exact match first, then case-insensitive only for addresses with no exact match). The old tables are left alone (dropped in the last stage).
+- One store, `src/lib/server/db/queries/mailbox-meta.ts`, keyed by account id; a value can be set back to nothing (today's `COALESCE` upsert can't clear one).
+- One API: `PATCH /api/mailboxes/[id]/meta` `{ color?, icon?, displayName? }` (null clears). Deleting a folder or a label deletes its row server-side.
+- The app layout returns the active account's metadata; the sidebar reads label **and** folder colour and icon from it. `src/lib/stores/userState.ts` loses its folder and label parts.
+- Deleted: `/api/user-state/labels/**`, `/api/user-state/folders/**`, the `updateColor` action of `/api/preferences/labels`, `db/queries/label-meta.ts`, `db/queries/folder-meta.ts`. `CreateMailboxModal.svelte` writes metadata once, through the new route. (`/api/preferences/labels` create / rename / delete stays until the settings pages are merged.)
+
+**The old keyword-label migration** (`migrateKeywordLabelsIfNeeded`, `src/lib/server/labels.ts`): runs only when the `mail_labels` cookie is present (today it runs on every page load until a marker cookie is set); writes through `filing.ts` (it uses a patch form the code elsewhere says Stalwart rejects, and ignores the result); checks the result before deleting the cookie.
+
+#### What the owner will notice
+1. "Move to…" lists folders as a tree, and labels in their own "Label" section. Picking a label adds it; it no longer takes the message out of its folder.
+2. Moving a message while looking at a label keeps the label (it used to drop the label and leave a copy in the old folder).
+3. A message that was in two folders ends up only in the one it is moved to.
+4. A rule's move takes the message out of every folder, not just the Inbox.
+5. Snoozing from the assistant or Telegram behaves like snoozing in the app.
+6. Taking the last label off a message always sends it to Archive.
+7. Remind Me Later and Scheduled can't be renamed or deleted, and aren't offered as places to move mail.
+8. Colours and icons carry over; a folder's or label's colour can now be cleared.
+
+#### Tests
+- `mailboxes.test.ts`: `mailboxKind` for each kind (including a label's child, a top-level folder called "Scheduled", an account with no `Labels`); `canMoveInto` for each; `nextMailboxIds` for: move from one folder; move when in two folders; move keeps labels; move from a label-only message; add label; remove label; remove the only label → Archive; remove a label that isn't on the message.
+- `filing.test.ts`: each bad destination refused; rejected writes reported; bulk.
+- `src/routes/api/email/bulk/moves.test.ts` updated: moving to a folder from a label view now gives the folder **and** the label (today's assertion at ~138 changes); a `moveTo` onto a label adds it and keeps the folder; the labels root, Remind Me Later, Scheduled, Drafts, Sent refused.
+- Rules engine: a move leaves every folder and keeps labels. Jev worker: Junk move and rescue unchanged in result for Inbox mail.
+- Agent tools: `move_to_folder` refuses the labels root / specials; `set_label` off on a label-only message → Archive; `snooze` leaves every folder; `list_folders` kinds.
+- `/api/folders`: Remind Me Later and Scheduled protected.
+- Metadata: the migration (label and folder rows, case-different address, address without an account, both tables holding the same mailbox id); clearing a colour; folder delete and label delete remove the row; another account's mailbox id refused; the layout provides metadata.
+- `MailboxPicker`: sections, order, tree indentation, nothing special listed; picking a label calls add-label.
+- Keyword migration: not run without the cookie; cookie kept when a write is refused.
+
+#### Verification on the owner's server
+1. Move a message from a label view to a folder: it is in the folder and still has the label.
+2. "Move to…" → a label: the message keeps its folder and gains the label.
+3. Remove a message's only label (one that is in no folder): it appears in Archive.
+4. Folder and label colours and icons look as before; clear one and reload.
+
+#### Risks
+- **Behaviour changes 2, 3 and 4** are deliberate and visible; they are the point of the stage.
+- **Many callers move at once.** Three commits, each passing on its own: (1) `mailboxes.ts`, `filing.ts` and every mail-moving caller; (2) metadata; (3) pickers and the keyword migration.
+
+#### Done means
+Every test point has a test seen to fail without its behaviour; `npm run lint` clean, `npm run check` 0 errors, full `npx vitest run` passing on each commit; README and `docs/organising-mail-plan.md` updated (stage 6 marked done, this design added to its notes).
+
+#### As built
+- `mailboxKind`, `canMoveInto`, `nextMailboxIds` and `folderOptions` are in `src/lib/mailboxes.ts`, with the folder tree helpers (`buildFolderTree`, `flattenFolderTree`, `filterUserFolders`, `byPosition`), `isScheduledMailbox` and the Remind Me Later and Scheduled names. `src/lib/utils/folder-tree.ts` and `src/lib/jmap/mailbox.ts` re-export them. Remind Me Later is found by name at the top level, without a role (no server gives it one).
+- `nextMailboxIds` returns null when taking a label off would leave a message in nothing and no Archive is known yet; `filing.ts` then finds or makes Archive and asks again, so Archive is only made when it is needed.
+- `filing.ts` also has `fileInto` (the endpoints' "Move to": a label adds it, anything else is a move), `moveToTrash`, `moveToArchive`, `markSpam`, `markNotSpam` and `snoozeEmail`. Snoozing from the app, the assistant and Telegram all use `snoozeEmail`: the message comes back to the folder the caller named only if it is really in it, otherwise to the first folder it is in, otherwise the Inbox. Telegram names the Inbox. The assistant can now snooze a message that is only in a label (it comes back to the Inbox).
+- The rules engine and the Jev worker's Junk move and rescue keep their own batched writes and refusal records; their moves go through `nextMailboxIds` (`RuleOutcome` is now `moveTo` plus `labels`), not through `filing.ts`'s writes.
+- Trash still reads the view's `sourceMailboxId`, only to know it was pressed in Trash, where it deletes for good. Moves ignore it. "Trust sender" brings a message out of Junk when it is really in Junk, whatever the view.
+- `list_folders` says `folder` (mail can be moved into it), `label`, or `not for filing`.
+- The sidebar no longer accepts a drop on Remind Me Later from the first commit on, since the server refuses that move from then.
+- `mailbox_meta`: a row with no values left is removed. Where both old tables had the same mailbox for an account, the row changed last wins (on a tie, the folder's). An empty icon, colour or name became NULL.
+- `PATCH /api/mailboxes/[id]/meta` takes the active account's folders and labels only: an id the account doesn't have is 404; a system folder, Remind Me Later, Scheduled or the Labels container is 400.
+- Labels' colours still reach the sidebar in the label list (`listLabels`), because a label with no colour of its own gets one from the automatic palette; the list is built from `mailbox_meta` in the same page load as `mailboxMeta`.
+- The create and edit dialog writes colour and icon only, in one call, and has a "No color" choice so a colour can be cleared. Renaming a label clears any stored display name, so the label's own name shows. A colour sent with `/api/preferences/labels` `create` is still stored, for an open tab of the older app. `Label.createdAt` is gone (it came from `label_meta` and nothing read it).
+- The keyword-label migration no longer sets or reads the `mail_labels_migrated` marker. It asks for marked messages from the start each round (the old code moved its position forward while clearing the keyword, so it skipped messages), and clears the keyword with `false` in the same write as the label.

@@ -21,7 +21,7 @@
 		onClose: () => void;
 	} = $props();
 
-	// Fixed to the viewport and moved onto <body>, like FolderPicker: the
+	// Fixed to the viewport and moved onto <body>, like MailboxPicker: the
 	// triggers live inside the list column (overflow hidden) and its
 	// scroller, either of which would clip an absolutely placed menu, and
 	// under the sticky date headers further down the list.

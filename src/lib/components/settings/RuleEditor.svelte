@@ -13,7 +13,7 @@
 		type RuleRole,
 		type RuleTarget
 	} from '$lib/types/rules';
-	import { buildFolderTree, flattenFolderTree } from '$lib/utils/folder-tree';
+	import { folderOptions as listFolders } from '$lib/mailboxes';
 
 	/**
 	 * One rule, being written: its name, its conditions, and what it does
@@ -89,7 +89,8 @@
 
 	// --- Where it files mail ---
 
-	const folderOptions = $derived(flattenFolderTree(buildFolderTree(mailboxes)));
+	// The same folders, in the same order, as "Move to…" and the folder location picker.
+	const folderOptions = $derived(listFolders(mailboxes));
 	const roleOptions = $derived(RULE_ROLES.filter((role) => mailboxes.some((m) => m.role === role)));
 	const ROLE_NAMES: Record<RuleRole, string> = { trash: 'Trash', archive: 'Archive', junk: 'Junk' };
 

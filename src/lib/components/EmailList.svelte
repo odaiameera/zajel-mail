@@ -2,7 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import EmailListItem from './EmailListItem.svelte';
 	import EmailDetail from './EmailDetail.svelte';
-	import FolderPicker from './FolderPicker.svelte';
+	import MailboxPicker from './MailboxPicker.svelte';
 	import ListFilterBar from './ListFilterBar.svelte';
 	import InboxTabs from './InboxTabs.svelte';
 	import CategoryPicker from './CategoryPicker.svelte';
@@ -213,6 +213,10 @@
 		e.dataTransfer.effectAllowed = 'move';
 	}
 
+	/**
+	 * Move the selection to a folder, or add a label to it: the server tells
+	 * them apart ("Move to" a label adds the label and moves nothing).
+	 */
 	async function bulkMoveTo(targetMailboxId: string) {
 		if (selectedIds.size === 0) return;
 		showMovePicker = false;
@@ -224,8 +228,7 @@
 				body: JSON.stringify({
 					ids: [...selectedIds],
 					action: 'moveTo',
-					targetMailboxId,
-					sourceMailboxId: mailboxId
+					targetMailboxId
 				})
 			});
 			selectedIds = new Set();
@@ -425,13 +428,14 @@
 						<Icon name="move-to-folder" size={16} />
 					</button>
 					{#if showMovePicker}
-						<FolderPicker
+						<MailboxPicker
 							{mailboxes}
 							labels={allLabels}
 							excludeIds={mailboxId ? [mailboxId] : []}
 							anchor={moveTriggerEl ?? null}
 							align="left"
-							onPick={bulkMoveTo}
+							onMove={bulkMoveTo}
+							onAddLabel={bulkMoveTo}
 							onClose={() => { showMovePicker = false; }}
 						/>
 					{/if}
