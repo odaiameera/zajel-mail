@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { deleteRulesForMailbox } from '$lib/server/rules/store';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
@@ -127,9 +128,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 			const result = await deleteFolder(client, accountId, body.id);
 			if (!result.success) return json({ success: false, error: result.error }, { status: 400 });
+			// The rules that filed into it go with it: they have nowhere left to file.
+			const rulesDeleted = locals.activeAccountId ? deleteRulesForMailbox(locals.activeAccountId, body.id) : 0;
 
 			const refreshed = await getMailboxes(client, accountId);
-			return json({ success: true, mailboxes: refreshed });
+			return json({ success: true, mailboxes: refreshed, rulesDeleted });
 		}
 
 		case 'move': {

@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Email } from '$lib/jmap/types';
-import type { ActionRule, RuleCondition } from '$lib/types/rules';
-import { evaluateRulesForEmail, outcomeToUpdate, updatesForEmails, type RuleActionCtx } from './engine';
-import type { RuleAction } from '$lib/types/rules';
+import type { Rule, RuleCondition } from '$lib/types/rules';
+import { evaluateRulesForEmail, outcomeToUpdate, ruleContext, updatesForEmails, type RuleActionCtx } from './engine';
 
 function email(overrides: Partial<Email> = {}): Email {
 	return {
@@ -29,64 +28,117 @@ const jev = (id: string, value = 'it is an invoice'): RuleCondition =>
 const subjectInvoice: RuleCondition = { id: 's', field: 'subject', op: 'contains', value: 'invoice', negate: false };
 const fromShop: RuleCondition = { id: 'f', field: 'from', op: 'contains', value: 'shop.example', negate: false };
 
-function rule(id: string, overrides: Partial<ActionRule>): ActionRule {
-	return { id, name: id, enabled: true, logic: 'allof', conditions: [], actions: [], createdAt: 0, ...overrides };
+function rule(id: string, overrides: Partial<Rule>): Rule {
+	return {
+		id,
+		name: id,
+		enabled: true,
+		logic: 'allof',
+		conditions: [fromShop],
+		target: { kind: 'none' },
+		markRead: false,
+		star: false,
+		stop: false,
+		position: 0,
+		createdAt: 0,
+		updatedAt: 0,
+		...overrides
+	};
 }
+const folder = (mailboxId: string) => ({ target: { kind: 'folder' as const, mailboxId } });
+const label = (mailboxId: string) => ({ target: { kind: 'label' as const, mailboxId } });
 
-const ctx: RuleActionCtx = {
-	inboxId: 'inbox',
-	trashId: 'trash',
-	validMailboxIds: new Set(['inbox', 'trash', 'finance', 'archive'])
-};
+const ctx: RuleActionCtx = ruleContext([
+	{ id: 'inbox', role: 'inbox' },
+	{ id: 'trash', role: 'trash' },
+	{ id: 'arch', role: 'archive' },
+	{ id: 'junk', role: 'junk' },
+	{ id: 'finance', role: null },
+	{ id: 'receipts', role: null },
+	{ id: 'work', role: null },
+	{ id: 'bills', role: null }
+]);
+
+const run = (rules: Rule[], e = email()) => evaluateRulesForEmail(e, rules, ctx, '');
 
 describe('evaluateRulesForEmail', () => {
-	it('keeps rule order and Stop processing', () => {
-		const stop = rule('stop', { conditions: [subjectInvoice], actions: [{ type: 'markRead' }, { type: 'stopProcessing' }] });
-		const later = rule('later', { conditions: [fromShop], actions: [{ type: 'moveToFolder', value: 'archive' }] });
-		const outcome = evaluateRulesForEmail(email(), [stop, later], ctx, '');
-		expect(outcome.firedRuleIds).toEqual(['stop']);
-		expect(outcome.keywords).toEqual({ $seen: true });
-		expect(outcome.addMailboxIds.size).toBe(0);
+	it('adds up labels', () => {
+		const outcome = run([rule('a', label('work')), rule('b', label('bills'))]);
+		expect(outcome.firedRuleIds).toEqual(['a', 'b']);
+		expect([...outcome.addMailboxIds]).toEqual(['work', 'bills']);
+		expect([...outcome.removeMailboxIds]).toEqual([]);
 	});
 
-	it('moves to Trash when a rule says Delete', () => {
-		const trashIt = rule('trash', { conditions: [fromShop], actions: [{ type: 'delete' }] });
-		const outcome = evaluateRulesForEmail(email(), [trashIt], ctx, '');
-		expect([...outcome.addMailboxIds]).toEqual(['trash']);
+	it('lets the first rule that moves a message decide its folder', () => {
+		const outcome = run([rule('label', label('work')), rule('first', folder('finance')), rule('second', folder('receipts'))]);
+		expect(outcome.firedRuleIds).toEqual(['label', 'first', 'second']);
+		expect([...outcome.addMailboxIds]).toEqual(['work', 'finance']);
 		expect([...outcome.removeMailboxIds]).toEqual(['inbox']);
 	});
 
-	it('never puts mail in an Inbox tab: an old tab action does nothing, and the rule’s other actions still run', () => {
-		// As a browser tab left open across the upgrade would still send it.
-		const toUpdates = { type: 'setCategory', value: 'updates' } as unknown as RuleAction;
-		const tab = rule('tab', { conditions: [fromShop], actions: [toUpdates, { type: 'markRead' }] });
-		const e = email({ keywords: { $cat_promotions: true } });
-		const outcome = evaluateRulesForEmail(e, [tab], ctx, '');
-		expect(outcome.firedRuleIds).toEqual(['tab']);
-		expect(outcomeToUpdate(e, outcome)).toEqual({ 'keywords/$seen': true });
+	it('moves to Trash, Archive or Junk by role', () => {
+		for (const [kind, id] of [['trash', 'trash'], ['archive', 'arch'], ['junk', 'junk']] as const) {
+			const outcome = run([rule(kind, { target: { kind } })]);
+			expect([...outcome.addMailboxIds]).toEqual([id]);
+			expect([...outcome.removeMailboxIds]).toEqual(['inbox']);
+		}
+	});
+
+	it('stops processing where a rule says so, after its own actions', () => {
+		const stop = rule('stop', { conditions: [subjectInvoice], markRead: true, stop: true });
+		const later = rule('later', folder('finance'));
+		const outcome = run([stop, later]);
+		expect(outcome.firedRuleIds).toEqual(['stop']);
+		expect(outcome.keywords).toEqual({ $seen: true });
+		expect(outcome.addMailboxIds.size).toBe(0);
+		// A rule that stops only on the mail it matches.
+		expect(run([{ ...stop, conditions: [{ ...subjectInvoice, value: 'receipt' }] }, later]).firedRuleIds).toEqual(['later']);
+	});
+
+	it('marks read and stars', () => {
+		const e = email();
+		const outcome = run([rule('read', { markRead: true }), rule('star', { star: true })], e);
+		expect(outcomeToUpdate(e, outcome)).toEqual({ 'keywords/$seen': true, 'keywords/$flagged': true });
+	});
+
+	it('skips a target that no longer exists, so a later move decides', () => {
+		const outcome = run([rule('gone', folder('deleted')), rule('label', label('deleted-label')), rule('next', folder('finance'))]);
+		expect([...outcome.addMailboxIds]).toEqual(['finance']);
+		// No Junk on the account: nothing moves.
+		const noJunk = { ...ctx, junkId: undefined };
+		expect(evaluateRulesForEmail(email(), [rule('junk', { target: { kind: 'junk' } })], noJunk, '').addMailboxIds.size).toBe(0);
 	});
 });
 
 describe('rules that may not run', () => {
-	const move = [{ type: 'moveToFolder' as const, value: 'finance' }];
 	// What the upgrade leaves of "from the shop AND Jev says it's an invoice":
 	// the exact part, flagged. Here someone has switched it back on unfixed.
-	const flagged = rule('flagged', { conditions: [fromShop], actions: move, attention: 'jev_condition', enabled: true });
-	// The same rule as an old browser tab would save it: the Jev condition still in it.
-	const unconverted = rule('old', { conditions: [fromShop, jev('j')], actions: move });
+	const flagged = rule('flagged', { ...folder('finance'), attention: 'jev_condition', enabled: true });
+	// The same rule as it was stored before: the Jev condition still in it.
+	const unconverted = rule('old', { ...folder('finance'), conditions: [fromShop, jev('j')] });
 
 	it('never fire in the engine, though the mail matches their exact conditions', () => {
-		for (const r of [flagged, unconverted, { ...unconverted, logic: 'anyof' as const }]) {
-			expect(evaluateRulesForEmail(email(), [r], ctx, '').firedRuleIds).toEqual([]);
+		for (const r of [
+			flagged,
+			{ ...flagged, attention: 'tab_rule' as const },
+			{ ...flagged, attention: 'tab_pinned' as const },
+			unconverted,
+			{ ...unconverted, logic: 'anyof' as const },
+			rule('off', { ...folder('finance'), enabled: false })
+		]) {
+			expect(run([r]).firedRuleIds).toEqual([]);
 			expect(updatesForEmails([email()], [r], ctx)).toEqual({ matched: 0, update: {} });
 		}
 		// The rule without the flag is the control: this mail does match it.
-		expect(evaluateRulesForEmail(email(), [{ ...flagged, attention: undefined }], ctx, '').firedRuleIds).toEqual(['flagged']);
+		expect(run([{ ...flagged, attention: undefined }]).firedRuleIds).toEqual(['flagged']);
+		// A note about a rule that still runs doesn't stop it.
+		expect(run([{ ...flagged, attention: 'tab_removed' }]).firedRuleIds).toEqual(['flagged']);
+		expect(run([{ ...flagged, attention: 'split' }]).firedRuleIds).toEqual(['flagged']);
 	});
 
 	it('don’t stop the rules after them', () => {
-		const stopper = { ...flagged, actions: [{ type: 'stopProcessing' as const }] };
-		const later = rule('later', { conditions: [fromShop], actions: [{ type: 'markRead' }] });
-		expect(evaluateRulesForEmail(email(), [stopper, later], ctx, '').firedRuleIds).toEqual(['later']);
+		const stopper = { ...flagged, stop: true };
+		const later = rule('later', { markRead: true });
+		expect(run([stopper, later]).firedRuleIds).toEqual(['later']);
 	});
 });

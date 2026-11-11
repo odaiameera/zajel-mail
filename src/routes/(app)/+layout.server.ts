@@ -9,7 +9,6 @@ import { listAccounts, markNeedsReauth } from '$lib/server/auth/accounts';
 import { unreadBadges } from '$lib/server/auth/unread-badges';
 import { listLabels, migrateKeywordLabelsIfNeeded } from '$lib/server/labels';
 import { syncIdentities } from '$lib/server/db/queries/identities';
-import { loadRules } from '$lib/server/rules-store';
 import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
@@ -109,10 +108,6 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			({ mailboxes, releaseAt: inboxHoldEndsAt } = applyInboxHold(holdAccount, mailboxList, hold));
 		}
 
-		// Rules live in SQLite now (device-independent). loadRules also performs
-		// the one-time import from the legacy per-browser `mail_rules` cookie.
-		const rules = loadRules(userEmail, cookies);
-
 		// Sidebar expand/collapse state — Record<id, boolean>. Absence means
 		// "default": section headers expanded, individual folders collapsed.
 		let folderExpanded: Record<string, boolean> = {};
@@ -161,7 +156,6 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			density,
 			displayName,
 			labels,
-			rules,
 			folderExpanded,
 			notificationsEnabled,
 			notifyCalendarEvents,

@@ -3,6 +3,7 @@
 	import { invalidateAll, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { pageTitle } from '$lib/utils/title';
+	import { filesInto, type Rule } from '$lib/types/rules';
 	import type { LayoutData } from '../$types';
 	import type { Mailbox } from '$lib/jmap/types';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
@@ -72,8 +73,18 @@
 		await invalidateAll();
 	}
 
+	/** How many rules file into a folder or label: deleting it deletes them, and the confirmation says so. */
+	async function rulesFilingInto(id: string): Promise<number> {
+		const res = await fetch('/api/rules').catch(() => null);
+		const body = res?.ok ? ((await res.json().catch(() => null)) as { rules?: Rule[] } | null) : null;
+		return (body?.rules ?? []).filter((r) => filesInto(r, id)).length;
+	}
+
+	/** " The 2 rules that file into it are deleted too.", or nothing. */
+	const rulesNote = (n: number) => (n === 0 ? '' : ` ${n === 1 ? 'The rule that files' : `The ${n} rules that file`} into it ${n === 1 ? 'is' : 'are'} deleted too.`);
+
 	async function deleteFolder(folder: Mailbox) {
-		const msg = `Delete "${folder.name}"? Messages inside will not be deleted — move them first if you want to keep them somewhere else.`;
+		const msg = `Delete "${folder.name}"? Messages inside will not be deleted — move them first if you want to keep them somewhere else.${rulesNote(await rulesFilingInto(folder.id))}`;
 		if (!confirm(msg)) return;
 		const res = await fetch('/api/folders', {
 			method: 'POST',

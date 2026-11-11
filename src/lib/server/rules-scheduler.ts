@@ -5,8 +5,10 @@ import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import type { AuthState, Email } from '$lib/jmap/types';
 import { isRunnable } from '$lib/types/rules';
-import { getRules, getRulesCursor, setRulesCursor } from './db/queries/rules';
-import { matcherProperties, updatesForEmails, type RuleActionCtx } from './rules/engine';
+import { accountIdForEmail } from './db/queries/account-tasks';
+import { getRulesCursor, setRulesCursor } from './db/queries/rules';
+import { listRules } from './rules/store';
+import { matcherProperties, ruleContext, updatesForEmails } from './rules/engine';
 import { runAccountTasks } from './account-tasks';
 import { AUTO_REPLY_PROPERTIES, answerNewMail, outOfOfficeFor, pruneOldAutoReplies } from './auto-reply';
 
@@ -98,7 +100,8 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 	}
 
 	// Rules that may run: switched on, and not waiting to be rewritten.
-	const enabled = getRules(userEmail).filter(isRunnable);
+	const accountRow = accountIdForEmail(userEmail);
+	const enabled = accountRow ? listRules(accountRow).filter(isRunnable) : [];
 	// Stalwart stamps receivedAt to the second and `after` is strict, so a
 	// cursor at this run's own instant would skip mail landing later in that
 	// second, after the query below. The next run reads from the second
@@ -124,11 +127,7 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 		setRulesCursor(userEmail, nowIso);
 		return;
 	}
-	const ctx: RuleActionCtx = {
-		inboxId: inbox.id,
-		trashId: mailboxes.find((m) => m.role === 'trash')?.id,
-		validMailboxIds: new Set(mailboxes.map((m) => m.id))
-	};
+	const ctx = ruleContext(mailboxes);
 
 	const matcher = matcherProperties(enabled);
 	const { fetchTextBodyValues } = matcher;

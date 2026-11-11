@@ -7,17 +7,15 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'zajel-rules-upgrade-')), 'test.db');
 vi.mock('$lib/server/log', () => ({ logEvent: vi.fn(), errorFields: (e: unknown) => ({ error: String(e) }) }));
 
-import type { Cookies } from '@sveltejs/kit';
 import type { Email } from '$lib/jmap/types';
 import type { ActionRule } from '$lib/types/rules';
 import { getDb } from '../db/index';
 import { MigrationError, runMigrations } from '../db/migrate';
 import { enqueueEmails } from '../db/queries/jev-decisions';
 import { getPinCategory, listPins, pinFor, setPin } from '../db/queries/jev-learning';
-import { getRules, getRulesCursor, setRulesCursor } from '../db/queries/rules';
+import { getRulesCursor, setRulesCursor } from '../db/queries/rules';
 import { evaluateRulesForEmail } from './engine';
-import { saveRules } from '../rules-store';
-import { retireStoredJevConditions, retireStoredTabActions, upgradeRules } from './upgrade';
+import { retireStoredJevConditions, retireStoredTabActions, toTableRules } from './upgrade';
 
 const ME = 'me@example.test';
 /** The linked-account row whose address is ME: pins are kept under it. */
@@ -121,8 +119,8 @@ describe('rules with a condition Jev judged', () => {
 		rerunStep('data/rules_exact_only');
 
 		const [after] = storedRules(ME);
-		expect(evaluateRulesForEmail(shopNewsletter, [after], ctx, '').firedRuleIds).toEqual([]);
-		expect(evaluateRulesForEmail(shopNewsletter, [{ ...after, enabled: true }], ctx, '').firedRuleIds).toEqual([]);
+		expect(evaluateRulesForEmail(shopNewsletter, toTableRules([after]), ctx, '').firedRuleIds).toEqual([]);
+		expect(evaluateRulesForEmail(shopNewsletter, toTableRules([{ ...after, enabled: true }]), ctx, '').firedRuleIds).toEqual([]);
 	});
 
 	it('are flagged whether the Jev condition stood alone, was one of any, or the rule was already off', () => {
@@ -272,38 +270,6 @@ describe('mail the Jev worker still had queued when rules became the schedulerâ€
 	});
 });
 
-describe('saving rules', () => {
-	const cookies = { get: () => undefined, delete: () => {} } as unknown as Cookies;
-
-	it('flags a rule an old browser tab sends with its Jev condition still in it', () => {
-		const mixed = rule('mixed', { conditions: [fromShop, jevInvoice] });
-		saveRules(ME, [rule('exact'), mixed] as unknown as ActionRule[], cookies);
-
-		const after = getRules(ME);
-		expect(after[0]).toEqual(rule('exact'));
-		expect(after[1]).toMatchObject({ enabled: false, attention: 'jev_condition', conditions: [fromShop] });
-		expect(after[1].legacy?.conditions).toEqual([fromShop, jevInvoice]);
-	});
-
-	it('keeps a rewritten rule as its owner saved it: no flag, switched on', () => {
-		const [flagged] = upgradeRules([rule('mixed', { conditions: [fromShop, jevInvoice] })], null);
-		const { attention: _attention, legacy: _legacy, ...rest } = flagged;
-		const rewritten = { ...rest, enabled: true, conditions: [{ ...fromShop, id: 's1', field: 'subject', value: 'invoice' }] } as ActionRule;
-		saveRules(ME, [rewritten], cookies);
-
-		expect(getRules(ME)).toEqual([rewritten]);
-		const invoice = { ...shopNewsletter, subject: 'Your invoice' } as Email;
-		expect(evaluateRulesForEmail(invoice, getRules(ME), ctx, '').firedRuleIds).toEqual(['mixed']);
-	});
-
-	it('keeps a flagged rule flagged, with its first original, however often it is saved', () => {
-		const flagged = upgradeRules([rule('mixed', { conditions: [fromShop, jevInvoice] })], null);
-		saveRules(ME, flagged, cookies);
-		saveRules(ME, getRules(ME), cookies);
-		expect(getRules(ME)).toEqual(flagged);
-	});
-});
-
 describe('rules that put mail in an Inbox tab', () => {
 	const toTab = (tab: string) => ({ type: 'setCategory', value: tab });
 	const from = (value: string, over: Record<string, unknown> = {}) => ({ id: 'f1', field: 'from', op: 'contains', value, negate: false, ...over });
@@ -350,7 +316,7 @@ describe('rules that put mail in an Inbox tab', () => {
 		expect(stub).toMatchObject({ actions: [], conditions: address.conditions });
 		expect(stub.legacy).toEqual({ enabled: true, logic: 'allof', conditions: address.conditions, actions: address.actions });
 		// And never runs, switched on or not.
-		expect(evaluateRulesForEmail(shopNewsletter, [{ ...stub, enabled: true }], ctx, '').firedRuleIds).toEqual([]);
+		expect(evaluateRulesForEmail(shopNewsletter, toTableRules([{ ...stub, enabled: true }]), ctx, '').firedRuleIds).toEqual([]);
 	});
 
 	it('say so in the note when the pin can match less than the rule did', () => {
@@ -545,7 +511,7 @@ describe('rules that put mail in an Inbox tab', () => {
 		// The tab it used to set is kept, in the rule as it was.
 		expect(after.legacy).toEqual({ enabled: true, logic: 'allof', conditions: [fromShop], actions: [label, toTab('newsletters')] });
 		// Still an ordinary running rule, and not a pin: a pin wouldn't add the label.
-		expect(evaluateRulesForEmail(shopNewsletter, [after], { ...ctx, validMailboxIds: undefined }, '').firedRuleIds).toEqual(['labelled']);
+		expect(evaluateRulesForEmail(shopNewsletter, toTableRules([after]), { ...ctx, validMailboxIds: undefined }, '').firedRuleIds).toEqual(['labelled']);
 		expect(pins()).toEqual([]);
 	});
 
@@ -732,35 +698,5 @@ describe('rules that put mail in an Inbox tab', () => {
 		runMigrations();
 		expect(pins()).toEqual([['news@shop.example', 'updates']]);
 		expect(left()[0].slice(0, 3)).toEqual(['address', false, 'tab_pinned']);
-	});
-
-	it('are converted on save too, when an old browser tab sends one', () => {
-		const cookies = { get: () => undefined, delete: () => {} } as unknown as Cookies;
-		saveRules(
-			ME,
-			[tabRule('address', from('news@shop.example')), tabRule('word', from('shop')), rule('keep')] as unknown as ActionRule[],
-			cookies
-		);
-		expect(getRules(ME).map((r) => [r.id, r.attention ?? null])).toEqual([
-			['address', 'tab_pinned'],
-			['word', 'tab_rule'],
-			['keep', null]
-		]);
-		expect(pins()).toEqual([['news@shop.example', 'updates']]);
-
-		// Sent again by the same old tab, after the owner dismissed the note: the
-		// pin is there already, and the rule is noted once more, not pinned twice.
-		saveRules(ME, [tabRule('address', from('news@shop.example'))] as unknown as ActionRule[], cookies);
-		expect(getRules(ME)[0].tabNote).toMatchObject({ existing: true });
-		expect(pins()).toEqual([['news@shop.example', 'updates']]);
-	});
-
-	it('keeps none of the notes once the owner has dealt with a rule and saved', () => {
-		const cookies = { get: () => undefined, delete: () => {} } as unknown as Cookies;
-		const [stub] = upgradeRules([tabRule('word', from('shop'))], null);
-		const { attention: _a, legacy: _l, tabNote: _t, ...rest } = stub;
-		const fixed = { ...rest, enabled: true, actions: [label] } as ActionRule;
-		saveRules(ME, [fixed], cookies);
-		expect(getRules(ME)).toEqual([fixed]);
 	});
 });

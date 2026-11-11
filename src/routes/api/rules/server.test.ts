@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ActionRule, RuleAction, RuleCondition } from '$lib/types/rules';
+import type { Rule, RuleCondition, RuleDraft } from '$lib/types/rules';
 
 // A small Inbox: Email/query pages it by position, newest first as stored,
 // and an Email/set that takes a message out of the Inbox removes it from
@@ -56,13 +56,12 @@ vi.mock('$lib/jmap/auth', () => ({
 		}
 	})
 }));
-vi.mock('$lib/server/db/queries/rules', () => ({ getRules: () => state.saved }));
-vi.mock('$lib/server/user', () => ({ userEmailFromAuth: () => 'me@example.test' }));
+vi.mock('$lib/server/rules/store', () => ({ listRules: () => state.saved }));
 
 import { POST as applyPOST } from './apply/+server';
 import { POST as previewPOST } from './preview/+server';
 
-const locals = { auth: { accountId: 'jmap' } };
+const locals = { auth: { accountId: 'jmap' }, activeAccountId: 'acct' };
 
 async function apply(body: Record<string, unknown>) {
 	const res = await applyPOST({
@@ -101,14 +100,20 @@ const email = (id: string, subject: string, body = '') => ({
 	bodyValues: { '1': { value: body } }
 });
 
-const rule = (conditions: RuleCondition[], actions: RuleAction[], id = 'r1'): ActionRule => ({
+const rule = (conditions: RuleCondition[], does: Partial<RuleDraft>, id = 'r1'): Rule => ({
 	id,
 	name: 'Hello',
 	enabled: true,
 	logic: 'allof',
 	conditions,
-	actions,
-	createdAt: 0
+	target: { kind: 'none' },
+	markRead: false,
+	star: false,
+	stop: false,
+	position: 0,
+	createdAt: 0,
+	updatedAt: 0,
+	...does
 });
 
 const cond = (field: RuleCondition['field'], op: RuleCondition['op'], value: string, negate = false): RuleCondition => ({
@@ -120,7 +125,7 @@ const cond = (field: RuleCondition['field'], op: RuleCondition['op'], value: str
 });
 const subject = (op: RuleCondition['op'], value: string, negate = false) => cond('subject', op, value, negate);
 
-const moveToArchive: RuleAction[] = [{ type: 'moveToFolder', value: 'ARCH' }];
+const moveToArchive: Partial<RuleDraft> = { target: { kind: 'archive' } };
 
 beforeEach(() => {
 	state.emails = [];
@@ -192,32 +197,37 @@ describe('the preview', () => {
 		expect(await preview({ ...rule([subject('is', 'hello')], moveToArchive), enabled: false })).toMatchObject({ matched: 1 });
 	});
 
-	it('counts nothing for a rule waiting to be rewritten, without scanning', async () => {
+	it('takes the draft through parseRule: conditions that don’t hold up count nothing, and say why', async () => {
 		state.emails = [email('m1', 'hello')];
 		const r = rule([subject('contains', 'hello')], moveToArchive);
-		expect(await preview({ ...r, attention: 'jev_condition' })).toEqual({ matched: 0, scanned: 0, total: 0 });
-		// One an old browser tab still holds: the save-time conversion flags it.
 		const jev = { id: 'j', field: 'jev', op: 'contains', value: 'it is an invoice', negate: false };
-		expect(await preview({ ...r, conditions: [subject('contains', 'hello'), jev] })).toEqual({ matched: 0, scanned: 0, total: 0 });
+		expect(await preview({ ...r, conditions: [subject('contains', 'hello'), jev] })).toEqual({
+			matched: 0,
+			scanned: 0,
+			total: 0,
+			problems: [{ field: 'conditions', index: 1, message: 'Pick what this condition looks at.' }]
+		});
 		expect(state.queries).toEqual([]);
 
-		// The control: the same rule, unflagged, is counted.
-		expect(await preview(r)).toMatchObject({ matched: 1 });
+		// The control: the same rule, with exact conditions only, is counted.
+		expect(await preview(r)).toEqual({ matched: 1, scanned: 1, total: 1 });
 	});
 
-	it('converts the rule as a save would first: one that only set an Inbox tab counts nothing', async () => {
+	it('counts a draft with nowhere to file yet, and says what it still needs', async () => {
 		state.emails = [email('m1', 'hello')];
-		const tab = { type: 'setCategory', value: 'updates' } as unknown as RuleAction;
-		const r = rule([cond('from', 'contains', 'alice@example.test')], [tab]);
-		expect(await preview(r)).toEqual({ matched: 0, scanned: 0, total: 0 });
-		expect(state.queries).toEqual([]);
+		expect(await preview(rule([subject('is', 'hello')], {}))).toEqual({
+			matched: 1,
+			scanned: 1,
+			total: 1,
+			problems: [{ field: 'actions', message: 'Give the rule something to do: a place to file mail, mark as read, or star.' }]
+		});
 	});
 });
 
 describe('apply now', () => {
 	it('acts on the saved rules, never on rules in the request', async () => {
 		state.emails = [email('m1', 'hello'), email('m2', 'other')];
-		state.saved = [rule([subject('is', 'other')], [{ type: 'markRead' }])];
+		state.saved = [rule([subject('is', 'other')], { markRead: true })];
 		const done = (await apply({ rules: [rule([subject('is', 'hello')], moveToArchive)] })).at(-1);
 		expect(state.sets).toEqual([{ m2: { 'keywords/$seen': true } }]);
 		expect(done).toMatchObject({ type: 'done', matched: 1, applied: 1 });
@@ -225,7 +235,7 @@ describe('apply now', () => {
 
 	it('runs only the chosen saved rules, and refuses ids it doesn’t have', async () => {
 		state.emails = [email('m1', 'hello'), email('m2', 'other')];
-		state.saved = [rule([subject('is', 'hello')], [{ type: 'markRead' }], 'a'), rule([subject('is', 'other')], [{ type: 'markImportant' }], 'b')];
+		state.saved = [rule([subject('is', 'hello')], { markRead: true }, 'a'), rule([subject('is', 'other')], { star: true }, 'b')];
 		await apply({ ruleIds: ['b'] });
 		expect(state.sets).toEqual([{ m2: { 'keywords/$flagged': true } }]);
 
@@ -241,7 +251,7 @@ describe('apply now', () => {
 
 	it('judges each Inbox message with the engine, so NOT plus "doesn\'t contain" is a double negative', async () => {
 		state.emails = [email('m1', 'hello world'), email('m2', 'other')];
-		state.saved = [rule([subject('not_contains', 'hello', true)], [{ type: 'markRead' }])];
+		state.saved = [rule([subject('not_contains', 'hello', true)], { markRead: true })];
 		const events = await apply({});
 		expect(state.queries[0].filter).toEqual({ inMailbox: 'IN' });
 		expect(state.sets).toEqual([{ m1: { 'keywords/$seen': true } }]);
@@ -261,7 +271,7 @@ describe('apply now', () => {
 
 	it('stops at the next page when cancelled', async () => {
 		state.emails = Array.from({ length: 450 }, (_, i) => email(`m${i}`, 'hello'));
-		state.saved = [rule([subject('contains', 'hello')], [{ type: 'markRead' }])];
+		state.saved = [rule([subject('contains', 'hello')], { markRead: true })];
 		let release = () => {};
 		state.gate = { at: 2, wait: new Promise<void>((r) => (release = r)) };
 
@@ -284,7 +294,7 @@ describe('apply now', () => {
 
 	it('reports the preflight for a rule whose target is gone', async () => {
 		state.emails = [email('m1', 'hello')];
-		state.saved = [rule([subject('contains', 'hello')], [{ type: 'moveToFolder', value: 'GONE' }])];
+		state.saved = [rule([subject('contains', 'hello')], { target: { kind: 'folder', mailboxId: 'GONE' } })];
 		const events = await apply({});
 		expect(events.at(-1)).toMatchObject({ type: 'error' });
 		expect(state.sets).toEqual([]);

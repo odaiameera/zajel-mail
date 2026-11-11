@@ -1,9 +1,11 @@
-import type { Email } from '$lib/jmap/types';
-import { isRunnable, isUsableCondition, ruleHolds, type ActionRule, type RuleCondition } from '$lib/types/rules';
+import type { Email, Mailbox } from '$lib/jmap/types';
+import { isRunnable, isUsableCondition, ruleHolds, type Rule, type RuleCondition, type RuleRole } from '$lib/types/rules';
 
 export interface RuleActionCtx {
 	inboxId?: string;
 	trashId?: string;
+	archiveId?: string;
+	junkId?: string;
 	/**
 	 * Live mailbox ids. When provided, label/folder actions whose target no
 	 * longer exists are skipped — Stalwart rejects patches referencing dead
@@ -12,12 +14,29 @@ export interface RuleActionCtx {
 	validMailboxIds?: Set<string>;
 }
 
+/** Where a rule's targets are on this account: its Inbox, the folders with a role, and every mailbox there is. */
+export function ruleContext(mailboxes: Pick<Mailbox, 'id' | 'role'>[]): RuleActionCtx {
+	const role = (r: string) => mailboxes.find((m) => m.role === r)?.id;
+	return {
+		inboxId: role('inbox'),
+		trashId: role('trash'),
+		archiveId: role('archive'),
+		junkId: role('junk'),
+		validMailboxIds: new Set(mailboxes.map((m) => m.id))
+	};
+}
+
+/** The mailbox a role target files into, if the account has it. */
+export function roleMailboxId(ctx: RuleActionCtx, role: RuleRole): string | undefined {
+	return role === 'trash' ? ctx.trashId : role === 'archive' ? ctx.archiveId : ctx.junkId;
+}
+
 function targetExists(ctx: RuleActionCtx, id: string): boolean {
 	return !ctx.validMailboxIds || ctx.validMailboxIds.has(id);
 }
 
 /** True if any enabled rule needs the message body to evaluate. */
-export function rulesNeedBody(rules: ActionRule[]): boolean {
+export function rulesNeedBody(rules: Rule[]): boolean {
 	return rules.some((r) => r.conditions.some((c) => c.field === 'body' && isUsableCondition(c)));
 }
 
@@ -77,7 +96,7 @@ function conditionMatches(email: Email, c: RuleCondition, bodyText: string): boo
 	return res;
 }
 
-function matchesRule(email: Email, rule: ActionRule, bodyText: string): boolean {
+function matchesRule(email: Email, rule: Rule, bodyText: string): boolean {
 	return ruleHolds(rule, (c) => conditionMatches(email, c, bodyText));
 }
 
@@ -100,56 +119,12 @@ export function emptyOutcome(): RuleOutcome {
 }
 
 /**
- * Fold one rule's actions into an outcome. An action of a kind rules no
- * longer have (an old "move to an Inbox tab") does nothing: tabs are never
- * a rule's to set.
- */
-function applyActionsToOutcome(
-	email: Email,
-	actions: ActionRule['actions'],
-	ctx: RuleActionCtx,
-	outcome: RuleOutcome
-): { stop: boolean } {
-	let stop = false;
-	for (const action of actions) {
-		switch (action.type) {
-			case 'applyLabel':
-				if (action.value && targetExists(ctx, action.value)) {
-					outcome.addMailboxIds.add(action.value);
-				}
-				break;
-			case 'markRead':
-				outcome.keywords['$seen'] = true;
-				break;
-			case 'markImportant':
-				outcome.keywords['$flagged'] = true;
-				break;
-			case 'moveToFolder':
-				if (action.value && targetExists(ctx, action.value)) {
-					outcome.addMailboxIds.add(action.value);
-					if (ctx.inboxId && action.value !== ctx.inboxId) {
-						outcome.removeMailboxIds.add(ctx.inboxId);
-					}
-				}
-				break;
-			case 'delete':
-				if (ctx.trashId) {
-					outcome.addMailboxIds.add(ctx.trashId);
-					if (ctx.inboxId) outcome.removeMailboxIds.add(ctx.inboxId);
-				}
-				break;
-			case 'stopProcessing':
-				stop = true;
-				break;
-		}
-	}
-	return { stop };
-}
-
-/**
- * Evaluate the (enabled, ordered) rules against one email. Honors
- * `stopProcessing`. The outcome is idempotent by construction — converting
- * it with {@link outcomeToUpdate} only writes real differences.
+ * Evaluate the (enabled, ordered) rules against one email. Labels add up;
+ * the first rule that moves the message decides its folder, since a
+ * message lives in one; `stop` ends the evaluation. A target that no longer
+ * exists is skipped (the next move may then decide). The outcome is
+ * idempotent by construction — converting it with {@link outcomeToUpdate}
+ * only writes real differences.
  *
  * A rule that may not run is passed over here as well as by the callers
  * that load the rules: one waiting for its owner to rewrite it stays off
@@ -157,15 +132,29 @@ function applyActionsToOutcome(
  */
 export function evaluateRulesForEmail(
 	email: Email,
-	enabledRules: ActionRule[],
+	enabledRules: Rule[],
 	ctx: RuleActionCtx,
 	bodyText: string
 ): RuleOutcome {
 	const outcome = emptyOutcome();
+	let moved = false;
 	for (const rule of enabledRules) {
 		if (!isRunnable(rule) || !matchesRule(email, rule, bodyText)) continue;
 		outcome.firedRuleIds.push(rule.id);
-		if (applyActionsToOutcome(email, rule.actions, ctx, outcome).stop) break;
+		const t = rule.target;
+		if (t.kind === 'label') {
+			if (targetExists(ctx, t.mailboxId)) outcome.addMailboxIds.add(t.mailboxId);
+		} else if (t.kind !== 'none' && !moved) {
+			const id = t.kind === 'folder' ? t.mailboxId : roleMailboxId(ctx, t.kind);
+			if (id && targetExists(ctx, id)) {
+				moved = true;
+				outcome.addMailboxIds.add(id);
+				if (ctx.inboxId && id !== ctx.inboxId) outcome.removeMailboxIds.add(ctx.inboxId);
+			}
+		}
+		if (rule.markRead) outcome.keywords['$seen'] = true;
+		if (rule.star) outcome.keywords['$flagged'] = true;
+		if (rule.stop) break;
 	}
 	return outcome;
 }
@@ -174,7 +163,7 @@ export function evaluateRulesForEmail(
  * What the matcher reads from each message, with the body only when a rule
  * looks at it. `fetchTextBodyValues` goes on the Email/get call.
  */
-export function matcherProperties(rules: ActionRule[]): { properties: string[]; fetchTextBodyValues: boolean } {
+export function matcherProperties(rules: Rule[]): { properties: string[]; fetchTextBodyValues: boolean } {
 	const needBody = rulesNeedBody(rules);
 	return {
 		properties: [
@@ -194,7 +183,7 @@ export function matcherProperties(rules: ActionRule[]): { properties: string[]; 
  */
 export function updatesForEmails(
 	emails: Email[],
-	enabledRules: ActionRule[],
+	enabledRules: Rule[],
 	ctx: RuleActionCtx
 ): { matched: number; update: Record<string, Record<string, unknown>> } {
 	const needBody = rulesNeedBody(enabledRules);

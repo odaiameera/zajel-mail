@@ -15,11 +15,11 @@ function num(value: string | undefined, fallback: number): number {
 /**
  * Load every preference the settings pages care about. These live in SQLite
  * keyed to the webmail login, so they are identical on every browser and every
- * linked account. `parent()` gives us the mailboxes/labels/rules already
+ * linked account. `parent()` gives us the mailboxes and labels already
  * loaded by the (app) layout so child sections don't re-fetch.
  */
 export const load: LayoutServerLoad = async ({ cookies, locals, parent }) => {
-	const { mailboxes, labels, rules } = await parent();
+	const { mailboxes, labels } = await parent();
 	if (!locals.user) error(401, 'Not signed in');
 
 	const prefs = readPreferences(locals.user.id, cookies);
@@ -66,7 +66,6 @@ export const load: LayoutServerLoad = async ({ cookies, locals, parent }) => {
 		autoReplyBody: prefs.auto_reply_body ?? '',
 		// Piped through for section pages that need them
 		mailboxes,
-		labels,
-		rules
+		labels
 	};
 };

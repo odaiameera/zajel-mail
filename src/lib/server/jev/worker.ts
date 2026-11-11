@@ -12,7 +12,7 @@ import {
 	updateJevSettings,
 	type SpamMode
 } from '$lib/server/db/queries/jev-settings';
-import { getRules } from '$lib/server/db/queries/rules';
+import { listRules } from '$lib/server/rules/store';
 import { listPins, pinFor, senderHistory, type SenderPin } from '$lib/server/db/queries/jev-learning';
 import {
 	addUsage,
@@ -458,7 +458,7 @@ export async function sortNewMail(
 	// after the message is showing. With tabs off, a rule's move has to land
 	// before a spam verdict could send the same message to Junk. Rules don't
 	// wait on TypeSafe, so they keep working while it is down.
-	if (getRules(accountEmail).some(isRunnable)) {
+	if (listRules(accountRowId).some(isRunnable)) {
 		try {
 			await applyRulesNow(auth, accountEmail);
 		} catch (err) {

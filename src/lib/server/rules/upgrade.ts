@@ -18,15 +18,13 @@ import { importRules } from './store';
 /**
  * Bringing stored rules up to what a rule is now.
  *
- * Rules are one JSON array per mail account, stored as the browser sent
- * them, so a change to what a rule may contain has to be made to the stored
- * arrays too. Each change here is a pure function over one account's rules,
- * safe to run any number of times, used in two places:
- *
- * - once over every account, from the migration runner (see `DATA_STEPS` in
- *   db/migrate.ts), and
- * - on every save (rules-store.ts), since a browser tab left open across an
- *   upgrade still holds the old rules and would save them back.
+ * Rules were one JSON array per mail address (`user_rules`), stored as the
+ * browser sent them, so a change to what a rule may contain had to be made
+ * to the stored arrays too. Each change here is a pure function over one
+ * address's rules, safe to run any number of times, run once over every
+ * address by the migration runner (see `DATA_STEPS` in db/migrate.ts). The
+ * last of them moves the result into the rules table, where every rule
+ * since is saved one at a time through `parseRule` (see schema.ts).
  *
  * Two things hold for every change. A rule is never made to act on more
  * mail than its owner wrote it for. And no change its owner could notice is

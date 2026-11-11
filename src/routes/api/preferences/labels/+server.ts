@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import { deleteRulesForMailbox } from '$lib/server/rules/store';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { ensureArchiveMailbox } from '$lib/jmap/mailbox';
@@ -87,9 +88,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				return json({ success: false, error: result.error }, { status: 400 });
 			}
 			removeLabelMeta(email, body.id);
+			// The rules that filed under it go with it: they have nothing left to do.
+			const rulesDeleted = locals.activeAccountId ? deleteRulesForMailbox(locals.activeAccountId, body.id) : 0;
 
 			const labels = await listLabels(client, accountId, email);
-			return json({ success: true, labels });
+			return json({ success: true, labels, rulesDeleted });
 		}
 
 		case 'updateColor': {

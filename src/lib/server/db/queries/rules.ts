@@ -1,8 +1,9 @@
 import { getDb } from '../index';
-import type { ActionRule } from '$lib/types/rules';
-import { accountIdForEmail } from './account-tasks';
-import { listRules } from '../../rules/store';
-import { toActionRule } from '../../rules-store';
+
+/**
+ * Where the rules scheduler has read new mail up to, per address. The rules
+ * themselves are in the rules table (see rules/store.ts).
+ */
 
 let _stmts: ReturnType<typeof prepareStmts> | null = null;
 function prepareStmts() {
@@ -20,12 +21,6 @@ function prepareStmts() {
 }
 function stmts() {
 	return (_stmts ??= prepareStmts());
-}
-
-/** The rules of the mail account with this address, read from the rules table. */
-export function getRules(userEmail: string): ActionRule[] {
-	const accountId = accountIdForEmail(userEmail);
-	return accountId ? listRules(accountId).map(toActionRule) : [];
 }
 
 /** ISO timestamp the auto-apply worker last processed up to, or null. */

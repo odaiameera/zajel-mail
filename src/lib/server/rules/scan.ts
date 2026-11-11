@@ -1,8 +1,8 @@
 import type { JMAPClient } from '$lib/jmap/client';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import type { Email, Mailbox } from '$lib/jmap/types';
-import type { ActionRule } from '$lib/types/rules';
-import { matcherProperties, updatesForEmails, type RuleActionCtx } from './engine';
+import type { Rule } from '$lib/types/rules';
+import { matcherProperties, ruleContext, updatesForEmails } from './engine';
 
 /**
  * Running rules over the mail already in the Inbox, for the rule editor.
@@ -49,7 +49,7 @@ interface SetResult {
 export async function scanInbox(
 	client: JMAPClient,
 	accountId: string,
-	rules: ActionRule[],
+	rules: Rule[],
 	opts: ScanOptions
 ): Promise<ScanResult> {
 	const result: ScanResult = { scanned: 0, matched: 0, applied: 0, failed: 0, failedReason: '', total: 0 };
@@ -58,11 +58,7 @@ export async function scanInbox(
 	const mailboxes = opts.mailboxes ?? (await getMailboxes(client, accountId));
 	const inbox = mailboxes.find((m) => m.role === 'inbox');
 	if (!inbox) return result;
-	const ctx: RuleActionCtx = {
-		inboxId: inbox.id,
-		trashId: mailboxes.find((m) => m.role === 'trash')?.id,
-		validMailboxIds: new Set(mailboxes.map((m) => m.id))
-	};
+	const ctx = ruleContext(mailboxes);
 	result.total = inbox.totalEmails;
 
 	// Send a page of updates in JMAP-safe chunks, counting what the server

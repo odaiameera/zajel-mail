@@ -13,9 +13,9 @@ export type { PrefKey };
  * request to the origin, that a long auto-reply body could quietly exceed the
  * ~4KB cookie cap and be dropped. They now live in `app_prefs.prefs`.
  *
- * Migration follows the shape `rules-store.ts` already established for mail
- * rules: read from SQLite, and if there is nothing stored yet but the legacy
- * cookies are present, import them once and delete them. No flag day, and
+ * Migration: read from SQLite, and if there is nothing stored yet but the
+ * legacy cookies are present, import them once and delete them (as mail
+ * rules once were from their own cookie). No flag day, and
  * nobody re-enters settings they had already chosen.
  */
 

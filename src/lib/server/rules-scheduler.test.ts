@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ActionRule } from '$lib/types/rules';
+import type { Rule } from '$lib/types/rules';
 
 const state = vi.hoisted(() => ({
 	emails: [] as Record<string, unknown>[],
@@ -66,8 +66,9 @@ vi.mock('./auto-reply', () => ({
 	pruneOldAutoReplies: () => {}
 }));
 vi.mock('./auth/accounts', () => ({ listSchedulableAuths: () => [], markNeedsReauth: vi.fn() }));
+vi.mock('./db/queries/account-tasks', () => ({ accountIdForEmail: () => 'acct' }));
+vi.mock('./rules/store', () => ({ listRules: () => state.rules }));
 vi.mock('./db/queries/rules', () => ({
-	getRules: () => state.rules,
 	getRulesCursor: () => state.cursor,
 	setRulesCursor: (_user: string, iso: string) => state.setCursors.push(iso)
 }));
@@ -77,14 +78,19 @@ import { applyRulesForUser, applyRulesNow } from './rules-scheduler';
 
 const auth = { accountId: 'jmap' } as AuthState;
 
-const markRead: ActionRule = {
+const markRead: Rule = {
 	id: 'r1',
 	name: 'Read',
 	enabled: true,
 	logic: 'allof',
 	conditions: [{ id: 'c1', field: 'subject', op: 'contains', value: 'x', negate: false }],
-	actions: [{ type: 'markRead' }],
-	createdAt: 0
+	target: { kind: 'none' },
+	markRead: true,
+	star: false,
+	stop: false,
+	position: 0,
+	createdAt: 0,
+	updatedAt: 0
 };
 
 /** `n` Inbox messages, oldest first, stamped by `receivedAt(i)`. */
@@ -158,7 +164,7 @@ describe('rules that may not run', () => {
 		state.emails = page(2, () => '2026-10-20T07:00:00Z');
 		// Flagged by the upgrade, then switched back on without being fixed.
 		const flagged = { ...markRead, attention: 'jev_condition', enabled: true };
-		// As an old browser tab would save it, the Jev condition still there.
+		// As it was stored before the upgrade, the Jev condition still there.
 		const unconverted = {
 			...markRead,
 			id: 'r2',

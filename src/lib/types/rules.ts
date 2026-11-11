@@ -266,3 +266,8 @@ export function ruleHolds(
 	const results = conds.map((c) => conditionHolds(c, matches(c)));
 	return rule.logic === 'anyof' ? results.some(Boolean) : results.every(Boolean);
 }
+
+/** Whether a rule files into this folder or label: deleting the mailbox deletes the rule. */
+export function filesInto(rule: Pick<Rule, 'target'>, mailboxId: string): boolean {
+	return (rule.target.kind === 'folder' || rule.target.kind === 'label') && rule.target.mailboxId === mailboxId;
+}

@@ -54,12 +54,11 @@ import { getJevSettings, updateJevSettings } from '$lib/server/db/queries/jev-se
 import { enqueueEmails, getDecision, getUsage, recordCorrections } from '$lib/server/db/queries/jev-decisions';
 import { setRulesCursor } from '$lib/server/db/queries/rules';
 import { importRules } from '$lib/server/rules/store';
-import { toTableRules } from '$lib/server/rules/upgrade';
 import { applyRulesForUser } from '$lib/server/rules-scheduler';
 import { INBOX_HOLD_MS, isHeld } from '$lib/inbox-hold';
 import { recordSenderMoves, setPin } from '$lib/server/db/queries/jev-learning';
 import type { AuthState, MethodCall } from '$lib/jmap/types';
-import type { ActionRule } from '$lib/types/rules';
+import type { Rule } from '$lib/types/rules';
 import { forgetRateLimits, sortNewMail, sortNewMailSafe } from './worker';
 
 const ACCT = 'acct-1';
@@ -67,10 +66,10 @@ const ME = 'me@example.test';
 const auth = { authHeader: 'Basic x', accountId: 'jmap-acc', apiUrl: 'https://mail.example/jmap/', sessionState: '' } as AuthState;
 const T0 = new Date('2026-10-18T09:00:00Z');
 
-/** The account's rules, replaced: written as the upgrade writes rules stored in the old shape. */
-function setRules(_email: string, rules: ActionRule[]): void {
+/** The account's rules, replaced. */
+function setRules(_email: string, rules: Rule[]): void {
 	getDb().prepare('DELETE FROM rules WHERE account_id = ?').run(ACCT);
-	importRules(ACCT, toTableRules(rules));
+	importRules(ACCT, rules);
 }
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
 
@@ -631,14 +630,19 @@ describe('sortNewMail', () => {
 	});
 
 	it('sorts mail already in the Inbox for its tab only, never running rules on it', async () => {
-		const markAll: ActionRule = {
+		const markAll: Rule = {
 			id: 'all',
 			name: 'Mark invoices read',
 			enabled: true,
 			logic: 'allof',
 			conditions: [{ id: 's1', field: 'subject', op: 'contains', value: 'invoice', negate: false }],
-			actions: [{ type: 'markRead' }],
-			createdAt: 0
+			target: { kind: 'none' },
+			markRead: true,
+			star: false,
+			stop: false,
+			position: 0,
+			createdAt: 0,
+			updatedAt: 0
 		};
 		setRules(ME, [markAll]);
 		setRulesCursor(ME, at(0).toISOString());
@@ -964,14 +968,19 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 	const JUST_NOW = 9.5;
 	const SORTED = '$jev_sorted';
 	// "Archive" stands in for a label: the rule adds a mailbox and leaves the Inbox.
-	const labelGithub: ActionRule = {
+	const labelGithub: Rule = {
 		id: 'gh',
 		name: 'Label GitHub',
 		enabled: true,
 		logic: 'allof',
 		conditions: [{ id: 'c1', field: 'from', op: 'contains', value: 'github.com', negate: false }],
-		actions: [{ type: 'applyLabel', value: 'archive' }],
-		createdAt: 0
+		target: { kind: 'label', mailboxId: 'archive' },
+		markRead: false,
+		star: false,
+		stop: false,
+		position: 0,
+		createdAt: 0,
+		updatedAt: 0
 	};
 
 	it('lets exact rules act before it marks new mail, so a rule’s label is there when the message shows', async () => {
@@ -1026,7 +1035,7 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 
 	it('runs rules first with the tabs off too, so a rule’s move lands before a spam verdict could take the message', async () => {
 		updateJevSettings(ACCT, { inboxTabs: false, spamMode: 'active' });
-		const githubToArchive: ActionRule = { ...labelGithub, id: 'gh-move', actions: [{ type: 'moveToFolder', value: 'archive' }] };
+		const githubToArchive: Rule = { ...labelGithub, id: 'gh-move', target: { kind: 'folder', mailboxId: 'archive' } };
 		setRules(ME, [githubToArchive]);
 		setRulesCursor(ME, at(0).toISOString());
 		// Stalwart flagged it, and nobody here knows the sender: Jev would junk it.
@@ -1046,10 +1055,10 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 	it('runs no rule that is waiting to be rewritten, even switched back on', async () => {
 		// What the upgrade leaves of a rule with a Jev condition: flagged, its
 		// exact part in place. Someone has switched it on again unfixed.
-		const flagged: ActionRule = {
+		const flagged: Rule = {
 			...labelGithub,
 			id: 'flagged',
-			actions: [{ type: 'moveToFolder', value: 'archive' }],
+			target: { kind: 'folder', mailboxId: 'archive' },
 			attention: 'jev_condition',
 			enabled: true
 		};
@@ -1261,8 +1270,13 @@ describe('sender pins, with Jev off or out of reach', () => {
 				enabled: true,
 				logic: 'allof',
 				conditions: [{ id: 'c1', field: 'subject', op: 'contains', value: 'receipt', negate: false }],
-				actions: [{ type: 'moveToFolder', value: 'archive' }],
-				createdAt: 0
+				target: { kind: 'folder', mailboxId: 'archive' },
+				markRead: false,
+				star: false,
+				stop: false,
+				position: 0,
+				createdAt: 0,
+				updatedAt: 0
 			}
 		]);
 		setRulesCursor(ME, at(0).toISOString());
@@ -1444,8 +1458,13 @@ describe('sender pins, with Jev off or out of reach', () => {
 				enabled: true,
 				logic: 'allof',
 				conditions: [{ id: 'c', field: 'subject', op: 'contains', value: 'x', negate: false }],
-				actions: [{ type: 'markRead' }],
-				createdAt: 0
+				target: { kind: 'none' },
+				markRead: true,
+				star: false,
+				stop: false,
+				position: 0,
+				createdAt: 0,
+				updatedAt: 0
 			}
 		]);
 		setRulesCursor(ME, at(0).toISOString());
@@ -1478,8 +1497,13 @@ describe('sender pins, with Jev off or out of reach', () => {
 				enabled: true,
 				logic: 'allof',
 				conditions: [{ id: 'c', field: 'subject', op: 'contains', value: 'x', negate: false }],
-				actions: [{ type: 'markRead' }],
-				createdAt: 0
+				target: { kind: 'none' },
+				markRead: true,
+				star: false,
+				stop: false,
+				position: 0,
+				createdAt: 0,
+				updatedAt: 0
 			}
 		]);
 		setRulesCursor(ME, at(0).toISOString());
@@ -1496,11 +1520,15 @@ describe('sender pins, with Jev off or out of reach', () => {
 		await expect(sortNewMail(ACCT, ME, auth, at(10))).rejects.toBeInstanceOf(JMAPAuthError);
 	});
 
-	it('sorts on when a stored rule is not a rule at all', async () => {
+	it('sorts on when a stored rule can’t be read', async () => {
 		updateJevSettings(ACCT, { jevEnabled: false });
 		setPin(ACCT, '@linkedin.com', 'updates');
-		// Rules are stored as a browser sent them.
-		setRules(ME, [null, 'text', { id: 'half' }] as unknown as ActionRule[]);
+		// A row whose conditions can't be read: it never runs, and holds nothing up.
+		getDb()
+			.prepare(
+				`INSERT INTO rules (account_id, id, position, name, conditions_json, created_at, updated_at) VALUES (?, 'half', 0, '', 'not json', 0, 0)`
+			)
+			.run(ACCT);
 		fake.add('jobs', JUST_NOW, linkedIn);
 
 		await sortNewMail(ACCT, ME, auth, at(10));
