@@ -340,6 +340,36 @@ html:not(.light) body {
 }
 
 /*
+ * Menus (<select>). The browser's own arrow ignores the field's padding and
+ * sits hard against the right border, at a different size in every browser.
+ * So every menu draws the same chevron, set in from the edge by the same
+ * amount as the text is on the left, with room kept for it on the right.
+ * Not list boxes (multiple / size), which have no arrow. Unlayered and more
+ * specific than a class on purpose, so a utility's padding can't put text
+ * under the arrow.
+ */
+:root {
+	--select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237d8590' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+html.light {
+	--select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236e7781' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+select:not([multiple]):not([size]) {
+	appearance: none;
+	background-image: var(--select-arrow);
+	background-repeat: no-repeat;
+	background-position: right 0.625rem center;
+	background-size: 1rem;
+	padding-right: 2.25rem;
+}
+/* The composer's compact toolbar menus: a smaller arrow, closer in. */
+select.fc-select:not([multiple]):not([size]) {
+	background-position: right 0.25rem center;
+	background-size: 0.75rem;
+	padding-right: 1.25rem;
+}
+
+/*
  * Buttons. One base and a few variants, so every text button in the app has
  * the same height, radius, weight and disabled look. They had grown five
  * heights, three radii and three disabled opacities, and a disabled primary
