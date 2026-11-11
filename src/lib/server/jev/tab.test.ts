@@ -15,7 +15,7 @@ import { correctedEmailIds, getDecision } from '$lib/server/db/queries/jev-decis
 import { senderHistory, setPin } from '$lib/server/db/queries/jev-learning';
 import { updateJevSettings } from '$lib/server/db/queries/jev-settings';
 import { AGENT_TOOLS, type ToolContext } from '$lib/server/agent/tools';
-import { setTab } from './tab';
+import { decideTab, setTab } from './tab';
 
 const ACCT = 'acct-1';
 
@@ -129,5 +129,39 @@ describe('the assistant’s set_tab tool', () => {
 		expect(result.isError).toBe(true);
 		expect(writes).toEqual([]);
 		expect(getDecision(ACCT, 'a')).toBeNull();
+	});
+});
+
+describe('decideTab', () => {
+	const pin = { sender: '@linkedin.com', category: 'updates' as const, createdAt: 0 };
+	const base = { tabsOn: true, userChose: false, currentTab: 'important' as const, pin: null, jevPick: null };
+
+	it('leaves every tab alone while the Inbox has no tabs', () => {
+		expect(decideTab({ ...base, tabsOn: false, pin, jevPick: 'promotions' })).toEqual({ tab: null, pin: null, open: false });
+	});
+
+	it('never overrules a tab you chose yourself, Important included', () => {
+		expect(decideTab({ ...base, userChose: true, pin, jevPick: 'promotions' })).toEqual({ tab: null, pin: null, open: false });
+		expect(decideTab({ ...base, userChose: true, currentTab: 'updates', pin })).toEqual({ tab: null, pin: null, open: false });
+	});
+
+	it('puts a pinned sender’s mail in its tab ahead of Jev’s pick, and asks Jev nothing about it', () => {
+		expect(decideTab({ ...base, pin, jevPick: 'promotions' })).toEqual({ tab: 'updates', pin, open: false });
+		expect(decideTab({ ...base, pin })).toEqual({ tab: 'updates', pin, open: false });
+	});
+
+	it('still credits the pin for mail already in its tab', () => {
+		expect(decideTab({ ...base, currentTab: 'updates', pin })).toEqual({ tab: 'updates', pin, open: false });
+	});
+
+	it('lets neither a pin nor Jev move mail out of another tab it already has', () => {
+		expect(decideTab({ ...base, currentTab: 'newsletters', pin, jevPick: 'promotions' })).toEqual({ tab: null, pin: null, open: false });
+		expect(decideTab({ ...base, currentTab: 'newsletters', jevPick: 'promotions' })).toEqual({ tab: null, pin: null, open: false });
+	});
+
+	it('uses Jev’s confident pick for mail still in Important, and otherwise leaves it there', () => {
+		expect(decideTab({ ...base, jevPick: 'promotions' })).toEqual({ tab: 'promotions', pin: null, open: true });
+		expect(decideTab({ ...base, jevPick: 'important' })).toEqual({ tab: 'important', pin: null, open: true });
+		expect(decideTab(base)).toEqual({ tab: null, pin: null, open: true });
 	});
 });

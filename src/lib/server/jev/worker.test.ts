@@ -33,8 +33,8 @@ vi.mock('$lib/server/telegram/notifier', () => ({
 	flushAlerts: telegram.flush
 }));
 // Whether something is urgent is Jev's call; here every judged email is.
-vi.mock('$lib/server/telegram/urgent', async (importOriginal) => ({
-	...(await importOriginal<typeof import('$lib/server/telegram/urgent')>()),
+vi.mock('$lib/server/jev/urgent', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/jev/urgent')>()),
 	isUrgent: () => true
 }));
 
@@ -59,7 +59,8 @@ import { INBOX_HOLD_MS, isHeld } from '$lib/inbox-hold';
 import { recordSenderMoves, setPin } from '$lib/server/db/queries/jev-learning';
 import type { AuthState, MethodCall } from '$lib/jmap/types';
 import type { Rule } from '$lib/types/rules';
-import { forgetRateLimits, sortNewMail, sortNewMailSafe } from './worker';
+import { sortNewMail, sortNewMailSafe } from './worker';
+import { forgetRateLimits } from './health';
 
 const ACCT = 'acct-1';
 const ME = 'me@example.test';

@@ -1,4 +1,4 @@
-import type { JevQuestion, JevResponse } from '$lib/server/jev/types';
+import type { JevQuestion, JevResponse } from './types';
 
 /**
  * Jev decides what counts as urgent: one more yes-or-no question in the pass

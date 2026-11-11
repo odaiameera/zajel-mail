@@ -1,5 +1,7 @@
 import type { Email } from '$lib/jmap/types';
 import type { SpamRow } from '$lib/server/db/queries/jev-decisions';
+import type { SpamMode } from '$lib/server/db/queries/jev-settings';
+import type { JevFacts } from './email-state';
 import type { JevAnswer, JevQuestion } from './types';
 
 /**
@@ -157,6 +159,69 @@ export function decideSpam(input: {
 	if (trusted === false && (phishing >= JUNK_AT || spam >= JUNK_AT)) return 'junk';
 	if (phishing >= FLAG_AT || spam >= FLAG_AT) return 'flag';
 	return null;
+}
+
+// --- The plan for one judged email ------------------------------------------
+
+/** Jev's spam answers about one email and what came of them, for the record. */
+export interface SpamRecord {
+	spam: number;
+	phishing: number;
+	stalwartSpam: boolean;
+	/** 'junked' | 'rescued' | 'flagged', or in watch mode 'would_…'. */
+	action: string | null;
+}
+
+/**
+ * Whether the sender is someone you know — a contact, or someone you've
+ * written to — or null when a lookup couldn't tell. Unknown is not "no":
+ * nothing moves to Junk on it (see decideSpam).
+ */
+export function trustOf(facts: JevFacts | null): boolean | null {
+	const looked = [facts?.sender_in_contacts, facts?.you_have_written_to_sender];
+	if (looked.includes(true)) return true;
+	return looked.every((v) => v === false) ? false : null;
+}
+
+/** How a spam action reads in the record: what was done, or would have been. */
+export function spamActionLabel(action: SpamAction | null, mode: SpamMode): string | null {
+	if (!action) return null;
+	const done = { junk: 'junked', rescue: 'rescued', flag: 'flagged' }[action];
+	return mode === 'active' ? done : `would_${action}`;
+}
+
+/**
+ * What Jev's spam answers about one email come to: what to record, and
+ * where it moves, if anywhere. Only active mode moves mail: to Junk, or
+ * from Junk back to the Inbox. A message with no spam answers (spam
+ * checking off for it) has nothing to record.
+ */
+export function planSpam(input: {
+	answers: Record<string, JevAnswer> | undefined;
+	mode: SpamMode;
+	/** The message is in Junk, not the Inbox. */
+	inJunk: boolean;
+	facts: JevFacts | null;
+}): { record: SpamRecord | null; move: 'junk' | 'inbox' | null } {
+	const verdict = spamAnswers(input.answers);
+	if (!verdict) return { record: null, move: null };
+	const action = decideSpam({
+		...verdict,
+		inJunk: input.inJunk,
+		// Contacts and people you've written to are never sent to Junk —
+		// nor is anyone while that couldn't be checked.
+		trusted: trustOf(input.facts),
+		// Out of Junk needs a DMARC pass, not just "no fail".
+		dmarcPassed: input.facts?.security?.dmarc === 'pass'
+	});
+	const record: SpamRecord = {
+		...verdict,
+		stalwartSpam: input.inJunk || !!input.facts?.security?.stalwart_flagged,
+		action: spamActionLabel(action, input.mode)
+	};
+	const acting = input.mode === 'active';
+	const move = !acting ? null : input.inJunk ? (action === 'rescue' ? 'inbox' : null) : action === 'junk' ? 'junk' : null;
+	return { record, move };
 }
 
 // --- Watch-only report ------------------------------------------------------

@@ -9,7 +9,7 @@ import {
 	PRICE_PER_MILLION_INPUT_TOKENS
 } from '$lib/server/jev/client';
 import { BODY_EXCERPT_CHARS } from '$lib/server/jev/email-state';
-import { PREVIEW_LIMIT } from '$lib/server/jev/worker';
+import { PREVIEW_LIMIT } from '$lib/server/jev/judge';
 
 function startOfMonthUtc(now = new Date()): number {
 	return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
