@@ -51,7 +51,6 @@ import * as pin from './[id]/pin/+server';
 import * as preview from './preview/+server';
 import * as apply from './apply/+server';
 import { POST as folders } from '../folders/+server';
-import { POST as labels } from '../preferences/labels/+server';
 
 const A = 'acct-a';
 const B = 'acct-b';
@@ -360,7 +359,7 @@ describe('deleting a folder or a label', () => {
 		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(1);
 		await create('Work', { target: { kind: 'label', mailboxId: 'WORK' } });
 		pipeline.refreshPipeline.mockClear();
-		await call(labels as Handler, { body: { action: 'delete', id: 'WORK' } });
+		await call(folders as Handler, { body: { action: 'delete', id: 'WORK' } });
 		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(1);
 	});
 
@@ -383,7 +382,7 @@ describe('deleting a folder or a label', () => {
 		await create('→ L + stop', { target: label, stop: true });
 		await create('→ L + star', { target: label, star: true });
 
-		const res = await call(labels as Handler, { body: { action: 'delete', id: 'WORK' } });
+		const res = await call(folders as Handler, { body: { action: 'delete', id: 'WORK' } });
 		expect(res).toMatchObject({ status: 200, body: { success: true, rulesDeleted: 1, rulesKept: 3 } });
 		expect(listRules(A).map((r) => [r.name, r.target, r.markRead, r.stop, r.star])).toEqual([
 			['→ L + mark read', { kind: 'none' }, true, false, false],

@@ -39,7 +39,6 @@ import { runMigrations } from '$lib/server/db/migrate';
 import { getMailboxMeta, setMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
 import { PATCH } from './+server';
 import { POST as foldersPOST } from '../../../folders/+server';
-import { POST as labelsPOST } from '../../../preferences/labels/+server';
 
 const ACCT = 'acct-meta';
 const locals = { auth: { accountId: 'jmap' }, activeAccountId: ACCT };
@@ -111,7 +110,7 @@ describe('deleting a folder or a label', () => {
 		setMailboxMeta(ACCT, 'WORK', { color: '#00ff00' });
 		expect(await post(foldersPOST as Post, { action: 'delete', id: 'PRJ' })).toBe(200);
 		expect(getMailboxMeta(ACCT, 'PRJ')).toBeNull();
-		expect(await post(labelsPOST as Post, { action: 'delete', id: 'WORK' })).toBe(200);
+		expect(await post(foldersPOST as Post, { action: 'delete', id: 'WORK' })).toBe(200);
 		expect(getMailboxMeta(ACCT, 'WORK')).toBeNull();
 	});
 });

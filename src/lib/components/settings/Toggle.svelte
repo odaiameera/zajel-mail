@@ -10,11 +10,14 @@
 	let {
 		checked = false,
 		onChange,
-		disabled = false
+		disabled = false,
+		ariaLabel
 	}: {
 		checked?: boolean;
 		onChange?: (value: boolean) => void;
 		disabled?: boolean;
+		/** What the switch turns on and off, when the row beside it doesn't say. */
+		ariaLabel?: string;
 	} = $props();
 </script>
 
@@ -22,7 +25,7 @@
 	type="button"
 	role="switch"
 	aria-checked={checked}
-	aria-label={checked ? 'On' : 'Off'}
+	aria-label={ariaLabel ?? (checked ? 'On' : 'Off')}
 	disabled={disabled}
 	onclick={() => onChange?.(!checked)}
 	class="relative inline-flex items-center w-12 h-7 rounded-full p-0.5 shrink-0

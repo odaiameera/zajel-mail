@@ -24,6 +24,7 @@
 	 */
 	let {
 		rule,
+		initialTarget,
 		mailboxes,
 		labels,
 		onSaved,
@@ -32,6 +33,8 @@
 	}: {
 		/** The rule to edit, or null for a new one. */
 		rule: Rule | null;
+		/** Where a new rule files mail to begin with (the folder or label it was started from). Ignored for an existing rule. */
+		initialTarget?: RuleTarget;
 		mailboxes: Mailbox[];
 		labels: Label[];
 		/** Saved; `apply` when the owner asked to apply it now as well. */
@@ -48,14 +51,14 @@
 		negate: false
 	});
 
-	function draftOf(r: Rule | null): RuleDraft {
+	function draftOf(r: Rule | null, startTarget: RuleTarget = { kind: 'none' }): RuleDraft {
 		if (!r) {
 			return {
 				name: '',
 				enabled: true,
 				logic: 'allof',
 				conditions: [newCondition()],
-				target: { kind: 'none' },
+				target: { ...startTarget },
 				markRead: false,
 				star: false,
 				stop: false
@@ -68,7 +71,7 @@
 	// The editor is remounted for each rule (the page keys it), so the draft
 	// starts from the rule it was opened with.
 	// svelte-ignore state_referenced_locally
-	let draft = $state<RuleDraft>(draftOf(rule));
+	let draft = $state<RuleDraft>(draftOf(rule, initialTarget));
 	let problems = $state<RuleProblem[]>([]);
 	let saving = $state(false);
 	let error = $state('');
@@ -111,7 +114,14 @@
 
 	// --- Live match count ---
 
-	let preview = $state<{ matched: number; scanned: number; total: number } | null>(null);
+	let preview = $state<{ matched: number; scanned: number; total: number; problems?: RuleProblem[] } | null>(null);
+	/**
+	 * Why the preview couldn't count: its conditions don't hold up yet. The
+	 * name and the target are checked on Save, beside their fields.
+	 */
+	const previewProblem = $derived(
+		preview?.problems?.find((p) => p.field === 'conditions' || p.field === 'logic')?.message ?? null
+	);
 	let previewLoading = $state(false);
 	let previewTimer: ReturnType<typeof setTimeout> | undefined;
 	const previewKey = $derived(JSON.stringify({ logic: draft.logic, conditions: draft.conditions }));
@@ -354,6 +364,8 @@
 			{#if previewLoading}
 				<span class="w-3 h-3 rounded-full border-2 border-accent/40 border-t-accent animate-spin"></span>
 				<span class="text-xs text-text-tertiary">Counting…</span>
+			{:else if previewProblem}
+				<span class="text-xs text-text-tertiary">Not counted yet: {previewProblem}</span>
 			{:else if preview !== null}
 				<span class="text-sm font-semibold text-text">{preview.matched.toLocaleString()}</span>
 				<span class="text-xs text-text-tertiary">

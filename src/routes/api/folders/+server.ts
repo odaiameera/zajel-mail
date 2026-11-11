@@ -1,10 +1,11 @@
 import { json } from '@sveltejs/kit';
 import { deleteRulesForMailbox } from '$lib/server/rules/store';
 import { refreshPipeline } from '$lib/server/mail-pipeline';
-import { deleteMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
+import { deleteMailboxMeta, setMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
-import { getMailboxes } from '$lib/jmap/mailbox';
+import { ensureArchiveMailbox, getMailboxes } from '$lib/jmap/mailbox';
+import { createLabelMailbox, deleteLabelMailbox, renameLabelMailbox } from '$lib/jmap/labels';
 import {
 	createFolder,
 	deleteFolder,
@@ -18,7 +19,8 @@ import { mailboxKind } from '$lib/mailboxes';
 import { planReorder } from '$lib/utils/folder-tree';
 import type { Mailbox } from '$lib/jmap/types';
 
-type CreateBody = { action: 'create'; name: string; parentId?: string | null };
+/** A folder, or with `kind: 'label'` a label (made under Labels, which is made first when needed). */
+type CreateBody = { action: 'create'; name: string; parentId?: string | null; kind?: 'folder' | 'label' };
 type RenameBody = { action: 'rename'; id: string; name: string };
 type DeleteBody = { action: 'delete'; id: string };
 type MoveBody = { action: 'move'; id: string; newParentId: string | null };
@@ -71,7 +73,7 @@ function isSystem(m: Mailbox, mailboxes: Mailbox[]): boolean {
 	const kind = mailboxKind(m, mailboxes);
 	return kind === 'system' || kind === 'special';
 }
-/** Label children AND the "Labels" container are off-limits to the folder API. */
+/** A label, or the "Labels" container: nothing nests under either, and neither is moved like a folder. */
 function isLabel(m: Mailbox, mailboxes: Mailbox[]): boolean {
 	const kind = mailboxKind(m, mailboxes);
 	return kind === 'label' || kind === 'labels-root';
@@ -92,6 +94,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	switch (body.action) {
 		case 'create': {
+			if (body.kind === 'label') {
+				const name = typeof body.name === 'string' ? body.name.trim() : '';
+				if (!name) return json({ success: false, error: 'Name is required' }, { status: 400 });
+				const result = await createLabelMailbox(client, accountId, name);
+				if ('error' in result) return json({ success: false, error: result.error }, { status: 400 });
+
+				const refreshed = await getMailboxes(client, accountId);
+				return json({ success: true, id: result.id, mailboxes: refreshed });
+			}
+
 			const err = validateFolderName(body.name);
 			if (err) return json({ success: false, error: err }, { status: 400 });
 
@@ -115,7 +127,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const target = byId.get(body.id);
 			if (!target) return json({ success: false, error: 'Folder not found' }, { status: 404 });
 			if (isSystem(target, mailboxes)) return json({ success: false, error: 'System folders cannot be renamed' }, { status: 403 });
-			if (isLabel(target, mailboxes)) return json({ success: false, error: 'Rename labels from the Labels settings' }, { status: 400 });
+			if (mailboxKind(target, mailboxes) === 'labels-root') {
+				return json({ success: false, error: 'The Labels folder keeps its name' }, { status: 400 });
+			}
+			if (mailboxKind(target, mailboxes) === 'label') {
+				const name = typeof body.name === 'string' ? body.name.trim() : '';
+				if (!name) return json({ success: false, error: 'Name is required' }, { status: 400 });
+				const result = await renameLabelMailbox(client, accountId, body.id, name);
+				if (!result.success) return json({ success: false, error: result.error }, { status: 400 });
+				// The label's own name is its name now; an older display name would hide it.
+				if (locals.activeAccountId) setMailboxMeta(locals.activeAccountId, body.id, { displayName: null });
+
+				const refreshed = await getMailboxes(client, accountId);
+				return json({ success: true, mailboxes: refreshed });
+			}
 
 			const err = validateFolderName(body.name);
 			if (err) return json({ success: false, error: err }, { status: 400 });
@@ -131,12 +156,18 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const target = byId.get(body.id);
 			if (!target) return json({ success: false, error: 'Folder not found' }, { status: 404 });
 			if (isSystem(target, mailboxes)) return json({ success: false, error: 'System folders cannot be deleted' }, { status: 403 });
-			if (isLabel(target, mailboxes)) return json({ success: false, error: 'Delete labels from the Labels settings' }, { status: 400 });
-			if (isAncestorOfLabel(body.id, mailboxes, labelsParentId)) {
+			if (mailboxKind(target, mailboxes) === 'labels-root') {
+				return json({ success: false, error: 'Delete the labels inside it instead' }, { status: 400 });
+			}
+			const label = mailboxKind(target, mailboxes) === 'label';
+			if (!label && isAncestorOfLabel(body.id, mailboxes, labelsParentId)) {
 				return json({ success: false, error: 'Remove labels inside this folder first' }, { status: 400 });
 			}
 
-			const result = await deleteFolder(client, accountId, body.id);
+			// Messages that were in nothing but a label end up in Archive.
+			const result = label
+				? await deleteLabelMailbox(client, accountId, body.id, () => ensureArchiveMailbox(client, accountId))
+				: await deleteFolder(client, accountId, body.id);
 			if (!result.success) return json({ success: false, error: result.error }, { status: 400 });
 			// The rules that only filed into it go with it; one that also marks
 			// read, stars or stops later rules stays, filing nowhere.

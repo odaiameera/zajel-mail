@@ -135,7 +135,7 @@
 		});
 		if (!res.ok) {
 			const data = await res.json().catch(() => ({}));
-			throw new Error(data?.error ?? 'The colour and icon could not be saved');
+			throw new Error(data?.error ?? 'The color and icon could not be saved');
 		}
 	}
 
@@ -143,7 +143,7 @@
 		const res =
 			kind === 'folder'
 				? await postJson('/api/folders', { action: 'create', name: trimmed, parentId })
-				: await postJson('/api/preferences/labels', { action: 'create', name: trimmed });
+				: await postJson('/api/folders', { action: 'create', kind: 'label', name: trimmed });
 		if (!res.ok) throw new Error(res.error);
 		const id: string | undefined = res.data?.id;
 		if (id && (color || icon)) await saveMeta(id);
@@ -156,28 +156,18 @@
 		const parentChanged =
 			kind === 'folder' && (parentId ?? null) !== (target.parentId ?? null);
 
-		if (kind === 'folder') {
-			if (nameChanged) {
-				const r = await postJson('/api/folders', { action: 'rename', id: target.id, name: trimmed });
-				if (!r.ok) throw new Error(r.error);
-			}
-			if (parentChanged) {
-				const r = await postJson('/api/folders', {
-					action: 'move',
-					id: target.id,
-					newParentId: parentId
-				});
-				if (!r.ok) throw new Error(r.error);
-			}
-		} else {
-			if (nameChanged) {
-				const r = await postJson('/api/preferences/labels', {
-					action: 'rename',
-					id: target.id,
-					name: trimmed
-				});
-				if (!r.ok) throw new Error(r.error);
-			}
+		// Folders and labels are renamed alike; only a folder has a place to move to.
+		if (nameChanged) {
+			const r = await postJson('/api/folders', { action: 'rename', id: target.id, name: trimmed });
+			if (!r.ok) throw new Error(r.error);
+		}
+		if (parentChanged) {
+			const r = await postJson('/api/folders', {
+				action: 'move',
+				id: target.id,
+				newParentId: parentId
+			});
+			if (!r.ok) throw new Error(r.error);
 		}
 		if (colorChanged || iconChanged) await saveMeta(target.id);
 	}

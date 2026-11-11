@@ -1,16 +1,15 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
-	import { invalidateAll, goto } from '$app/navigation';
-	import { page } from '$app/state';
+	import { onMount } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
-	import { mailboxDeleteRulesNote, type Rule } from '$lib/types/rules';
+	import { filesInto, type Rule } from '$lib/types/rules';
+	import MailboxRow from '$lib/components/settings/MailboxRow.svelte';
 	import type { LayoutData } from '../$types';
 	import type { Mailbox } from '$lib/jmap/types';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
 	import { colorByHex, type LabelColor } from '$lib/constants/colors';
-	import { buildFolderTree, flattenFolderTree, moveStep } from '$lib/utils/folder-tree';
+	import { buildFolderTree, flattenFolderTree } from '$lib/utils/folder-tree';
 	import CreateMailboxModal from '$lib/components/modals/CreateMailboxModal.svelte';
-	import MailboxIcon from '$lib/components/MailboxIcon.svelte';
 
 	type EditingMailbox = {
 		id: string;
@@ -54,50 +53,16 @@
 		modalOpen = true;
 	}
 
-	// One place up or down among its siblings: what a drag in the sidebar
-	// does, for keyboards and touch screens.
-	async function step(folder: Mailbox, direction: 'up' | 'down') {
-		const request = moveStep(data.mailboxes, folder.id, direction);
-		if (!request) return;
-		const res = await fetch('/api/folders', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ action: 'reorder', ...request })
-		});
-		const payload = await res.json().catch(() => ({}));
-		if (!res.ok || payload?.success === false) {
-			alert(payload?.error ?? 'Failed to move folder');
-			return;
-		}
-		await invalidateAll();
-	}
-
-	/** What deleting a folder or label does to the rules that file into it, for the confirmation; '' when there are none. */
-	async function rulesNote(id: string): Promise<string> {
+	// The rules that file into each folder, for the delete confirmation.
+	let rules = $state<Rule[]>([]);
+	async function loadRules() {
 		const res = await fetch('/api/rules').catch(() => null);
 		const body = res?.ok ? ((await res.json().catch(() => null)) as { rules?: Rule[] } | null) : null;
-		const note = mailboxDeleteRulesNote(body?.rules ?? [], id);
-		return note ? ` ${note}` : '';
+		rules = body?.rules ?? [];
 	}
+	onMount(loadRules);
 
-	async function deleteFolder(folder: Mailbox) {
-		const msg = `Delete "${folder.name}"? Messages inside will not be deleted — move them first if you want to keep them somewhere else.${await rulesNote(folder.id)}`;
-		if (!confirm(msg)) return;
-		const res = await fetch('/api/folders', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ action: 'delete', id: folder.id })
-		});
-		const payload = await res.json().catch(() => ({}));
-		if (!res.ok || payload?.success === false) {
-			alert(payload?.error ?? 'Failed to delete folder');
-			return;
-		}
-		if (page.url.pathname === `/folder/${folder.id}`) {
-			goto('/inbox');
-		}
-		await invalidateAll();
-	}
+	let error = $state('');
 </script>
 
 <svelte:head><title>{pageTitle({ page: 'Folders', subtitle: 'Settings' })}</title></svelte:head>
@@ -122,56 +87,35 @@
 </header>
 
 <section class="flex flex-col gap-5">
+	{#if error}
+		<p class="px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs" role="alert">{error}</p>
+	{/if}
 	<div>
 		<h2 class="text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-2">Your folders</h2>
 		{#if flatFolders.length === 0}
 			<p class="text-sm text-text-tertiary">No user folders yet.</p>
 		{:else}
-			<div class="flex flex-col gap-1.5">
+			<div class="flex flex-col">
 				{#each flatFolders as opt (opt.id)}
 					{@const folder = folderById.get(opt.id)}
 					{#if folder}
 						{@const meta = data.mailboxMeta[folder.id]}
-						<div
-							class="group flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-hover/50 border border-border/60"
-							style="padding-left: {12 + opt.depth * 16}px"
-						>
-							<MailboxIcon node={meta?.iconNode} fallback="folder" color={meta?.color ?? null} />
-							<span class="flex-1 truncate text-sm text-text">{folder.name}</span>
-							{#if folder.unreadEmails > 0}
-								<span class="text-xs text-text-tertiary shrink-0">{folder.unreadEmails} unread</span>
-							{/if}
-							<a
-								href={`/folder/${folder.id}`}
-								class="text-xs text-text-tertiary hover:text-text transition-colors"
-							>View →</a>
-							<button
-								type="button"
-								onclick={() => step(folder, 'up')}
-								disabled={!moveStep(data.mailboxes, folder.id, 'up')}
-								title="Move up"
-								aria-label="Move {folder.name} up"
-								class="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-surface transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default"
-							><Icon name="move-up" size={14} /></button>
-							<button
-								type="button"
-								onclick={() => step(folder, 'down')}
-								disabled={!moveStep(data.mailboxes, folder.id, 'down')}
-								title="Move down"
-								aria-label="Move {folder.name} down"
-								class="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-surface transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default"
-							><Icon name="move-down" size={14} /></button>
-							<button
-								type="button"
-								onclick={() => openEdit(folder)}
-								class="text-xs text-text-tertiary hover:text-text px-2 py-1 rounded-md hover:bg-surface transition-colors cursor-pointer"
-							>Edit</button>
-							<button
-								type="button"
-								onclick={() => deleteFolder(folder)}
-								class="text-xs text-text-tertiary hover:text-danger px-2 py-1 rounded-md hover:bg-surface transition-colors cursor-pointer"
-							>Delete</button>
-						</div>
+						<MailboxRow
+							mailbox={folder}
+							kind="folder"
+							mailboxes={data.mailboxes}
+							depth={opt.depth}
+							color={meta?.color ?? null}
+							iconNode={meta?.iconNode ?? null}
+							rules={rules.filter((r) => filesInto(r, folder.id))}
+							target={null}
+							onEdit={() => openEdit(folder)}
+							onOpenRule={() => {}}
+							onAddRule={() => {}}
+							onToggleRule={() => {}}
+							onError={(message) => (error = message)}
+							onChanged={loadRules}
+						/>
 					{/if}
 				{/each}
 			</div>
