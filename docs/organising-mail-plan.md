@@ -123,7 +123,7 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 | 5 | **Done.** Rules table (030) and validated saves | Splitting multi-target rules |
 | 6 | **Done.** Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
 | 7 | **Done.** One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
-| 8 | The two settings pages | UI only |
+| 8 | **Done.** The two settings pages: Folders & labels, Inbox tabs | UI only |
 | 9 | Clean-up (033): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
 
 Stages 1 and 2 remove the most complexity for the least risk, and can ship before anything structural moves. Between stages 3 and 4 the Auto-reply settings page is hidden, since it does nothing today either. The README's Jev section and `docs/jev-plan.md` are updated in each stage.
@@ -150,7 +150,7 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 
 ## Status
 
-Stages 0 to 7 are done. Later stages follow one PR at a time.
+Stages 0 to 8 are done. Later stages follow one PR at a time.
 
 ## Design notes
 
@@ -593,3 +593,103 @@ After review:
 - **The hold starts when it is switched on.** `mail_pipeline.hold_since` is set when the hold is found on (by `refreshPipeline()` after any change that can switch it, or at the start of a pass) and emptied when it is off. Only mail received since then is held, by every reader (the Inbox list and tab counts, the layout's unread count, the account badges, push), and only that mail is marked. Saving a first move rule, or switching tabs on with a pin, no longer hides mail already showing.
 - **A message id seen again with another `receivedAt`** is treated as a new message.
 - **The pipeline's start flag and its per-account guard** live on `globalThis`, like the event streams, so a reload can't start a second minute's run or a second pass beside one already running.
+
+### Stage 8 design: two settings pages
+
+Builds on stage 7 (after its review fixes). UI and routes only; no change to how mail is filed or sorted.
+
+#### Why
+One job is spread over four pages (Folders, Labels, "Filters & Rules", Jev), which were written separately:
+- Folders and Labels are near-copies of each other (same reorder, delete and edit code), report errors with `alert()`, and neither has a test.
+- The rules page has its own fixed two-column layout that doesn't work on a phone; a rule can't be started from the folder or label it files into; its apply-progress dialog lives in the page, so nothing else can use "Save & apply".
+- The Jev page mixes tabs, sorting, pins, backfill, a preview and the spam add-on in an order that doesn't match how they depend on each other.
+- Labels are created, renamed and deleted through `/api/preferences/labels` while folders use `/api/folders`.
+
+#### Routes and navigation
+- New: `/settings/folders-labels` ("Folders & labels") and `/settings/inbox-tabs` ("Inbox tabs"). In `src/lib/config/settings-nav.ts` they replace the four entries `folders`, `labels`, `rules`, `jev`, in that order, in the Organization group.
+- Old routes become redirect-only pages (a lone `+page.server.ts`, as `settings/advanced` and `settings/mail` are today), status 308: `/settings/folders`, `/settings/labels` and `/settings/rules` → `/settings/folders-labels`; `/settings/jev` → `/settings/inbox-tabs`.
+- Every link and text that names the old pages is updated: the three "Settings → Jev → Pinned senders" links (now "Settings → Inbox tabs → Pinned senders", `/settings/inbox-tabs#pinned-senders`), `src/lib/telegram/urgent-state.ts` (`/settings/inbox-tabs`, label "Inbox tabs"), "No labels yet. Create one in Settings." in `EmailDetail.svelte` (now a link to `/settings/folders-labels`), the API error texts that say "from the Labels settings", README and docs.
+
+#### Page 1: Folders & labels (`settings/folders-labels/`)
+
+Load (`+page.server.ts`): the active account's rules (`listRules`) plus the layout's `mailboxes`, `labels`, `mailboxMeta`.
+
+Top to bottom:
+
+1. **Header.** "Folders & labels", one sentence: a folder is where a message lives, a label is a tag, and rules file new mail into either. Buttons "New folder", "New label".
+2. **Needs your attention** (only when there are flagged rules): the rules switched off by a flag (`jev_condition`, `tab_rule`, `tab_pinned`), as rows. Opening one shows today's explanation panel and editor (same texts, same "Save as exact rule" confirmation, same one-click pin, same "Got it").
+3. **Folders.** The folder tree, indented as today. Each row: icon, name, unread count, "N rules" when it has any, "View", Move up, Move down, Edit, Delete.
+   - A row with rules can be opened. Opened, it lists the rules that file into that folder (name, conditions in words, on/off switch; a row opens the editor) and an **Add rule** button, which opens the editor on a new rule with "File it in" already set to that folder. The target can still be changed.
+4. **Labels.** The same rows and behaviour for labels.
+5. **System folders.** As today (name and role, not editable). Archive, Junk and Trash rows can be opened in the same way, since rules can file into them.
+6. **All rules, in order** (collapsed by default; opened automatically when the address has `#rules`): every rule that can run, in its real order, each with its on/off switch, what it does ("conditions → target"), any note with its "Got it", and Move up / Move down. Rules that file nowhere (mark as read, star or stop only) are reachable only here. "New rule" here opens the editor with no target set. One sentence explains the order: labels add up, the first rule that moves a message decides its folder.
+
+Behaviour kept exactly: nothing is sent until Save; server problems shown beside the fields; reorder sends the full order with two rules exchanged and skips flagged rules; a plain Save keeps a flagged rule flagged; Save & apply applies the saved rule by id with progress and Cancel; the live match count and its wording; delete confirmations including the rules sentence (now computed from the rules the page already has, no extra request); going to the Inbox when the folder being viewed is deleted.
+
+Changes:
+- **The rule editor opens in a dialog** (full width on a phone), not a side column. The page is a single column inside the normal settings width.
+- **Errors appear in the page** (an alert line at the top of the section, `role="alert"`), never `window.alert`. `window.confirm` stays for deletes until the settings pass.
+- **One move-up / move-down control** (the icon buttons Folders and Labels use) for folders, labels and rules.
+- Wording: "color" everywhere in UI text (the modal's error text said "colour"); the page title and nav label agree.
+
+### Code
+- `src/lib/components/settings/MailboxRow.svelte`: one row for a folder, label or system folder, with its expandable rules. Replaces the two copies of row markup, `step()`, `rulesNote()` and the delete flow.
+- `src/lib/components/settings/RuleDialog.svelte`: the dialog holding the attention panel (moved from the rules page) and `RuleEditor`.
+- `src/lib/components/settings/RuleApplyDialog.svelte` and `src/lib/rules/apply.ts` (`streamApply`): moved out of the rules page unchanged.
+- `RuleEditor.svelte`: new optional prop `initialTarget`, used only when `rule` is null. It also shows the `problems` the preview returns (today it ignores them).
+- `CreateMailboxModal.svelte`: unchanged in behaviour, but labels are created, renamed and deleted through `/api/folders` (see below).
+- **One endpoint for folders and labels.** `/api/folders` `create` accepts `kind: 'label'` (creating the `Labels` container when needed, with the code `/api/preferences/labels` uses today), and `rename` / `delete` accept labels with the same checks and the same `{ rulesDeleted, rulesKept }` answer. `/api/preferences/labels` is deleted.
+- Deleted: `settings/folders/+page.svelte`, `settings/labels/+page.svelte`, `settings/rules/+page.svelte` (their `+page.server.ts` become the redirects).
+
+#### Page 2: Inbox tabs (`settings/inbox-tabs/`)
+
+Load: the Jev page's load, unchanged. Sections, in this order, with the existing controls, texts and endpoints (`/api/jev/*`):
+
+1. **Inbox tabs**: what the four tabs are; "Show tabs" per account.
+2. **Let Jev sort new mail**: the connection status line, "What Jev is sent", the per-account switch with this month's usage.
+3. **Pinned senders** (`id="pinned-senders"`): per account, with the existing warning when tabs are off for that account.
+4. **Sort the mail already in your Inbox** and **Try Jev** (active account, only when configured), as today.
+5. **Add-ons**: "Spam checks" with its explanation, the per-account Off / Watch only / Active choice, and the spam report. One line pointing to Notifications for urgent alerts.
+
+Changes: the header is "Inbox tabs" with one sentence; the tab grid and the preview's count grid get phone breakpoints (one or two columns under `md`). Settings still save on change here; they move to the shared Save bar in the settings pass, with the rest of Settings.
+
+Deleted: `settings/jev/+page.svelte` (its `+page.server.ts` logic moves to `inbox-tabs`, and `jev` becomes a redirect). `PREVIEW_LIMIT` and friends are imported from wherever stage 7 put them.
+
+#### Tests
+- **Folders & labels page** (`settings/folders-labels/page.test.ts`), following the harness in today's `settings/rules/page.test.ts`:
+  - All 25 existing rules-page tests, ported: the report must map each to its new test. (List summary and target missing; nothing sent until Save; create; problems beside fields; reorder up and down, past a split rule, past a flagged rule; notes and "Got it"; disabled while busy; Save & apply by id; no apply when the save is refused; on/off; delete; count wording; the eleven "Needs your attention" tests.)
+  - New: folders render as a tree and labels as a list; the rule count on a row; opening a row lists exactly the rules that file into it; "Add rule" on a folder, a label and Trash opens the editor with that target and saves a rule with it; a rule that files nowhere appears only under "All rules"; `#rules` opens that section; create, edit (rename, move, color, icon, "No color") and delete a folder and a label, with the delete confirmation naming the rule counts and omitting a zero count; move up / down for a folder and a label; an error from the server appears in the page and `window.alert` is never called; deleting the folder being viewed goes to the Inbox.
+- **Inbox tabs page** (`settings/inbox-tabs/page.test.ts`, none exists today): each switch and select sends the right body for the right account; the status line for off / mock / live; the Jev switch disabled when not configured; add, change and remove a pin, and the warning when tabs are off; spam select disabled unless Jev is on; backfill and preview shown only when configured.
+- **Routes**: each old path redirects with 308 to its new page; the nav has the two new entries and none of the four old ones; `urgent-state` points at `/settings/inbox-tabs`.
+- **`/api/folders` for labels**: create (including when no `Labels` container exists), rename, delete with `{ rulesDeleted, rulesKept }`, another account's label refused; the existing folder tests unchanged. No caller of `/api/preferences/labels` remains (a grep in the report).
+- `RuleEditor`: `initialTarget` is used for a new rule and ignored for an existing one; preview problems are shown.
+- Every new test seen to fail with its behaviour removed.
+
+A browser check with Playwright against a temporary harness route (deleted before committing) for the two pages at desktop and phone width: screenshots saved to the scratchpad folder named in the task, and anything that looks wrong listed in the report.
+
+#### Verification on the owner's server
+1. The old addresses (`/settings/rules`, `/settings/jev`, `/settings/folders`, `/settings/labels`) land on the new pages.
+2. On a label row, "Add rule" → Save & apply files matching Inbox mail under that label.
+3. Create, rename, recolor and delete a label and a folder.
+4. Inbox tabs: switch tabs off and on; add and remove a pin.
+5. Both pages on a phone.
+
+#### Risks
+- **Label create / rename / delete move to another endpoint.** Covered by the endpoint tests; a tab left open across the deploy must be reloaded to manage labels.
+- **A large page.** Built as three commits, each passing on its own: (1) shared pieces extracted with the old pages still in place (`MailboxRow`, `RuleDialog`, `RuleApplyDialog`, `apply.ts`, `initialTarget`, `/api/folders` for labels); (2) the Folders & labels page, the three redirects, nav and links; (3) the Inbox tabs page, its redirect, README and docs.
+
+#### Done means
+The test mapping is complete; `npm run lint` clean, `npm run check` 0 errors, full `npx vitest run` passing on each commit; README (the Settings mentions and the Jev section) and `docs/organising-mail-plan.md` updated; no file imports a deleted page or endpoint.
+
+#### As built
+Built as three commits: the shared pieces with the old pages still on them; the Folders & labels page with the three redirects; the Inbox tabs page with its redirect and these docs.
+
+- **Shared pieces.** Besides the files named above, the notes on a rule an upgrade changed are their own component, `RuleAttention.svelte` (the old rules page used it until it went, and `RuleDialog` uses it now), and what a rule says in words (its conditions, target, notes, pin wording) is in `src/lib/rules/describe.ts`. `Toggle` takes an optional `ariaLabel`, so a rule's switch is named after the rule.
+- **Every folder and label row opens**, not only one with rules, and so do Archive, Junk and Trash: "Add rule" is the way to start a rule from a folder that has none yet. A row says "N rules" when it has any. The Inbox, Sent and Drafts don't open. Each row is a group named after its mailbox. A rule switched off by an upgrade is listed under its folder too, with the warning mark in place of its switch.
+- **On a phone** a row hides its unread count and its "View" link, so the name and the rule count fit; the rule dialog fills the screen.
+- **The rule dialog** closes after Save, Delete or "Save & apply" (whose progress then shows), and when its rule goes away (a pin made from it, a "Got it" on a rule that became a pin). A change made from inside it (a pin, a "Got it") that the server refuses is shown at the top of the dialog. After a plain Save a short "Saved" shows, as before.
+- **Preview problems.** When the conditions don't hold up yet, the count reads "Not counted yet:" and the server's reason. A missing name or target is said only on Save, beside its field, so a new rule doesn't open full of complaints.
+- **Rules' switches** are the settings `Toggle`, in the rows and in "All rules, in order"; "Got it" on a running rule's note stays on its row there.
+- **`/api/folders` and labels**: a label is created with `kind: 'label'` (empty names refused); `rename` and `delete` find a label like a folder (another account's id is 404) and use the label calls (`renameLabelMailbox`, which clears a stored display name, and `deleteLabelMailbox`, whose mail only in the label goes to Archive). The Labels container can be neither renamed nor deleted (400), even when empty. The create and edit dialog renames a label through `rename`, and its error text says "color".
+- **Inbox tabs**: the first section is headed "The four tabs", so it doesn't repeat the page title. Its switches are named for their account ("Show tabs for …", "Let Jev read new mail for …"). The "Sort the mail already in your Inbox" card puts its button under the text when they don't fit side by side, as "Try Jev" does.
+- **Tests**: the rules page's 25 tests moved to `settings/folders-labels/page.test.ts`, each marked with what it was, adapted to the dialog and the collapsed list; new tests there for the rows, the dialog started from a folder, label and Trash, and creating, editing, moving and deleting folders and labels. `settings/inbox-tabs/page.test.ts`, `settings/redirects.test.ts`, `config/settings-nav.test.ts`, `RuleEditor.test.ts` and `rules/apply.test.ts` are new; `api/folders/server.test.ts` covers labels.

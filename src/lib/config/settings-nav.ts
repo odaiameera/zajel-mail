@@ -29,7 +29,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
 	{ slug: 'auto-reply',         group: 'Mail',               label: 'Auto-reply' },
 
 	{ slug: 'folders-labels',     group: 'Organization',       label: 'Folders & labels' },
-	{ slug: 'jev',                group: 'Organization',       label: 'Jev' },
+	{ slug: 'inbox-tabs',         group: 'Organization',       label: 'Inbox tabs' },
 	{ slug: 'agent',              group: 'Organization',       label: 'Agent' },
 	{ slug: 'calendar',           group: 'Organization',       label: 'Calendar' },
 

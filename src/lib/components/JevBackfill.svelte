@@ -77,8 +77,8 @@
 </script>
 
 <div class="mt-4 rounded-xl border border-border p-4">
-	<div class="flex items-start gap-4">
-		<div class="flex-1 min-w-0">
+	<div class="flex flex-wrap items-start gap-x-4 gap-y-3">
+		<div class="flex-1 min-w-[12rem]">
 			<p class="text-sm font-medium text-text">Sort the mail already in your Inbox</p>
 			{#if !status}
 				<p class="text-xs text-text-tertiary mt-1">Counting…</p>

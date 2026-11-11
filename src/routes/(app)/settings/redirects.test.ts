@@ -3,6 +3,7 @@ import { isRedirect } from '@sveltejs/kit';
 import { load as folders } from './folders/+page.server';
 import { load as labels } from './labels/+page.server';
 import { load as rules } from './rules/+page.server';
+import { load as jev } from './jev/+page.server';
 
 /** Where a settings page that moved sends its old address, and how. */
 async function whereTo(load: (event: never) => unknown): Promise<{ status: number; location: string }> {
@@ -20,5 +21,9 @@ describe('settings pages that moved', () => {
 		for (const load of [folders, labels, rules]) {
 			expect(await whereTo(load as never)).toEqual({ status: 308, location: '/settings/folders-labels' });
 		}
+	});
+
+	it('sends Jev to Inbox tabs, for good', async () => {
+		expect(await whereTo(jev as never)).toEqual({ status: 308, location: '/settings/inbox-tabs' });
 	});
 });

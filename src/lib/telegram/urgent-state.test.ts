@@ -24,9 +24,9 @@ describe('urgentState', () => {
 });
 
 describe('fixFor', () => {
-	it('sends a lost sign-in to Accounts and everything else to Jev', () => {
+	it('sends a lost sign-in to Accounts and everything else to Inbox tabs, where Jev is switched on', () => {
 		expect(fixFor('sign-in')).toEqual({ href: '/settings/accounts', label: 'Sign in' });
-		expect(fixFor('account')).toEqual({ href: '/settings/jev', label: 'Jev' });
-		expect(fixFor('server')).toEqual({ href: '/settings/jev', label: 'Jev' });
+		expect(fixFor('account')).toEqual({ href: '/settings/inbox-tabs', label: 'Inbox tabs' });
+		expect(fixFor('server')).toEqual({ href: '/settings/inbox-tabs', label: 'Inbox tabs' });
 	});
 });

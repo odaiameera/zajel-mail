@@ -22,7 +22,7 @@
 </script>
 
 {#snippet pinnedSenders()}
-	<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a>
+	<a href="/settings/inbox-tabs#pinned-senders" class="underline">Settings → Inbox tabs → Pinned senders</a>
 {/snippet}
 
 {#if rule.attention === 'jev_condition'}

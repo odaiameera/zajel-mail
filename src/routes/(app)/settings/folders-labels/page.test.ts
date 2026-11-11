@@ -589,6 +589,9 @@ describe('Folders & labels: Needs your attention', () => {
 			within(dialog()).getByText('Rules can’t set a tab any more. This one can’t be turned into a sender pin automatically.')
 		).toBeTruthy();
 		expect(within(dialog()).getByText('Subject contains “digest”')).toBeTruthy();
+		expect(within(dialog()).getByRole('link', { name: 'Settings → Inbox tabs → Pinned senders' }).getAttribute('href')).toBe(
+			'/settings/inbox-tabs#pinned-senders'
+		);
 	});
 });
 

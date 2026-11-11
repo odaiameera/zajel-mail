@@ -174,25 +174,25 @@
 	}
 </script>
 
-<svelte:head><title>{pageTitle({ page: 'Jev', subtitle: 'Settings' })}</title></svelte:head>
+<svelte:head><title>{pageTitle({ page: 'Inbox tabs', subtitle: 'Settings' })}</title></svelte:head>
 
 <header class="mb-6">
-	<h1 class="text-xl font-semibold text-text">Jev</h1>
+	<h1 class="text-xl font-semibold text-text">Inbox tabs</h1>
 	<p class="text-sm text-text-tertiary mt-1">
-		Inbox tabs, and Jev — TypeSafe’s decision model — sorting new mail into them for the accounts you
-		allow.
+		Split the Inbox into four tabs, and choose what puts mail in them: senders you pin, and Jev,
+		TypeSafe’s decision model, for the accounts you allow.
 	</p>
 </header>
 
-<section class="mb-10">
-	<h2 class="text-sm font-semibold text-text mb-1">Inbox tabs</h2>
+<section class="mb-10" aria-labelledby="tabs-heading">
+	<h2 id="tabs-heading" class="text-sm font-semibold text-text mb-1">The four tabs</h2>
 	<p class="text-xs text-text-tertiary mb-3">
-		Splits the Inbox into four tabs. Messages stay in the Inbox — a tab only decides where you see
+		Messages stay in the Inbox — a tab only decides where you see
 		them — and anything not sorted into one of the other three stays in Important. Drag a message
 		onto a tab, or use <span class="text-text-secondary">Move to tab</span>, to sort it yourself.
 	</p>
 
-	<ul class="grid grid-cols-2 gap-2 mb-4">
+	<ul class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
 		{#each INBOX_CATEGORIES as c (c.key)}
 			<li class="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-hover/50 border border-border/60">
 				<span class="mt-0.5 shrink-0 text-text-secondary"><Icon name={CATEGORY_ICON[c.key]} size={14} /></span>
@@ -216,6 +216,7 @@
 			{#snippet control()}
 				<Toggle
 					checked={current(account, 'inboxTabs')}
+					ariaLabel="Show tabs for {account.email}"
 					onChange={(v) => save(account.id, { inboxTabs: v }, `${account.id}:tabs`)}
 				/>
 			{/snippet}
@@ -223,8 +224,8 @@
 	{/each}
 </section>
 
-<section>
-	<h2 class="text-sm font-semibold text-text mb-1">Letting Jev read new mail</h2>
+<section class="mb-10" aria-labelledby="jev-heading">
+	<h2 id="jev-heading" class="text-sm font-semibold text-text mb-1">Let Jev sort new mail</h2>
 	{#if data.jev.mode === 'live'}
 		<p class="text-xs text-text-tertiary mb-3">
 			Connected to TypeSafe with model <span class="font-mono text-text-secondary">{data.jev.model}</span>,
@@ -270,137 +271,98 @@
 			{#snippet control()}
 				<Toggle
 					checked={current(account, 'jevEnabled')}
+					ariaLabel="Let Jev read new mail for {account.email}"
 					disabled={!configured}
 					onChange={(v) => save(account.id, { jevEnabled: v }, `${account.id}:sort`)}
 				/>
 			{/snippet}
 		</SettingRow>
 	{/each}
+</section>
 
-	<div class="mt-8">
-		<h3 class="text-sm font-semibold text-text mb-1">Spam checks</h3>
-		<p class="text-xs text-text-tertiary mb-1">
-			A second opinion beside Stalwart’s filter, which keeps running. Jev is asked two narrow questions about
-			each new email — is it spam, is it phishing — with its authentication results, its Reply-To and links,
-			and Stalwart’s own score. Mail in Junk is checked too.
-		</p>
-		<ul class="text-xs text-text-tertiary mb-3 list-disc pl-5 space-y-0.5">
-			<li><span class="text-text-secondary">Watch only</span> records Jev’s verdict and shows it beside Stalwart’s; nothing moves. Start here.</li>
-			<li>
-				<span class="text-text-secondary">Active</span> moves mail Jev is at least 90% sure is spam or phishing to Junk — never from
-				your contacts or people you’ve written to — warns on anything from 60%, and brings mail back from Junk
-				when Jev is very sure it’s fine and its sender passed DMARC. Jev’s moves don’t train Stalwart.
-			</li>
-		</ul>
-		{#each data.jevAccounts as account (account.id)}
-			<SettingRow
-				title={`Spam checks · ${account.email}`}
-				description={current(account, 'jevEnabled') ? 'Applies to mail that arrives from now on.' : 'Let Jev read this account’s new mail first.'}
-				state={states[`${account.id}:spam`] ?? 'idle'}
-				errorMessage={errors[`${account.id}:spam`]}
+<section id="pinned-senders" class="mb-10 scroll-mt-6" aria-labelledby="pins-heading">
+	<h2 id="pins-heading" class="text-sm font-semibold text-text mb-1">Pinned senders</h2>
+	<p class="text-xs text-text-tertiary mb-3">
+		Mail from a pinned sender always goes to its tab — Jev isn’t asked. Pin one from the message
+		that appears after you move an email, or add it here; <span class="font-mono">@domain</span> pins
+		everyone at a domain, and an address pin wins over its domain’s. Pins are yours, not Jev’s: they
+		act on new mail whenever Inbox tabs are on for the account, with “Let Jev read new mail” on or
+		off, and nothing is sent anywhere for them.
+	</p>
+	{#each data.jevAccounts as account (account.id)}
+		{#if data.jevAccounts.length > 1}
+			<p class="text-xs font-medium text-text-secondary mt-3 mb-1.5">{account.email}</p>
+		{/if}
+		{#if account.pins.length > 0 && !current(account, 'inboxTabs')}
+			<p class="text-xs text-warning mb-1.5">
+				These pins do nothing until Inbox tabs are on for {account.email}.
+			</p>
+		{/if}
+		{#if account.pins.length > 0}
+			<ul class="rounded-lg border border-border divide-y divide-border mb-2">
+				{#each account.pins as pin (pin.sender)}
+					<li class="flex items-center gap-3 px-3 py-2">
+						<span class="flex-1 min-w-0 truncate text-sm text-text font-mono">{pin.sender}</span>
+						<select
+							value={pin.category}
+							aria-label="Tab for {pin.sender}"
+							onchange={(e) => savePin(account.id, pin.sender, e.currentTarget.value as InboxCategory)}
+							class="bg-surface-hover border border-border rounded-lg px-2 py-1 text-xs text-text outline-none focus:border-accent"
+						>
+							{#each INBOX_CATEGORIES as c (c.key)}
+								<option value={c.key}>{c.label}</option>
+							{/each}
+						</select>
+						<button
+							type="button"
+							onclick={() => savePin(account.id, pin.sender, pin.category, 'DELETE')}
+							title="Remove pin"
+							aria-label="Remove pin for {pin.sender}"
+							class="p-1 rounded-md text-text-tertiary hover:text-danger cursor-pointer"
+						>
+							<Icon name="close" size={14} />
+						</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+		<form class="flex items-center gap-2" onsubmit={(e) => { e.preventDefault(); addPin(account.id); }}>
+			<input
+				bind:value={newPinSender[account.id]}
+				placeholder="sender@example.com or @example.com"
+				aria-label="Sender to pin"
+				class="flex-1 min-w-0 bg-surface-hover border border-border rounded-lg px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
+			/>
+			<select
+				value={newPinTab[account.id] ?? 'updates'}
+				aria-label="Tab"
+				onchange={(e) => (newPinTab[account.id] = e.currentTarget.value as InboxCategory)}
+				class="bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
 			>
-				{#snippet control()}
-					<Select
-						value={spamModes[account.id] ?? account.spamMode}
-						ariaLabel="Spam checks for {account.email}"
-						disabled={!configured || !current(account, 'jevEnabled')}
-						onchange={(v) => saveSpamMode(account.id, v)}
-						options={[
-							{ value: 'off', label: 'Off' },
-							{ value: 'watch', label: 'Watch only' },
-							{ value: 'active', label: 'Active' }
-						]}
-					/>
-				{/snippet}
-			</SettingRow>
-			{#if account.isActive && account.spamMode !== 'off'}
-				<JevSpamReport />
-			{/if}
-		{/each}
-	</div>
+				{#each INBOX_CATEGORIES as c (c.key)}
+					<option value={c.key}>{c.label}</option>
+				{/each}
+			</select>
+			<button
+				type="submit"
+				class="btn btn-secondary"
+			>
+				Pin
+			</button>
+		</form>
+		{#if pinError[account.id]}
+			<p class="text-xs text-danger mt-1">{pinError[account.id]}</p>
+		{/if}
+	{/each}
+</section>
 
-	<div class="mt-8">
-		<h3 class="text-sm font-semibold text-text mb-1">Pinned senders</h3>
-		<p class="text-xs text-text-tertiary mb-3">
-			Mail from a pinned sender always goes to its tab — Jev isn’t asked. Pin one from the message
-			that appears after you move an email, or add it here; <span class="font-mono">@domain</span> pins
-			everyone at a domain, and an address pin wins over its domain’s. Pins are yours, not Jev’s: they
-			act on new mail whenever Inbox tabs are on for the account, with “Let Jev read new mail” on or
-			off, and nothing is sent anywhere for them.
-		</p>
-		{#each data.jevAccounts as account (account.id)}
-			{#if data.jevAccounts.length > 1}
-				<p class="text-xs font-medium text-text-secondary mt-3 mb-1.5">{account.email}</p>
-			{/if}
-			{#if account.pins.length > 0 && !current(account, 'inboxTabs')}
-				<p class="text-xs text-warning mb-1.5">
-					These pins do nothing until Inbox tabs are on for {account.email}.
-				</p>
-			{/if}
-			{#if account.pins.length > 0}
-				<ul class="rounded-lg border border-border divide-y divide-border mb-2">
-					{#each account.pins as pin (pin.sender)}
-						<li class="flex items-center gap-3 px-3 py-2">
-							<span class="flex-1 min-w-0 truncate text-sm text-text font-mono">{pin.sender}</span>
-							<select
-								value={pin.category}
-								aria-label="Tab for {pin.sender}"
-								onchange={(e) => savePin(account.id, pin.sender, e.currentTarget.value as InboxCategory)}
-								class="bg-surface-hover border border-border rounded-lg px-2 py-1 text-xs text-text outline-none focus:border-accent"
-							>
-								{#each INBOX_CATEGORIES as c (c.key)}
-									<option value={c.key}>{c.label}</option>
-								{/each}
-							</select>
-							<button
-								type="button"
-								onclick={() => savePin(account.id, pin.sender, pin.category, 'DELETE')}
-								title="Remove pin"
-								aria-label="Remove pin for {pin.sender}"
-								class="p-1 rounded-md text-text-tertiary hover:text-danger cursor-pointer"
-							>
-								<Icon name="close" size={14} />
-							</button>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-			<form class="flex items-center gap-2" onsubmit={(e) => { e.preventDefault(); addPin(account.id); }}>
-				<input
-					bind:value={newPinSender[account.id]}
-					placeholder="sender@example.com or @example.com"
-					aria-label="Sender to pin"
-					class="flex-1 min-w-0 bg-surface-hover border border-border rounded-lg px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
-				/>
-				<select
-					value={newPinTab[account.id] ?? 'updates'}
-					aria-label="Tab"
-					onchange={(e) => (newPinTab[account.id] = e.currentTarget.value as InboxCategory)}
-					class="bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
-				>
-					{#each INBOX_CATEGORIES as c (c.key)}
-						<option value={c.key}>{c.label}</option>
-					{/each}
-				</select>
-				<button
-					type="submit"
-					class="btn btn-secondary"
-				>
-					Pin
-				</button>
-			</form>
-			{#if pinError[account.id]}
-				<p class="text-xs text-danger mt-1">{pinError[account.id]}</p>
-			{/if}
-		{/each}
-	</div>
-
-	{#if configured && activeAccount}
+{#if configured && activeAccount}
+	<section class="mb-10">
 		<JevBackfill accountEmail={activeAccount.email} />
 
 		<div class="mt-4 rounded-xl border border-border p-4">
-			<div class="flex items-start gap-4">
-				<div class="flex-1 min-w-0">
+			<div class="flex flex-wrap items-start gap-x-4 gap-y-3">
+				<div class="flex-1 min-w-[12rem]">
 					<p class="text-sm font-medium text-text">Try Jev on your last {data.jev.previewLimit} emails</p>
 					<p class="text-xs text-text-tertiary mt-1">
 						Shows where Jev would put the newest {data.jev.previewLimit} emails in
@@ -425,7 +387,7 @@
 			{/if}
 
 			{#if preview}
-				<div class="mt-4 grid grid-cols-4 gap-2">
+				<div class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-2">
 					{#each INBOX_CATEGORIES as c (c.key)}
 						<div class="rounded-lg bg-surface-hover/50 border border-border/60 px-3 py-2">
 							<div class="flex items-center gap-1.5 text-xs text-text-secondary">
@@ -475,5 +437,51 @@
 				</ul>
 			{/if}
 		</div>
-	{/if}
+	</section>
+{/if}
+
+<section id="add-ons" class="scroll-mt-6" aria-labelledby="add-ons-heading">
+	<h2 id="add-ons-heading" class="text-sm font-semibold text-text mb-1">Add-ons</h2>
+	<h3 class="text-sm font-medium text-text mt-3 mb-1">Spam checks</h3>
+	<p class="text-xs text-text-tertiary mb-1">
+		A second opinion beside Stalwart’s filter, which keeps running. Jev is asked two narrow questions about
+		each new email — is it spam, is it phishing — with its authentication results, its Reply-To and links,
+		and Stalwart’s own score. Mail in Junk is checked too.
+	</p>
+	<ul class="text-xs text-text-tertiary mb-3 list-disc pl-5 space-y-0.5">
+		<li><span class="text-text-secondary">Watch only</span> records Jev’s verdict and shows it beside Stalwart’s; nothing moves. Start here.</li>
+		<li>
+			<span class="text-text-secondary">Active</span> moves mail Jev is at least 90% sure is spam or phishing to Junk — never from
+			your contacts or people you’ve written to — warns on anything from 60%, and brings mail back from Junk
+			when Jev is very sure it’s fine and its sender passed DMARC. Jev’s moves don’t train Stalwart.
+		</li>
+	</ul>
+	{#each data.jevAccounts as account (account.id)}
+		<SettingRow
+			title={`Spam checks · ${account.email}`}
+			description={current(account, 'jevEnabled') ? 'Applies to mail that arrives from now on.' : 'Let Jev read this account’s new mail first.'}
+			state={states[`${account.id}:spam`] ?? 'idle'}
+			errorMessage={errors[`${account.id}:spam`]}
+		>
+			{#snippet control()}
+				<Select
+					value={spamModes[account.id] ?? account.spamMode}
+					ariaLabel="Spam checks for {account.email}"
+					disabled={!configured || !current(account, 'jevEnabled')}
+					onchange={(v) => saveSpamMode(account.id, v)}
+					options={[
+						{ value: 'off', label: 'Off' },
+						{ value: 'watch', label: 'Watch only' },
+						{ value: 'active', label: 'Active' }
+					]}
+				/>
+			{/snippet}
+		</SettingRow>
+		{#if account.isActive && account.spamMode !== 'off'}
+			<JevSpamReport />
+		{/if}
+	{/each}
+	<p class="text-xs text-text-tertiary mt-4">
+		Alerts for urgent mail are under <a href="/settings/notifications" class="underline">Settings → Notifications</a>.
+	</p>
 </section>
