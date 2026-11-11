@@ -1,59 +1,74 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
-	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
+	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
-	import type { LayoutData } from '../$types';
+	import type { PageData } from './$types';
 
-	let { data }: { data: LayoutData } = $props();
+	let { data }: { data: PageData } = $props();
 
-	let enabled = $state(data.autoReplyEnabled);
-	let subject = $state(data.autoReplySubject);
-	let body = $state(data.autoReplyBody);
+	// The form starts from what is saved, and is sent only by Save.
+	const saved = untrack(() => $state.snapshot(data.autoReply));
+	let enabled = $state(saved.enabled);
+	let from = $state(saved.from);
+	let until = $state(saved.until);
+	let subject = $state(saved.subject);
+	let body = $state(saved.body);
 
-	let deployState = $state<SaveState>('idle');
-	let deployError = $state('');
+	let status = $state(untrack(() => data.status));
+	let saving = $state(false);
+	let saveError = $state('');
+	let savedNote = $state(false);
 
-	/**
-	 * Save the auto-reply cookies, then redeploy the Sieve script so the
-	 * vacation block is actually live. The deploy endpoint reads the
-	 * auto-reply cookies we just set.
-	 */
-	async function save(patch: { enabled?: boolean; subject?: string; body?: string }) {
-		deployState = 'saving';
-		deployError = '';
+	// Checked here as the server checks it, so a mistake shows before Save.
+	const formError = $derived(
+		from && until && until < from
+			? 'The end date is before the start date.'
+			: enabled && !body.trim()
+				? 'Write the message to send.'
+				: ''
+	);
+
+	async function save() {
+		if (formError) return;
+		saving = true;
+		saveError = '';
 		try {
-			const prefRes = await fetch('/api/preferences/auto-reply', {
+			const res = await fetch('/api/preferences/auto-reply', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(patch)
+				body: JSON.stringify({
+					enabled,
+					from,
+					until,
+					subject,
+					body,
+					// The dates are the owner's days, in the time zone they are in now.
+					tz: Intl.DateTimeFormat().resolvedOptions().timeZone
+				})
 			});
-			if (!prefRes.ok) {
-				deployState = 'error';
-				deployError = 'Failed to save settings';
+			const result = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				saveError = result?.error ?? 'Couldn’t save. Try again.';
 				return;
 			}
-
-			const deployRes = await fetch('/api/rules/deploy', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ rules: data.rules })
-			});
-			const deployData = await deployRes.json().catch(() => ({}));
-			if (!deployRes.ok || deployData?.error) {
-				deployState = 'error';
-				deployError = deployData?.error ?? 'Failed to deploy Sieve script';
-				return;
-			}
-
+			status = result.status ?? status;
+			savedNote = true;
+			setTimeout(() => (savedNote = false), 1800);
 			await invalidateAll();
-			deployState = 'saved';
-			setTimeout(() => { if (deployState === 'saved') deployState = 'idle'; }, 1800);
 		} catch (err) {
-			deployState = 'error';
-			deployError = err instanceof Error ? err.message : 'Save failed';
+			saveError = err instanceof Error ? err.message : 'Couldn’t save. Try again.';
+		} finally {
+			saving = false;
 		}
 	}
+
+	const when = (iso: string) =>
+		new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+	const inputClass =
+		'bg-surface-hover border border-border rounded-lg px-2.5 py-1.5 text-sm text-text placeholder-text-tertiary outline-none focus:border-accent';
 </script>
 
 <svelte:head><title>{pageTitle({ page: 'Auto-reply', subtitle: 'Settings' })}</title></svelte:head>
@@ -61,55 +76,84 @@
 <header class="mb-6">
 	<h1 class="text-xl font-semibold text-text">Auto-reply</h1>
 	<p class="text-sm text-text-tertiary mt-1">
-		Send an automatic response to incoming mail while you're away. The response is sent
-		server-side via Sieve, so it runs even if Zajel Mail isn't open.
+		Answer new mail automatically while you’re away. One setting covers all your linked accounts.
+	</p>
+	<p class="text-sm mt-2" data-testid="auto-reply-status">
+		<span class="text-text-tertiary">Status:</span>
+		<span class="font-medium text-text">{status}</span>
 	</p>
 </header>
 
-{#if deployError}
-	<div class="px-3 py-2 rounded-lg bg-danger/10 border border-danger/30 text-danger text-xs mb-4">
-		{deployError}
-	</div>
-{/if}
-
 <section>
-	<SettingRow title="Enable auto-reply" description="Turn the responder on or off." state={deployState}>
+	<SettingRow title="Send automatic replies" description="Nothing changes until you press Save.">
 		{#snippet control()}
-			<Toggle
-				checked={enabled}
-				onChange={(v) => { enabled = v; save({ enabled: v }); }}
-			/>
+			<Toggle checked={enabled} onChange={(v) => (enabled = v)} />
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow
-		title="Subject"
-		description="Used in the outgoing auto-reply's Subject header."
-	>
+	<SettingRow title="From" description="Optional. The first day replies are sent.">
 		{#snippet control()}
-			<input
-				bind:value={subject}
-				onblur={() => save({ subject })}
-				placeholder="Out of office"
-				disabled={!enabled}
-				class="bg-surface-hover border border-border rounded-lg px-2.5 py-1.5 text-sm text-text placeholder-text-tertiary outline-none focus:border-accent w-[280px] disabled:opacity-50"
-			/>
+			<input type="date" aria-label="From" bind:value={from} class="{inputClass} w-[180px]" />
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow
-		title="Message"
-		description="Body of the auto-reply. Kept plain-text to maximise deliverability."
-	>
+	<SettingRow title="Until" description="Optional. The last day replies are sent.">
+		{#snippet control()}
+			<input type="date" aria-label="Until" bind:value={until} min={from || undefined} class="{inputClass} w-[180px]" />
+		{/snippet}
+	</SettingRow>
+
+	<SettingRow title="Subject" description="Optional. Left empty, it is “Automatic reply:” and the original subject.">
+		{#snippet control()}
+			<input aria-label="Subject" bind:value={subject} placeholder="Out of office" class="{inputClass} w-[280px]" />
+		{/snippet}
+	</SettingRow>
+
+	<SettingRow title="Message" description="Sent as plain text.">
 		{#snippet control()}
 			<textarea
+				aria-label="Message"
 				bind:value={body}
-				onblur={() => save({ body })}
 				rows={5}
 				placeholder="I'm out of the office until next week…"
-				disabled={!enabled}
-				class="bg-surface-hover border border-border rounded-lg px-2.5 py-1.5 text-sm text-text placeholder-text-tertiary outline-none focus:border-accent w-[360px] resize-none disabled:opacity-50 font-sans"
+				class="{inputClass} w-[360px] resize-none font-sans"
 			></textarea>
 		{/snippet}
 	</SettingRow>
+</section>
+
+<div class="flex items-center gap-3 mt-4">
+	<button class="btn btn-primary" onclick={save} disabled={saving || !!formError}>
+		{saving ? 'Saving…' : 'Save'}
+	</button>
+	{#if savedNote}<span class="text-xs text-text-tertiary">Saved</span>{/if}
+	{#if formError}<span class="text-xs text-danger">{formError}</span>{/if}
+	{#if saveError}<span class="text-xs text-danger">{saveError}</span>{/if}
+</div>
+
+<section class="mt-8 text-sm text-text-secondary space-y-1">
+	<h2 class="text-sm font-semibold text-text">How replies are sent</h2>
+	<ul class="list-disc pl-5 space-y-1">
+		<li>Zajel sends them itself, while it is running. Mail that arrives while it is stopped gets no reply.</li>
+		<li>To the sender’s own address, never to a different reply-to address the message asks for.</li>
+		<li>At most one reply per person per day, across all your accounts.</li>
+		<li>Never to newsletters, mailing lists, automatic mail or delivery reports, and never to mail sent before you switched it on.</li>
+	</ul>
+</section>
+
+<section class="mt-8">
+	<h2 class="text-sm font-semibold text-text mb-2">Replies sent</h2>
+	{#if data.sent.length === 0}
+		<p class="text-sm text-text-tertiary">None yet.</p>
+	{:else}
+		<ul class="text-sm space-y-1">
+			{#each data.sent as reply, i (i)}
+				<li class="flex gap-3">
+					<span class="text-text">{reply.to}</span>
+					<span class="text-text-tertiary">{when(reply.at)}</span>
+					{#if data.multipleAccounts}<span class="text-text-tertiary">from {reply.account}</span>{/if}
+				</li>
+			{/each}
+		</ul>
+	{/if}
 </section>

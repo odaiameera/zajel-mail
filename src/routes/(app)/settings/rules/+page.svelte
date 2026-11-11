@@ -59,42 +59,28 @@
 		return false;
 	}
 
-	// --- Save / deploy ---
+	// --- Save ---
 
 	let saving = $state(false);
-	let deployError = $state('');
-	let deployWarning = $state('');
+	let saveError = $state('');
 	let savedToast = $state(false);
 
 	async function persistAll(): Promise<boolean> {
 		saving = true;
-		deployError = '';
+		saveError = '';
 		try {
-			await fetch('/api/preferences/rules', {
+			const res = await fetch('/api/preferences/rules', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ rules: localRules })
 			});
-			const deployRes = await fetch('/api/rules/deploy', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ rules: localRules })
-			});
-			const deployData = await deployRes.json();
-			// Sieve deploy is best-effort: rules are stored server-side and
-			// applied by the app engine either way. A deploy failure (e.g.
-			// Sieve unsupported/disabled on the mail server) must not block
-			// saving or applying — surface it as a warning instead.
-			deployWarning = deployData.error
-				? `Rules saved. Delivery-time (Sieve) deploy failed: ${deployData.error} — rules still run through the app's own engine.`
-				: deployData.deactivated
-					? // A mail server runs one active Sieve script; activating ours switched the other off.
-						`Rules saved. Your mail server's other Sieve script “${deployData.deactivated}” is no longer active; Zajel's rules run in its place.`
-					: '';
+			// "Apply now" runs the saved rules, so a save that didn't land must
+			// stop it rather than let it apply what was there before.
+			if (!res.ok) throw new Error(`Save failed (HTTP ${res.status})`);
 			await invalidateAll();
 			return true;
 		} catch (err) {
-			deployError = err instanceof Error ? err.message : 'Save failed';
+			saveError = err instanceof Error ? err.message : 'Save failed';
 			return false;
 		} finally {
 			saving = false;
@@ -157,7 +143,7 @@
 	async function pinInstead(id: string) {
 		const pin = localRules.find((r) => r.id === id)?.tabNote?.pin;
 		if (!pin) return;
-		deployError = '';
+		saveError = '';
 		const res = await fetch('/api/jev/pins', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -165,7 +151,7 @@
 		}).catch(() => null);
 		if (!res?.ok) {
 			const body = await res?.json().catch(() => null);
-			deployError = body?.error ?? 'Couldn’t save the pin. Try again.';
+			saveError = body?.error ?? 'Couldn’t save the pin. Try again.';
 			return;
 		}
 		await removeRule(id);
@@ -303,7 +289,9 @@
 
 	// --- Live match preview ---
 
-	let previewCount = $state<number | null>(null);
+	// What the scan counted: `matched` of the newest `scanned` Inbox messages,
+	// out of `total` in the Inbox.
+	let preview = $state<{ matched: number; scanned: number; total: number } | null>(null);
 	let previewLoading = $state(false);
 	let previewError = $state('');
 	let previewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -344,13 +332,13 @@
 			const data = await res.json();
 			if (data.error) {
 				previewError = data.error;
-				previewCount = null;
+				preview = null;
 			} else {
-				previewCount = data.count ?? 0;
+				preview = { matched: data.matched ?? 0, scanned: data.scanned ?? 0, total: data.total ?? 0 };
 			}
 		} catch (err) {
 			previewError = err instanceof Error ? err.message : 'Preview failed';
-			previewCount = null;
+			preview = null;
 		} finally {
 			previewLoading = false;
 		}
@@ -386,7 +374,8 @@
 			const res = await fetch('/api/rules/apply', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ rules: [rule] }),
+				// The rule was saved a moment ago; the server applies the saved copy.
+				body: JSON.stringify({ ruleIds: [rule.id] }),
 				signal: abortCtrl.signal
 			});
 			if (!res.ok || !res.body) {
@@ -543,11 +532,8 @@
 		</button>
 	</header>
 
-	{#if deployWarning}
-		<div class="mx-6 mt-3 px-3 py-2 rounded-lg bg-warning/10 border border-warning/20 text-warning text-xs">{deployWarning}</div>
-	{/if}
-	{#if deployError}
-		<div class="mx-6 mt-3 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs">{deployError}</div>
+	{#if saveError}
+		<div class="mx-6 mt-3 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs">{saveError}</div>
 	{/if}
 
 	<div class="flex-1 flex min-h-0 overflow-hidden">
@@ -855,10 +841,15 @@
 								<span class="text-xs text-text-tertiary">Counting…</span>
 							{:else if previewError}
 								<span class="text-xs text-danger">{previewError}</span>
-							{:else if previewCount !== null}
-								<span class="text-sm font-semibold text-text">{previewCount.toLocaleString()}</span>
+							{:else if preview !== null}
+								<span class="text-sm font-semibold text-text">{preview.matched.toLocaleString()}</span>
 								<span class="text-xs text-text-tertiary">
-									existing {previewCount === 1 ? 'email matches' : 'emails match'} this rule{needsRewrite(rule) ? ' as it reads now' : ''}
+									{#if preview.scanned < preview.total}
+										of your newest {preview.scanned.toLocaleString()} Inbox messages {preview.matched === 1 ? 'matches' : 'match'}
+									{:else}
+										Inbox {preview.matched === 1 ? 'message matches' : 'messages match'}
+									{/if}
+									this rule{needsRewrite(rule) ? ' as it reads now' : ''}
 								</span>
 							{:else}
 								<span class="text-xs text-text-tertiary">No preview</span>

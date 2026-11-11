@@ -90,18 +90,18 @@ Two behaviour changes follow from this:
 
 ## Data model
 
-Next migration number is 028. Old tables stay until the last stage, so an interrupted upgrade loses nothing.
+Stage 3 took 028 (`account_tasks`, one-time jobs per account such as retiring the Sieve script) and stage 4 took 029 (`auto_reply_log`), so the numbers below start at 030. Old tables stay until the last stage, so an interrupted upgrade loses nothing.
 
-- **028 `rules`**: one row per rule, keyed by account id: position, enabled, name, conditions, one target (folder or label by id; Trash, Archive, Junk by role), `mark_read`, `star`, `stop`, an `attention` note, and the original rule kept as `legacy_json`.
+- **030 `rules`**: one row per rule, keyed by account id: position, enabled, name, conditions, one target (folder or label by id; Trash, Archive, Junk by role), `mark_read`, `star`, `stop`, an `attention` note, and the original rule kept as `legacy_json`.
   - Surviving actions: move, label, mark read, star (renamed from "mark important", which clashed with the Important tab), stop. "Delete" becomes a move to Trash.
   - A rule with several targets becomes adjacent rows, one per target.
   - **Rules with a Jev condition** are disabled and listed under "Needs your attention", never silently dropped.
   - **Rules that only set a tab** become sender pins when they are a simple sender match, and stay listed as a note saying which pin they became until the owner dismisses it; otherwise they are listed for attention, with the reason and, where they name a sender, a one-click pin. No conversion is silent.
   - Deleting a folder or label deletes its rules (the confirmation says how many).
-- **`auto_reply_sent`** (with stage 4, numbered in order of shipping): account, sender address, day. One row per reply, so a sender gets at most one a day; pruned after a week.
-- **029 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).
-- **030**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows).
-- **031**: drop `user_rules`, `rules_cursor`, `label_meta`, `folder_meta`, `jev_rule_feedback` and the unused Jev columns.
+- **029 `auto_reply_log`** (stage 4): account, sender address, time, message. One row per reply, written before it is sent; a sender gets at most one a day and a login at most 30 an hour, across all its accounts; pruned after 30 days.
+- **031 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).
+- **032**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows).
+- **033**: drop `user_rules`, `rules_cursor`, `label_meta`, `folder_meta`, `jev_rule_feedback` and the unused Jev columns.
 
 ## Settings
 
@@ -118,13 +118,13 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 | 0 | **Done.** Tested on the real server: Stalwart does not run the Sieve script at delivery | — |
 | 1 | **Done.** Rules become exact-match only; Jev rule conditions and their endpoints removed | Accounts with Jev rules switch runner |
 | 2 | **Done.** Tabs belong to Jev: "set tab" removed from rules, tab rules become pins | Pins now act with Jev off |
-| 3 | One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
-| 4 | Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
-| 5 | Rules table (028) and validated saves | Splitting multi-target rules |
-| 6 | Folders and labels consistent: `filing.ts`, one metadata API (029), one picker | Moves now leave every folder, not just the Inbox |
-| 7 | One new-mail pipeline (030); `jev/worker.ts` split | The largest change |
+| 3 | **Done.** One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
+| 4 | **Done.** Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
+| 5 | Rules table (030) and validated saves | Splitting multi-target rules |
+| 6 | Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
+| 7 | One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
 | 8 | The two settings pages | UI only |
-| 9 | Clean-up (031): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
+| 9 | Clean-up (033): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
 
 Stages 1 and 2 remove the most complexity for the least risk, and can ship before anything structural moves. Between stages 3 and 4 the Auto-reply settings page is hidden, since it does nothing today either. The README's Jev section and `docs/jev-plan.md` are updated in each stage.
 
@@ -144,10 +144,120 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 
 ## Open questions for the owner
 
-1. **Out-of-office per account?** The setting is stored per login today, so it would apply to every linked mail account. Should each account have its own?
+1. **Out-of-office per account?** Answered: one setting for all linked accounts, with optional start and end dates (stage 4).
 2. **Rules to Junk**: should a rule be allowed to move mail to Junk?
 3. **Mail delivered straight to another folder** (not the Inbox) is never seen by rules. Keep it that way?
 
 ## Status
 
-Stages 0, 1 and 2 are done. Later stages follow one PR at a time.
+Stages 0 to 4 are done. Later stages follow one PR at a time.
+
+## Design notes
+
+The designs each stage was built to, kept for the reasons behind them.
+
+### Stage 3 design: one matcher, Sieve removed
+
+#### Why
+- "How many emails match" (preview) and "Save & apply" disagree today. Preview counts with a mail-server search over every folder (`buildJmapFilter`, `src/lib/server/rules.ts`), which is word-based and can't express "is", "starts with" or "ends with". Apply uses the real engine on the Inbox. The apply endpoint's own comment calls the search approach wrong (`src/routes/api/rules/apply/+server.ts`, the comment above the scan loop).
+- Apply acts on rules sent in the request body instead of the saved ones.
+- Sieve does nothing on this server but is compiled and uploaded on every save, and can switch off a script made in another mail client.
+
+#### 3a. One scan for preview and apply
+New `src/lib/server/rules-scan.ts`:
+- `scanInbox(client, accountId, rules, opts)` pages the Inbox newest first and runs each page through the existing engine (`matcherProperties`, `updatesForEmails` in `src/lib/server/rules-engine.ts`).
+- `opts.apply`: when false it only counts; when true it writes, with the batching and rejected-write accounting that the apply endpoint has today (moved here, not rewritten).
+- `opts.limit`: stop after this many messages. `opts.onProgress`, `opts.cancelled` as today.
+- Returns `{ scanned, matched, applied, failed, failedReason, total }`.
+
+`/api/rules/preview`:
+- Takes the rule being edited (unsaved), passes it through the same guard a saved rule gets (`isRunnable`, and the save-time conversion in `src/lib/server/rules-upgrade.ts`), then `scanInbox` with `apply: false`.
+- Limit: the newest 500 Inbox messages; 200 when the rule has a body condition (bodies are fetched).
+- Returns `{ matched, scanned, total }`. The editor shows "12 of your newest 500 Inbox messages match", or "12 Inbox messages match" when the whole Inbox was scanned.
+
+`/api/rules/apply`:
+- Takes `{ ruleIds?: string[] }` and loads those rules from the store (all enabled rules when omitted). Rules in the request body are no longer accepted. The page saves first, then applies, which it already does.
+- Keeps its preflight (missing or unset targets), its progress stream and Cancel.
+
+Deleted: `src/lib/server/rules.ts` and the tests for `buildJmapFilter`.
+
+#### 3b. Sieve removed
+- Deleted: `src/lib/server/sieve.ts`, `/api/rules/deploy` and its test, the Sieve tests in `rules-engine.test.ts`, the deploy call and both Sieve banners on the rules page, Sieve mentions in comments and the README.
+- **The script already on the server is retired once per account.** New migration `028_account_tasks.sql`: `account_tasks(account_id, name, done_at)`, cascading from `mail_accounts`. On an account's next rules run (it has the credentials), task `retire_sieve_script`:
+  - `SieveScript/get`; if a script named `mailrules` exists, deactivate it if it is the active one (`onSuccessDeactivateScript`) and destroy it. A script with any other name is never touched.
+  - Mark done on success, and also when the server has no Sieve capability. Any other failure never blocks rules and is retried an hour later (kept in memory, so a restart may retry once); the warning is logged on the first failure and then at most once a day.
+- **Auto-reply settings page**: removed from the settings navigation and redirected to `/settings` in this commit (it has never worked); stage 4 brings it back.
+
+#### Stage 3 tests
+- Preview and apply report the same matches for the same rule on the same Inbox (the test the plan asked for), including for "is", "starts with", NOT, and a body condition.
+- Preview never writes; preview of a rule flagged for attention reports 0 without scanning.
+- Apply ignores rules in the request body; unknown rule ids are refused; Cancel stops at the next page.
+- `retire_sieve_script`: deactivates and destroys `mailrules`; leaves another active script alone; no Sieve capability marks it done; a failure retries an hour later, not on the next minute's run, and is logged at most once a day; runs once.
+- The form-action and route tests still pass with `/api/rules/deploy` gone.
+
+### Stage 4 design: out-of-office sent by the app
+
+Owner's choices: one setting for all linked accounts; optional start and end dates.
+
+#### Settings
+Stored per login, as today (`auto_reply_enabled`, `auto_reply_subject`, `auto_reply_body` in `src/lib/preference-keys.ts`), plus:
+- `auto_reply_from`, `auto_reply_until`: optional dates (`YYYY-MM-DD`). Either or both may be empty.
+- `auto_reply_tz`: the browser's time zone at the moment of saving, so the dates mean the owner's days.
+- `auto_reply_since`: set by the server when out-of-office is switched on or its dates change. No reply is sent to mail that arrived before it.
+
+Out-of-office is **active** when it is enabled, the message is not empty, today (in `auto_reply_tz`) is on or after `from` if set, and on or before `until` if set. It applies to every linked mail account of that login.
+
+The page (`src/routes/(app)/settings/auto-reply/+page.svelte`, back in the navigation):
+- Switch, "From" and "Until" date fields (optional), Subject (optional), Message.
+- Its own **Save** button; nothing is sent on change. (It moves to the shared Save bar in the settings pass.)
+- A status line: "Off", "On", "Starts 20 Nov", "On until 28 Nov", "Ended 28 Nov".
+- Plain statement of the rules: sent by Zajel while it is running; at most one reply per sender per day; never to newsletters, mailing lists or automatic mail.
+- "Replies sent" with the last few recipients and times, from the log below.
+
+#### Where it runs
+In the rules scheduler's per-account run (`runApply` in `src/lib/server/rules-scheduler.ts`), which already sees each new Inbox message exactly once and runs whether or not Jev is on. Changes:
+- The run proceeds when the account has enabled rules **or** out-of-office is active for its login (today it returns early with no rules).
+- The message fetch adds what the reply decision needs: `from`, `to`, `cc`, `replyTo`, `messageId`, `references`, `subject`, `receivedAt`, `keywords`, and the headers `auto-submitted`, `precedence`, `list-id`, `list-unsubscribe`, `x-auto-response-suppress`, `x-spam-status`.
+- The reply decision is made on the message as it arrived, before rules move it. It moves into the single pipeline in stage 7.
+
+#### New `src/lib/server/auto-reply.ts`
+`shouldAutoReply(email, ctx)`: pure, returns the address to reply to, or a reason not to. No reply when any of these holds:
+1. Out-of-office is not active, or the message arrived before `auto_reply_since`, or more than 24 hours ago (so a restart after downtime doesn't answer old mail).
+2. `Auto-Submitted` is present and not `no`; `Precedence` is `bulk`, `list` or `junk`; any `List-Id` or `List-Unsubscribe`; `X-Auto-Response-Suppress` contains `All`, `OOF` or `AutoReply`. (Reuse the header reading in `src/lib/server/jev/facts.ts`.) A delivery report or read receipt: `Return-Path` empty or `<>`, or a `multipart/report` Content-Type.
+3. From is not exactly one address with an `@` (none, several, or a group), or its local part is a robot: the no-reply pattern Jev's facts use (`sender_looks_automated`: `no_reply`, `noreply-billing`, `bounce-12345`, `notification`, `alerts`, `do_not_reply` and the like), plus `mailer-daemon` and `postmaster`. Or the message failed sender authentication (`dmarc=fail` in its `Authentication-Results`, read as Jev's spam facts do); a message with no such header is judged on the rest.
+4. The sender is one of the owner's own addresses (any linked account or identity).
+5. The account's address (or one of its identities) is not in To or Cc.
+6. The message is marked as spam (`$junk` keyword, or `X-Spam-Status: Yes`).
+7. That sender was already answered in the last 24 hours from **any** of the login's accounts (so mail to two of the owner's addresses gets one reply).
+8. The login has sent 30 automatic replies in the last hour, across its accounts (a cap, in case of a loop).
+
+`sendAutoReply(...)`:
+- To: the message's From address, always. Reply-To is never used: anyone can set it, so it would let a stranger aim the reply at a third party or a list, and dodge the once-a-day limit by changing From. The daily check, the log row and the "Replies sent" list all use that address, lower-cased.
+- Subject: the saved subject if set, otherwise `Automatic reply: <original subject>`.
+- Body: the saved message, as plain text.
+- Headers: `Auto-Submitted: auto-replied`, `X-Auto-Response-Suppress: All`, `In-Reply-To` and `References` from the original. (`buildEmailCreate` in `src/lib/jmap/email.ts` already sets custom headers this way.)
+- Sent from the account's primary identity. The copy is created in one request and submitted in a second, so its id is always known; it is deleted after sending (`onSuccessDestroyEmail`) so Sent doesn't fill with automatic replies, and when the submission did not surely succeed it is destroyed (one attempt, a failure only logged).
+- The log row is written **before** sending, so a crash can't cause a second reply, in one transaction with a fresh check of the login's daily and hourly limits, so two accounts' runs can't both answer one sender. It is removed only when the server **definitely refused**: the copy wasn't created, or the submission came back `notCreated` or with a method-level error. On anything uncertain (timeout, dropped connection, a 5xx) the row stays and the event is logged as uncertain: the mail may have gone, so the sender gets no more replies that day.
+
+#### Data
+Migration `029_auto_reply.sql`: `auto_reply_log(account_id, sender, sent_at, email_id)`, cascading from `mail_accounts`, indexed by `(account_id, sender, sent_at)`. Rows older than 30 days are pruned on the daily pass. Rows are per account, but the daily check and the hourly cap read them per login, joined to `mail_accounts` on `user_id`.
+
+#### Stage 4 tests
+- `shouldAutoReply`: one test per rule above, each failing without its rule; the active-window logic across time zones and at both date boundaries; empty dates.
+- One reply per sender per day; a second message the same day gets none; the next day gets one.
+- The hourly cap.
+- The reply's recipient (From, never Reply-To), subject, headers and thread references; the copy is destroyed; a refused send removes the log row, an uncertain one keeps it; a refused copy is never submitted.
+- One reply per person across the login's accounts; the hourly cap is the login's.
+- The scheduler runs with out-of-office active and no rules; no reply to mail from before it was switched on, or on first sight of an account.
+- Page: nothing saved until Save; status line for each state; dates validated (until not before from).
+
+#### Verification on the owner's server (stage 3 and 4 together)
+1. After deploying, the `mailrules` script is gone from Stalwart; any other script is untouched.
+2. Rule editor: the match count agrees with what "Save & apply" then moves.
+3. Out-of-office on: a message from Outlook gets one reply; a second the same day gets none; a newsletter gets none; a message from before switching on gets none.
+4. With an end date of today, no reply tomorrow.
+
+#### Risks
+- **Replying to the wrong mail.** Guarded by rules 2 to 8, the cap, and one-per-day. Stalwart's own spam filtering has already filed most spam into Junk, which is never seen here; mail Jev later moves to Junk may get a reply first.
+- **Preview cost.** Up to 500 messages are fetched per preview (200 with bodies), debounced as today.
+- **Replies only while the app runs.** Stated on the page.
