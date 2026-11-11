@@ -31,6 +31,8 @@ function fakeClient(reply: (call: MethodCall) => Record<string, unknown>) {
 
 const NOW = Date.parse('2026-11-10T10:00:00Z');
 const RECEIVED = '2026-11-10T09:59:40Z';
+/** The hold was switched on before any of this mail arrived. */
+const SINCE = NOW - 10 * 60_000;
 const mailbox = (id: string, role: string | null, unreadEmails: number): Mailbox => ({
 	id,
 	name: id,
@@ -141,11 +143,18 @@ describe('heldInInbox', () => {
 			tag === 'u' ? { ids: [], total: 2 } : name === 'Email/get' ? { list: [{ id: 'm1', receivedAt: RECEIVED }] } : { ids: ['m1'] }
 		);
 
-		expect(await heldInInbox(client, 'acc', 'inbox', NOW)).toEqual({ unread: 2, releaseAt: holdEndsAt(RECEIVED) });
+		expect(await heldInInbox(client, 'acc', 'inbox', SINCE, NOW)).toEqual({ unread: 2, releaseAt: holdEndsAt(RECEIVED) });
 		expect(requests).toHaveLength(1);
-		const held = { operator: 'AND', conditions: [{ inMailbox: 'inbox' }, heldCondition(NOW)] };
+		const held = { operator: 'AND', conditions: [{ inMailbox: 'inbox' }, heldCondition(NOW, SINCE)] };
 		expect(requests[0][0][1].filter).toEqual({ operator: 'AND', conditions: [held, { notKeyword: '$seen' }] });
 		expect(requests[0][1][1].filter).toEqual(held);
+	});
+
+	it('counts only mail received since the hold was switched on', async () => {
+		const { client, requests } = fakeClient(([name, , tag]) => (tag === 'u' ? { total: 0 } : name === 'Email/get' ? { list: [] } : { ids: [] }));
+		await heldInInbox(client, 'acc', 'inbox', NOW - 30_000, NOW);
+		// Received before the switch, 30 seconds ago, it shows: only later mail is held.
+		expect(JSON.stringify(requests[0][0][1].filter)).toContain('"before":"2026-11-10T09:59:30Z"');
 	});
 });
 
@@ -159,6 +168,7 @@ describe('withInboxHold', () => {
 			'acc',
 			'acct-1',
 			[mailbox('inbox', 'inbox', 5), mailbox('work', null, 3)],
+			SINCE,
 			NOW
 		);
 		expect(mailboxes.map((m) => m.unreadEmails)).toEqual([3, 3]);
@@ -170,7 +180,7 @@ describe('withInboxHold', () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const client = { request: () => Promise.reject(new Error('down')) } as unknown as JMAPClient;
 		const list = [mailbox('inbox', 'inbox', 5)];
-		expect(await withInboxHold(client, 'acc', 'acct-1', list, NOW)).toEqual({ mailboxes: list, releaseAt: null });
+		expect(await withInboxHold(client, 'acc', 'acct-1', list, SINCE, NOW)).toEqual({ mailboxes: list, releaseAt: null });
 	});
 });
 

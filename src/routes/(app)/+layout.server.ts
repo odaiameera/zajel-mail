@@ -13,7 +13,7 @@ import { syncIdentities } from '$lib/server/db/queries/identities';
 import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
-import { applyInboxHold, inboxHoldOn, knownInboxId, readInboxHold } from '$lib/server/mail-pipeline/hold';
+import { applyInboxHold, inboxHoldSince, knownInboxId, readInboxHold } from '$lib/server/mail-pipeline/hold';
 import { INBOX_HOLD_MS } from '$lib/inbox-hold';
 import { parseMarkReadDelay } from '$lib/mail-prefs';
 import { LIST_COOKIE, LIST_WIDTH, SIDEBAR_COOKIE, SIDEBAR_WIDTH, parseWidth } from '$lib/stores/paneWidths';
@@ -89,7 +89,8 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 		// new mail it hasn't finished with, as the tabs do (see inbox-hold).
 		// The hold is asked about alongside the mailboxes, using the Inbox id
 		// from the last load; only the first load (or a new Inbox) waits.
-		const holdAccount = inboxHoldOn(locals.activeAccountId) ? locals.activeAccountId! : null;
+		const holdSince = inboxHoldSince(locals.activeAccountId);
+		const holdAccount = holdSince !== null ? locals.activeAccountId! : null;
 		const accountId = locals.auth.accountId;
 		const holdInbox = holdAccount ? knownInboxId(holdAccount) : undefined;
 		const [mailboxList, labels, accountUnread, earlyHold] = await Promise.all([
@@ -98,14 +99,14 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			// Inbox unread counts for the other accounts' switcher badges.
 			// Cached server-side (30s) so navigations stay cheap.
 			unreadBadges(listAccounts(locals.user.id), locals.activeAccountId),
-			holdInbox ? readInboxHold(client, accountId, holdInbox) : null,
+			holdInbox ? readInboxHold(client, accountId, holdInbox, holdSince!) : null,
 			identityRefresh
 		]);
 		let mailboxes = mailboxList;
 		let inboxHoldEndsAt: number | null = null;
 		if (holdAccount) {
 			const inboxId = mailboxList.find((m) => m.role === 'inbox')?.id;
-			const hold = !inboxId ? null : inboxId === holdInbox ? earlyHold : await readInboxHold(client, accountId, inboxId);
+			const hold = !inboxId ? null : inboxId === holdInbox ? earlyHold : await readInboxHold(client, accountId, inboxId, holdSince!);
 			({ mailboxes, releaseAt: inboxHoldEndsAt } = applyInboxHold(holdAccount, mailboxList, hold));
 		}
 

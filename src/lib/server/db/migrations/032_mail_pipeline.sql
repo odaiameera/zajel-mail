@@ -4,17 +4,22 @@
 -- worker (jev_settings.sort_cursor, by account).
 
 -- How far the pipeline has read the account's Inbox (and Junk, while the
--- spam add-on is on): ISO receivedAt.
+-- spam add-on is on): ISO receivedAt. And since when the Inbox has held new
+-- mail for the pass (NULL while it doesn't): mail that arrived before the
+-- hold was switched on is never held, so nothing already showing
+-- disappears.
 CREATE TABLE IF NOT EXISTS mail_pipeline (
   account_id TEXT PRIMARY KEY REFERENCES mail_accounts(id) ON DELETE CASCADE,
   cursor     TEXT,
+  hold_since INTEGER,                    -- epoch ms
   updated_at INTEGER NOT NULL            -- epoch ms
 );
 
 -- Every new message the pipeline has seen, so none is handled twice: not by
 -- the short look-back each pass makes, nor after a restart. A message is
--- handled once out-of-office, the rules and the Jev queue have had it; one
--- whose pass failed part-way is tried again, up to five times. Rows older
+-- handled once out-of-office and the rules have had it and it is queued for
+-- Jev; one whose pass failed part-way is tried again, up to five times (at
+-- most one counted a minute), and then handled without the rules. Rows older
 -- than a week are pruned.
 CREATE TABLE IF NOT EXISTS mail_arrivals (
   account_id  TEXT NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE,
@@ -24,6 +29,7 @@ CREATE TABLE IF NOT EXISTS mail_arrivals (
   seen_at     INTEGER NOT NULL,          -- epoch ms
   handled_at  INTEGER,                   -- epoch ms; NULL until handled
   attempts    INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at INTEGER,               -- epoch ms; when an attempt was last counted
   rules_json  TEXT,                      -- ids of the rules that matched
   PRIMARY KEY (account_id, email_id)
 );

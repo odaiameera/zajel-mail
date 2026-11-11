@@ -11,7 +11,7 @@ import {
 import { getPrefs } from '../db/queries/app-prefs';
 import { usersWithPushSubscriptions } from '../db/queries/push';
 import { upcomingReminders } from '../calendar/service';
-import { inboxHoldOn } from '../mail-pipeline/hold';
+import { inboxHoldSince } from '../mail-pipeline/hold';
 import { heldCondition, holdRecheckDelay, splitHeld } from '$lib/inbox-hold';
 import { sendPushToUser, type PushPayload } from './send';
 
@@ -264,9 +264,9 @@ export class MailWatcher {
 		return { operator: 'AND', conditions: [inFolders, ...extra] };
 	}
 
-	/** Unread Inbox mail the Inbox is holding for Jev at `now`, after `after` if given. */
-	private heldQuery(auth: AuthState, now: number, tag: string, after?: string): MethodCall {
-		const conditions: object[] = [{ inMailbox: this.mailboxes!.inbox }, heldCondition(now), { notKeyword: '$seen' }];
+	/** Unread Inbox mail the Inbox is holding for Jev at `now` (a hold on since `since`), after `after` if given. */
+	private heldQuery(auth: AuthState, now: number, since: number, tag: string, after?: string): MethodCall {
+		const conditions: object[] = [{ inMailbox: this.mailboxes!.inbox }, heldCondition(now, since), { notKeyword: '$seen' }];
 		if (after) conditions.push({ after });
 		return [
 			'Email/query',
@@ -297,7 +297,8 @@ export class MailWatcher {
 			this.since = new Date().toISOString();
 			return;
 		}
-		const holding = inboxHoldOn(this.target.account.id) && !!this.mailboxes?.inbox;
+		const holdSince = inboxHoldSince(this.target.account.id);
+		const holding = holdSince !== null && !!this.mailboxes?.inbox;
 		const res = await createClient(auth).request([
 			[
 				'Email/query',
@@ -320,7 +321,7 @@ export class MailWatcher {
 			],
 			// Mail the Inbox is holding for Jev hasn't been announced yet: it
 			// is, once it appears.
-			...(holding ? [this.heldQuery(auth, Date.now(), 'h')] : [])
+			...(holding ? [this.heldQuery(auth, Date.now(), holdSince, 'h')] : [])
 		]);
 		const newest = (res.methodResponses[1][1] as { list?: Email[] }).list?.[0];
 		if (holding) this.wait((res.methodResponses[2]?.[1] as { ids?: string[] } | undefined)?.ids ?? []);
@@ -340,8 +341,8 @@ export class MailWatcher {
 		const folders = await this.folderIds(auth, prefs);
 		if (folders.length === 0) return;
 		const now = Date.now();
-		const holdOn = inboxHoldOn(this.target.account.id);
-		const holding = holdOn && !!this.mailboxes?.inbox;
+		const holdSince = inboxHoldSince(this.target.account.id);
+		const holding = holdSince !== null && !!this.mailboxes?.inbox;
 		const waiting = [...this.waiting];
 
 		// A second's overlap keeps two messages delivered in the same second
@@ -362,7 +363,7 @@ export class MailWatcher {
 			['Email/get', { accountId: auth.accountId, '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' }, properties }, 'g'],
 			// Held mail is tracked by id, not by `since`: a burst of newer mail
 			// can't push it out of the newest twenty and so out of sight.
-			...(holding ? [this.heldQuery(auth, now, 'h', after)] : []),
+			...(holding ? [this.heldQuery(auth, now, holdSince, 'h', after)] : []),
 			...(waiting.length ? [['Email/get', { accountId: auth.accountId, ids: waiting, properties }, 'w'] as MethodCall] : [])
 		]);
 		const byTag = new Map(res.methodResponses.map(([, result, tag]) => [tag, result]));
@@ -375,9 +376,10 @@ export class MailWatcher {
 			(e) => inFolders(e) && !known.has(e.id) && !this.notified.includes(e.id)
 		);
 		const candidates = [...unseen, ...stillWaiting];
-		const { ready: fresh, held, releaseAt } = holdOn
-			? splitHeld(candidates, this.mailboxes?.inbox ?? null, now)
-			: { ready: candidates, held: [], releaseAt: null };
+		const { ready: fresh, held, releaseAt } =
+			holdSince !== null
+				? splitHeld(candidates, this.mailboxes?.inbox ?? null, now, holdSince)
+				: { ready: candidates, held: [], releaseAt: null };
 		this.waiting.clear();
 		this.wait([...held.map((e) => e.id), ...((byTag.get('h') as { ids?: string[] } | undefined)?.ids ?? [])]);
 		this.scheduleRelease(releaseAt);

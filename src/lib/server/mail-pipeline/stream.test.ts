@@ -13,6 +13,8 @@ const accounts = vi.hoisted(() => ({
 }));
 vi.mock('$lib/server/auth/accounts', () => ({
 	listSchedulableAuths: () => accounts.list,
+	// refreshPipeline's note of the hold has nothing to do here (see pass.test.ts).
+	listAllMailAccounts: () => [],
 	markNeedsReauth: accounts.reauth
 }));
 // What each account's pass has to do: anything that acts on new mail (see

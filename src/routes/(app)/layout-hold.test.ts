@@ -51,7 +51,7 @@ vi.mock('$lib/server/labels', () => ({ listLabels: async () => [], migrateKeywor
 vi.mock('$lib/server/auth/unread-badges', () => ({ unreadBadges: async () => ({}) }));
 vi.mock('$lib/server/mail-pipeline/hold', async (orig) => ({
 	...(await orig<typeof import('$lib/server/mail-pipeline/hold')>()),
-	inboxHoldOn: () => state.hold
+	inboxHoldSince: () => (state.hold ? 0 : null)
 }));
 
 import { getDb } from '$lib/server/db/index';

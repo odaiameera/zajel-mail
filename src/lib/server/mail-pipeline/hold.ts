@@ -2,6 +2,7 @@ import { JMAPAuthError, type JMAPClient } from '$lib/jmap/client';
 import type { Email, Mailbox } from '$lib/jmap/types';
 import { heldCondition, holdEndsAt } from '$lib/inbox-hold';
 import { pipelineNeeds } from './needs';
+import { getHoldSince } from './arrivals';
 
 /**
  * Server side of the Inbox's hold on new mail (see `$lib/inbox-hold`): for
@@ -28,6 +29,19 @@ export function inboxHoldOn(accountRowId: string | null | undefined): boolean {
 	return pipelineNeeds(accountRowId).hold;
 }
 
+/**
+ * Since when this account's Inbox holds new mail (ms), or null when it
+ * holds nothing. What every reader of the hold asks (the Inbox list, its
+ * unread counts, the account badges, push notifications): only mail
+ * received since the hold was switched on is held, so a rule or the tabs
+ * switched on never hide mail that was already showing. Until the time is
+ * recorded (see keepHoldInStep), nothing is held.
+ */
+export function inboxHoldSince(accountRowId: string | null | undefined): number | null {
+	if (!inboxHoldOn(accountRowId)) return null;
+	return getHoldSince(accountRowId!);
+}
+
 export interface InboxHold {
 	/** Unread messages the Inbox is holding. */
 	unread: number;
@@ -35,14 +49,15 @@ export interface InboxHold {
 	releaseAt: number | null;
 }
 
-/** What the Inbox is holding at `now`, in one request. */
+/** What the Inbox is holding at `now`, for a hold on since `since` (ms), in one request. */
 export async function heldInInbox(
 	client: JMAPClient,
 	accountId: string,
 	inboxId: string,
+	since: number,
 	now = Date.now()
 ): Promise<InboxHold> {
-	const held = { operator: 'AND', conditions: [{ inMailbox: inboxId }, heldCondition(now)] };
+	const held = { operator: 'AND', conditions: [{ inMailbox: inboxId }, heldCondition(now, since)] };
 	const response = await client.request([
 		[
 			'Email/query',
@@ -83,10 +98,11 @@ export async function readInboxHold(
 	client: JMAPClient,
 	accountId: string,
 	inboxId: string,
+	since: number,
 	now = Date.now()
 ): Promise<InboxHold | null> {
 	try {
-		return await heldInInbox(client, accountId, inboxId, now);
+		return await heldInInbox(client, accountId, inboxId, since, now);
 	} catch (err) {
 		if (err instanceof JMAPAuthError) throw err;
 		console.warn('[mail] could not read the Inbox hold', err instanceof Error ? err.message : err);
@@ -142,11 +158,12 @@ export async function withInboxHold(
 	accountId: string,
 	accountRowId: string,
 	mailboxes: Mailbox[],
+	since: number,
 	now = Date.now()
 ): Promise<{ mailboxes: Mailbox[]; releaseAt: number | null }> {
 	const inbox = mailboxes.find((m) => m.role === 'inbox');
 	if (!inbox) return { mailboxes, releaseAt: null };
-	return applyInboxHold(accountRowId, mailboxes, await readInboxHold(client, accountId, inbox.id, now));
+	return applyInboxHold(accountRowId, mailboxes, await readInboxHold(client, accountId, inbox.id, since, now));
 }
 
 /** Forget what was last shown: for tests. */

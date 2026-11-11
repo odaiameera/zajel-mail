@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ setPin: vi.fn(), deletePin: vi.fn() }));
 
-vi.mock('$lib/server/auth/accounts', () => ({ listAccounts: () => [{ id: 'acct-1' }, { id: 'acct-2' }] }));
+vi.mock('$lib/server/auth/accounts', () => ({ listAccounts: () => [{ id: 'acct-1' }, { id: 'acct-2' }], listAllMailAccounts: () => [] }));
 vi.mock('$lib/server/db/queries/jev-learning', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/server/db/queries/jev-learning')>()),
 	setPin: mocks.setPin,

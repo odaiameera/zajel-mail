@@ -2,6 +2,8 @@ import type { JMAPClient } from '$lib/jmap/client';
 import type { MethodCall } from '$lib/jmap/types';
 import { getDb } from '$lib/server/db/index';
 import { enqueueEmails } from '$lib/server/db/queries/jev-decisions';
+import { getJevSettings } from '$lib/server/db/queries/jev-settings';
+import { jevMode } from '$lib/server/jev/client';
 
 /**
  * Where the pipeline has read up to, and the new mail it has seen.
@@ -18,8 +20,16 @@ import { enqueueEmails } from '$lib/server/db/queries/jev-decisions';
 export const DISCOVERY_PAGE = 100;
 /** How far each pass looks back past its own start; see nextCursor. */
 export const LOOKBACK_MS = 60_000;
-/** Passes an arrival is tried in before it is given up on. */
+/**
+ * Passes an arrival is tried in before it is given up on: handled then
+ * without out-of-office or the rules.
+ */
 export const MAX_ARRIVAL_ATTEMPTS = 5;
+/**
+ * At most one attempt is counted in this long, so a short flap of the mail
+ * server during a burst of event-stream passes can't use them all up.
+ */
+export const ATTEMPT_SPACING_MS = 60_000;
 /** Arrivals unhandled from earlier passes, taken up per pass. */
 const UNHANDLED_PAGE = 200;
 /** How long an arrival is remembered. */
@@ -46,9 +56,14 @@ function prepareStmts() {
 			`INSERT INTO mail_pipeline (account_id, cursor, updated_at) VALUES (?, ?, ?)
 			 ON CONFLICT (account_id) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at`
 		),
+		// An id seen before with another receivedAt is another message (the
+		// server reused the id): it starts over, as new.
 		record: db.prepare(
 			`INSERT INTO mail_arrivals (account_id, email_id, mailbox, received_at, seen_at)
-			 VALUES (?, ?, ?, ?, ?) ON CONFLICT (account_id, email_id) DO NOTHING`
+			 VALUES (?, ?, ?, ?, ?) ON CONFLICT (account_id, email_id) DO UPDATE SET
+			   mailbox = excluded.mailbox, received_at = excluded.received_at, seen_at = excluded.seen_at,
+			   handled_at = NULL, attempts = 0, last_attempt_at = NULL, rules_json = NULL
+			 WHERE mail_arrivals.received_at IS NOT excluded.received_at`
 		),
 		unhandled: db.prepare(
 			`SELECT email_id, mailbox, received_at, attempts FROM mail_arrivals
@@ -56,12 +71,23 @@ function prepareStmts() {
 			 ORDER BY seen_at, received_at, email_id LIMIT ?`
 		),
 		attempt: db.prepare(
-			`UPDATE mail_arrivals SET attempts = attempts + 1 WHERE account_id = ? AND email_id = ? AND handled_at IS NULL`
+			`UPDATE mail_arrivals SET attempts = attempts + 1, last_attempt_at = ?
+			 WHERE account_id = ? AND email_id = ? AND handled_at IS NULL
+			   AND (last_attempt_at IS NULL OR last_attempt_at <= ?)`
 		),
 		handle: db.prepare(
 			`UPDATE mail_arrivals SET handled_at = ?, rules_json = ? WHERE account_id = ? AND email_id = ? AND handled_at IS NULL`
 		),
-		prune: db.prepare('DELETE FROM mail_arrivals WHERE seen_at < ?')
+		prune: db.prepare('DELETE FROM mail_arrivals WHERE seen_at < ?'),
+		getHoldSince: db.prepare('SELECT hold_since FROM mail_pipeline WHERE account_id = ?'),
+		holdOn: db.prepare(
+			`INSERT INTO mail_pipeline (account_id, cursor, hold_since, updated_at) VALUES (?, NULL, ?, ?)
+			 ON CONFLICT (account_id) DO UPDATE SET hold_since = excluded.hold_since, updated_at = excluded.updated_at
+			 WHERE mail_pipeline.hold_since IS NULL`
+		),
+		holdOff: db.prepare(
+			'UPDATE mail_pipeline SET hold_since = NULL, updated_at = ? WHERE account_id = ? AND hold_since IS NOT NULL'
+		)
 	};
 }
 function stmts() {
@@ -165,32 +191,74 @@ export function listUnhandled(accountRowId: string, limit = UNHANDLED_PAGE): Arr
 	).map((r) => ({ emailId: r.email_id, mailbox: r.mailbox, receivedAt: r.received_at, attempts: r.attempts }));
 }
 
-/** A pass is about to try these: counted before it starts, so a pass that dies part-way still counts. */
-export function countAttempt(accountRowId: string, emailIds: string[]): void {
+/**
+ * A pass is about to try these: counted before it starts, so a pass that
+ * dies part-way still counts. At most once a minute per arrival.
+ */
+export function countAttempt(accountRowId: string, emailIds: string[], now = new Date()): void {
 	const s = stmts();
 	getDb().transaction(() => {
-		for (const id of emailIds) s.attempt.run(accountRowId, id);
+		for (const id of emailIds) s.attempt.run(now.getTime(), accountRowId, id, now.getTime() - ATTEMPT_SPACING_MS);
 	})();
+}
+
+/**
+ * Whether Jev's queue still takes a message received at a given time, by
+ * the account's settings as they are now, which may have changed while the
+ * pass ran. A pass that decided with Jev on (`jevOn`) queues only while
+ * Jev is still on, and only mail received since it was last switched on. A
+ * pass that decided with Jev off queues for the pins only while Jev is
+ * still off: once it is on, mail from before is never sent to it.
+ */
+function stillQueued(accountRowId: string, jevOn: boolean): (receivedAt: string) => boolean {
+	const settings = getJevSettings(accountRowId);
+	const jevNow = settings.jevEnabled && jevMode() !== 'off';
+	if (!jevOn) return () => !jevNow;
+	const since = settings.jevSince ? Date.parse(settings.jevSince) : null;
+	return (receivedAt) => jevNow && since !== null && Date.parse(receivedAt) >= since;
 }
 
 /**
  * Mark arrivals handled, with the rules that matched each, and queue the
  * ones Jev is to see, in one transaction: an arrival is never handled
  * without being queued, nor (if this fails) queued and then handled again.
+ * The account's Jev settings are read again inside it (see stillQueued).
  */
 export function markHandled(
 	accountRowId: string,
 	handled: { emailId: string; rules?: string[] }[],
-	queueForJev: string[] = [],
-	now = new Date()
+	queueForJev: { emailId: string; receivedAt: string }[] = [],
+	now = new Date(),
+	jevOn = true
 ): void {
 	const s = stmts();
 	getDb().transaction(() => {
-		if (queueForJev.length) enqueueEmails(accountRowId, queueForJev, now.getTime());
+		if (queueForJev.length) {
+			const wanted = stillQueued(accountRowId, jevOn);
+			const ids = queueForJev.filter((q) => wanted(q.receivedAt)).map((q) => q.emailId);
+			if (ids.length) enqueueEmails(accountRowId, ids, now.getTime());
+		}
 		for (const h of handled) {
 			s.handle.run(now.getTime(), h.rules?.length ? JSON.stringify(h.rules) : null, accountRowId, h.emailId);
 		}
 	})();
+}
+
+/**
+ * Keep `hold_since` in step with whether the Inbox holds new mail: set to
+ * now when the hold is found on without one, emptied when it is off. Mail
+ * received before it is never held. Returns it (ms), or null.
+ */
+export function keepHoldInStep(accountRowId: string, holdOn: boolean, now = new Date()): number | null {
+	const s = stmts();
+	if (holdOn) s.holdOn.run(accountRowId, now.getTime(), now.getTime());
+	else s.holdOff.run(now.getTime(), accountRowId);
+	return holdOn ? getHoldSince(accountRowId) : null;
+}
+
+/** When the Inbox's hold was last switched on for the account (ms), or null. */
+export function getHoldSince(accountRowId: string): number | null {
+	return (stmts().getHoldSince.get(accountRowId) as { hold_since: number | null } | undefined)?.hold_since ?? null;
 }
 
 /** The daily pass: forget arrivals seen more than a week ago. */

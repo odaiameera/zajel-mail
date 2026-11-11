@@ -41,8 +41,8 @@ export interface StepContext {
 	jev: 'ask' | 'wait' | 'off';
 	judge: () => Promise<JudgeContext>;
 	pins: SenderPin[];
-	/** The Inbox's hold is on: held mail the step is done with gets the marker. */
-	hold: boolean;
+	/** Since when the Inbox's hold is on (ms), or null: held mail the step is done with gets the marker. */
+	holdSince: number | null;
 	now: Date;
 }
 
@@ -202,7 +202,7 @@ export async function planJevStep(
 			home: junked && b.junkId ? b.junkId : b.inboxId,
 			tabWas: categoryOf(email.keywords),
 			jev: plan.outcome,
-			marker: b.hold && staysInInbox && isHeld(email, now)
+			marker: b.holdSince !== null && staysInInbox && isHeld(email, now, b.holdSince)
 		});
 	}
 

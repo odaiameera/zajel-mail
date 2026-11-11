@@ -37,24 +37,26 @@ function matches(filter: Record<string, unknown>, email: Msg, inclusiveAfter = f
 }
 
 const NOW = Date.parse('2026-11-10T10:00:00.400Z');
+/** A hold switched on long before any of these messages. */
+const LONG_AGO = 0;
 const secondsAgo = (s: number) => new Date(Math.floor(NOW / 1000) * 1000 - s * 1000).toISOString().replace('.000Z', 'Z');
 
 describe('the Inbox hold', () => {
 	it('holds new mail Jev hasn’t marked, and nothing older than the hold', () => {
-		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(5) }, NOW)).toBe(true);
-		expect(isHeld({ keywords: { [JEV_SORTED_KEYWORD]: true }, receivedAt: secondsAgo(5) }, NOW)).toBe(false);
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(5) }, NOW, LONG_AGO)).toBe(true);
+		expect(isHeld({ keywords: { [JEV_SORTED_KEYWORD]: true }, receivedAt: secondsAgo(5) }, NOW, LONG_AGO)).toBe(false);
 		// Mail from before the hold window, including everything already in
 		// the Inbox when this shipped, shows as it always did.
-		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(INBOX_HOLD_MS / 1000 + 1) }, NOW)).toBe(false);
-		expect(isHeld({ keywords: {}, receivedAt: '2020-01-01T00:00:00Z' }, NOW)).toBe(false);
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(INBOX_HOLD_MS / 1000 + 1) }, NOW, LONG_AGO)).toBe(false);
+		expect(isHeld({ keywords: {}, receivedAt: '2020-01-01T00:00:00Z' }, NOW, LONG_AGO)).toBe(false);
 	});
 
 	it('lets a message through once the hold is over, whether or not Jev ever answered', () => {
 		const email = { keywords: {}, receivedAt: secondsAgo(30) };
 		const ends = holdEndsAt(email.receivedAt);
 		expect(ends - Date.parse(email.receivedAt)).toBeLessThanOrEqual(INBOX_HOLD_MS + 1);
-		expect(isHeld(email, ends - 1)).toBe(true);
-		expect(isHeld(email, ends)).toBe(false);
+		expect(isHeld(email, ends - 1, LONG_AGO)).toBe(true);
+		expect(isHeld(email, ends, LONG_AGO)).toBe(false);
 	});
 
 	it('splits every message one way between the shown and held queries, as isHeld does', () => {
@@ -63,23 +65,23 @@ describe('the Inbox hold', () => {
 			for (const keywords of [{}, { [JEV_SORTED_KEYWORD]: true }] as Record<string, boolean>[]) {
 				const email = { keywords, receivedAt: secondsAgo(s) };
 				for (const inclusiveAfter of [false, true]) {
-					const shown = matches(shownCondition(NOW), email, inclusiveAfter);
-					const held = matches(heldCondition(NOW), email, inclusiveAfter);
+					const shown = matches(shownCondition(NOW, LONG_AGO), email, inclusiveAfter);
+					const held = matches(heldCondition(NOW, LONG_AGO), email, inclusiveAfter);
 					expect(shown).toBe(!held);
 				}
 				// Stalwart's strict `after`, which isHeld follows to the second.
-				expect(matches(heldCondition(NOW), email)).toBe(isHeld(email, NOW));
+				expect(matches(heldCondition(NOW, LONG_AGO), email)).toBe(isHeld(email, NOW, LONG_AGO));
 			}
 		}
 	});
 
 	it('never holds mail dated past the hold window, however far ahead', () => {
-		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-60) }, NOW)).toBe(true);
-		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-(INBOX_HOLD_MS / 1000) - 1) }, NOW)).toBe(false);
-		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-30 * 86_400) }, NOW)).toBe(false);
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-60) }, NOW, LONG_AGO)).toBe(true);
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-(INBOX_HOLD_MS / 1000) - 1) }, NOW, LONG_AGO)).toBe(false);
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(-30 * 86_400) }, NOW, LONG_AGO)).toBe(false);
 		const farAhead = { keywords: {}, receivedAt: secondsAgo(-30 * 86_400) };
-		expect(matches(heldCondition(NOW), farAhead)).toBe(false);
-		expect(matches(shownCondition(NOW), farAhead)).toBe(true);
+		expect(matches(heldCondition(NOW, LONG_AGO), farAhead)).toBe(false);
+		expect(matches(shownCondition(NOW, LONG_AGO), farAhead)).toBe(true);
 	});
 
 	it('looks again within one hold at most, whatever the date says', () => {
@@ -90,7 +92,7 @@ describe('the Inbox hold', () => {
 	});
 
 	it('writes whole-second dates, the form the mail server stores', () => {
-		const text = JSON.stringify([shownCondition(NOW), heldCondition(NOW)]);
+		const text = JSON.stringify([shownCondition(NOW, LONG_AGO), heldCondition(NOW, LONG_AGO)]);
 		expect(text).not.toMatch(/\.\d{3}Z/);
 	});
 
@@ -98,10 +100,31 @@ describe('the Inbox hold', () => {
 		const inboxNew = { id: 'a', keywords: {}, receivedAt: secondsAgo(10), mailboxIds: { inbox: true } };
 		const inboxSorted = { id: 'b', keywords: { [JEV_SORTED_KEYWORD]: true }, receivedAt: secondsAgo(8), mailboxIds: { inbox: true } };
 		const otherFolder = { id: 'c', keywords: {}, receivedAt: secondsAgo(6), mailboxIds: { work: true } };
-		const { ready, held, releaseAt } = splitHeld([inboxNew, inboxSorted, otherFolder], 'inbox', NOW);
+		const { ready, held, releaseAt } = splitHeld([inboxNew, inboxSorted, otherFolder], 'inbox', NOW, LONG_AGO);
 		expect(ready.map((e) => e.id)).toEqual(['b', 'c']);
 		expect(held.map((e) => e.id)).toEqual(['a']);
 		expect(releaseAt).toBe(holdEndsAt(inboxNew.receivedAt));
-		expect(splitHeld([inboxSorted], 'inbox', NOW).releaseAt).toBeNull();
+		expect(splitHeld([inboxSorted], 'inbox', NOW, LONG_AGO).releaseAt).toBeNull();
+	});
+
+	it('never holds mail received before the hold was switched on, to the second', () => {
+		const since = Date.parse(secondsAgo(30)) + 400; // switched on 29.6 seconds ago
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(40) }, NOW, since)).toBe(false);
+		// Stamped to the second before the switch: it was showing already.
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(30) }, NOW, since)).toBe(false);
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(29) }, NOW, since)).toBe(true);
+		const exact = Date.parse(secondsAgo(30));
+		expect(isHeld({ keywords: {}, receivedAt: secondsAgo(30) }, NOW, exact)).toBe(true);
+		// The queries agree, message by message.
+		const window = INBOX_HOLD_MS / 1000;
+		for (let s = -3; s <= window + 3; s++) {
+			const email = { keywords: {}, receivedAt: secondsAgo(s) };
+			for (const inclusiveAfter of [false, true]) {
+				expect(matches(shownCondition(NOW, since), email, inclusiveAfter)).toBe(!matches(heldCondition(NOW, since), email, inclusiveAfter));
+			}
+			expect(matches(heldCondition(NOW, since), email)).toBe(isHeld(email, NOW, since));
+		}
+		const inbox = { id: 'a', keywords: {}, receivedAt: secondsAgo(40), mailboxIds: { inbox: true } };
+		expect(splitHeld([inbox], 'inbox', NOW, since).held).toEqual([]);
 	});
 });
