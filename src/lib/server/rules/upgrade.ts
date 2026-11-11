@@ -470,7 +470,7 @@ export function toTableRules(stored: unknown[], now = Date.now()): Rule[] {
 /**
  * Data step: every address's stored rules move into the rules table, under
  * the mail account with that address (the exact address, else one that
- * differs only in case). An account with rules in the table already is
+ * differs only in case, if the account has no list under its exact address). An account with rules in the table already is
  * left alone, so running this again changes nothing. Addresses with no
  * account are left where they are, and `user_rules` is only read; the
  * runner's transaction means a failure part way writes nothing at all.
@@ -495,12 +495,21 @@ export function moveStoredRulesToTable(now = Date.now()): void {
 		if (Array.isArray(parsed)) importRules(account.id, toTableRules(parsed, now));
 	};
 	// Exact addresses first: where two stored addresses differ only in case,
-	// the one spelled as the account is the list it was using.
+	// the one spelled as the account is the list it was using. An account
+	// that had a list of its own is done with, even when that list was empty
+	// or unreadable: the old engine read only that one, so another spelling's
+	// rules never ran for it and must not start now.
 	const later: typeof rows = [];
+	const hadOwnList = new Set<string>();
 	for (const row of rows) {
 		const account = exact.get(row.user_email) as { id: string } | undefined;
-		if (account) move(row, account);
-		else later.push(row);
+		if (account) {
+			hadOwnList.add(account.id);
+			move(row, account);
+		} else later.push(row);
 	}
-	for (const row of later) move(row, anyCase.get(row.user_email) as { id: string } | undefined);
+	for (const row of later) {
+		const account = anyCase.get(row.user_email) as { id: string } | undefined;
+		if (account && !hadOwnList.has(account.id)) move(row, account);
+	}
 }

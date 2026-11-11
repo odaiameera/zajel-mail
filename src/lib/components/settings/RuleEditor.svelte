@@ -75,6 +75,14 @@
 
 	// svelte-ignore state_referenced_locally
 	const rewriting = rule ? needsRewrite(rule) : false;
+	/** The rule as the editor opened it, to tell a rename from an edit of what it does. */
+	const opened = JSON.stringify({ ...$state.snapshot(draft), name: '' });
+	/** What a rule switched off for its Jev condition also required, in its owner's words: shown before it is saved without that. */
+	// svelte-ignore state_referenced_locally
+	const droppedJev = (rule?.attention === 'jev_condition' ? (rule.legacy?.conditions ?? []) : [])
+		.filter((c) => c.field === 'jev' && (c.value ?? '').trim() !== '')
+		.map((c) => `“${(c.value ?? '').trim()}”`)
+		.join(' and ');
 
 	const problemsFor = (field: RuleProblem['field'], index?: number) =>
 		problems.filter((p) => p.field === field && p.index === index).map((p) => p.message);
@@ -135,12 +143,21 @@
 
 	// --- Save, delete ---
 
-	async function save(apply: boolean) {
+	/**
+	 * Save the rule. `rewrite` is "Save as exact rule": a rule an upgrade
+	 * switched off comes back on as written now, and only that way; a plain
+	 * Save of it keeps it flagged and off.
+	 */
+	async function save(apply: boolean, rewrite = false) {
+		if (rewrite && droppedJev && !confirm(`This rule also required: ${droppedJev}. Save it without that?`)) return;
 		saving = true;
 		error = '';
 		problems = [];
-		// "Save as exact rule": a rule an upgrade switched off comes back on.
-		const body = { ...$state.snapshot(draft), ...(rewriting ? { enabled: true } : {}) };
+		const snapshot = $state.snapshot(draft);
+		// A rename alone is sent as one, so it is never held up by what the
+		// rest of an older rule says (21 conditions, a folder since deleted).
+		const renameOnly = !!rule && !rewrite && JSON.stringify({ ...snapshot, name: '' }) === opened;
+		const body = renameOnly ? { name: snapshot.name } : { ...snapshot, ...(rewrite ? { rewrite: true } : {}) };
 		try {
 			const res = await fetch(rule ? `/api/rules/${encodeURIComponent(rule.id)}` : '/api/rules', {
 				method: rule ? 'PATCH' : 'POST',
@@ -356,7 +373,10 @@
 		{/if}
 		<button onclick={onCancel} disabled={saving} class="btn btn-secondary">Cancel</button>
 		{#if rewriting}
-			<button onclick={() => save(false)} disabled={saving} class="btn btn-primary">
+			<button onclick={() => save(false)} disabled={saving} class="btn btn-secondary">
+				{saving ? 'Saving…' : 'Save'}
+			</button>
+			<button onclick={() => save(false, true)} disabled={saving} class="btn btn-primary">
 				{saving ? 'Saving…' : 'Save as exact rule'}
 			</button>
 		{:else}

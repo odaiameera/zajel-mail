@@ -68,10 +68,20 @@ function prepareStmts() {
 			   legacy_json = @legacy_json, updated_at = @updated_at
 			 WHERE account_id = @account_id AND id = @id`
 		),
+		setBasics: db.prepare(
+			'UPDATE rules SET name = @name, enabled = @enabled, updated_at = @updated_at WHERE account_id = @account_id AND id = @id'
+		),
 		remove: db.prepare('DELETE FROM rules WHERE account_id = ? AND id = ?'),
 		setPosition: db.prepare('UPDATE rules SET position = ? WHERE account_id = ? AND id = ?'),
-		forMailbox: db.prepare(
-			`DELETE FROM rules WHERE account_id = ? AND target_kind IN ('folder', 'label') AND target_mailbox_id = ?`
+		// A rule that does nothing but file into the mailbox goes; one that
+		// also marks read, stars or stops later rules keeps doing that.
+		forMailboxDelete: db.prepare(
+			`DELETE FROM rules WHERE account_id = ? AND target_kind IN ('folder', 'label') AND target_mailbox_id = ?
+			   AND mark_read = 0 AND star = 0 AND stop = 0`
+		),
+		forMailboxKeep: db.prepare(
+			`UPDATE rules SET target_kind = 'none', target_mailbox_id = NULL, target_role = NULL, updated_at = ?
+			 WHERE account_id = ? AND target_kind IN ('folder', 'label') AND target_mailbox_id = ?`
 		)
 	};
 }
@@ -176,24 +186,53 @@ export function createRule(accountId: string, draft: RuleDraft, now = Date.now()
 }
 
 /**
- * Save an owner's edit. A rule switched off for good by an upgrade (see
- * `needsRewrite`) comes back on only here, saved switched on as a rule that
- * passed `parseRule`: that is "Save as exact rule", and its flag, note and
- * old copy go. Saved still switched off, it keeps them. Any other note
- * stays until it is dismissed.
+ * Save an owner's whole edit, one that passed `parseRule`. A rule switched
+ * off for good by an upgrade (see `needsRewrite`) comes back on only with
+ * `rewrite`: that is "Save as exact rule", and its flag, note and old copy
+ * go. Any other edit of it is saved, but leaves it flagged and off. Any
+ * other note stays until it is dismissed.
  */
-export function updateRule(accountId: string, id: string, draft: RuleDraft, now = Date.now()): Rule | null {
+export function updateRule(
+	accountId: string,
+	id: string,
+	draft: RuleDraft,
+	{ rewrite = false, now = Date.now() }: { rewrite?: boolean; now?: number } = {}
+): Rule | null {
 	const existing = getRule(accountId, id);
 	if (!existing) return null;
-	const rewritten = needsRewrite(existing) && draft.enabled;
+	const flagged = needsRewrite(existing);
 	const { attention, note, legacy, ...kept } = existing;
-	const rule: Rule = {
-		...kept,
-		...draftFields(draft),
-		...(rewritten ? {} : { attention, note, legacy }),
-		updatedAt: now
-	};
+	const rule: Rule = { ...kept, ...draftFields(draft), updatedAt: now };
+	if (flagged && rewrite) rule.enabled = true;
+	else {
+		Object.assign(rule, { attention, note, legacy });
+		if (flagged) rule.enabled = false;
+	}
 	stmts().update.run(toRow(accountId, rule));
+	return getRule(accountId, id);
+}
+
+/**
+ * Rename a rule or switch it on or off, touching nothing else: its
+ * conditions and target stay exactly as stored, whatever a new rule would
+ * be held to now. A rule waiting to be rewritten stays off.
+ */
+export function setRuleBasics(
+	accountId: string,
+	id: string,
+	change: { name?: string; enabled?: boolean },
+	now = Date.now()
+): Rule | null {
+	const existing = getRule(accountId, id);
+	if (!existing) return null;
+	const enabled = needsRewrite(existing) ? false : (change.enabled ?? existing.enabled);
+	stmts().setBasics.run({
+		account_id: accountId,
+		id,
+		name: change.name ?? existing.name,
+		enabled: enabled ? 1 : 0,
+		updated_at: now
+	});
 	return getRule(accountId, id);
 }
 
@@ -251,9 +290,23 @@ export function dismissNote(accountId: string, id: string, now = Date.now()): 'd
 	return 'nothing';
 }
 
-/** The rules that file into a folder or label being deleted go with it. How many went. */
-export function deleteRulesForMailbox(accountId: string, mailboxId: string): number {
-	return stmts().forMailbox.run(accountId, mailboxId).changes;
+/**
+ * A folder or label is being deleted. The rules that only file into it go
+ * with it. One that also marks read, stars or stops later rules is kept,
+ * filing nowhere, so it goes on doing that: deleting it would quietly let
+ * the rules below it act on mail it used to stop. How many of each.
+ */
+export function deleteRulesForMailbox(
+	accountId: string,
+	mailboxId: string,
+	now = Date.now()
+): { deleted: number; kept: number } {
+	const s = stmts();
+	return getDb().transaction(() => {
+		const deleted = s.forMailboxDelete.run(accountId, mailboxId).changes;
+		const kept = s.forMailboxKeep.run(now, accountId, mailboxId).changes;
+		return { deleted, kept };
+	})();
 }
 
 /**

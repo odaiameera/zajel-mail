@@ -127,10 +127,10 @@ describe('parseRule', () => {
 		expect(parseRule(draft({ target: { kind: 'folder', mailboxId: 'AR' } }), mailboxes).rule.target).toEqual({ kind: 'archive' });
 	});
 
-	it('wants the rule to do something', () => {
-		const message = 'Give the rule something to do: a place to file mail, mark as read, or star.';
+	it('wants the rule to do something, stopping later rules included', () => {
+		const message = 'Give the rule something to do: a place to file mail, mark as read, star, or stop later rules.';
 		expect(problems({ target: { kind: 'none' } })).toEqual([{ field: 'actions', message }]);
-		expect(problems({ target: { kind: 'none' }, stop: true })).toEqual([{ field: 'actions', message }]);
+		expect(problems({ target: { kind: 'none' }, stop: true })).toEqual([]);
 		expect(problems({ target: { kind: 'none' }, markRead: true })).toEqual([]);
 		expect(problems({ target: { kind: 'none' }, star: true })).toEqual([]);
 	});

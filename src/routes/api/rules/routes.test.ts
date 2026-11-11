@@ -176,26 +176,60 @@ describe('the rules API', () => {
 		expect(listRules(A).map((r) => r.name)).toEqual(['b', 'a']);
 	});
 
-	it('refuses to switch on a flagged rule without fixing it, and saves it as an exact rule once it is', async () => {
+	it('refuses to switch on a flagged rule as it stands, even sent back whole, without rewrite', async () => {
+		const legacy = { enabled: true, logic: 'allof' as const, conditions: [], actions: [] };
 		importRules(A, [
-			stored('jev', { enabled: false, attention: 'jev_condition', legacy: { enabled: true, logic: 'allof', conditions: [], actions: [] } }),
+			stored('jev', { enabled: false, attention: 'jev_condition', legacy }),
 			stored('tab', { enabled: false, attention: 'tab_rule', target: { kind: 'none' } })
 		]);
 		for (const id of ['jev', 'tab']) {
 			const res = await call(one.PATCH as Handler, { id, body: { enabled: true } });
-			expect(res.status).toBe(400);
+			expect(res).toMatchObject({ status: 400, body: { error: expect.stringContaining('Save as exact rule') } });
 			expect(getRule(A, id)).toMatchObject({ enabled: false });
 		}
-		// The whole rule, as the owner has rewritten it.
-		const fixed = await call(one.PATCH as Handler, { id: 'jev', body: draft('jev', { name: 'Invoices' }) });
+		// What is left of it, sent back as it is: still refused, still flagged.
+		const remnant = getRule(A, 'jev')!;
+		const resent = await call(one.PATCH as Handler, {
+			id: 'jev',
+			body: { enabled: true, conditions: remnant.conditions, target: remnant.target }
+		});
+		expect(resent.status).toBe(400);
+		expect(getRule(A, 'jev')).toMatchObject({ enabled: false, attention: 'jev_condition', legacy });
+	});
+
+	it('saves a flagged rule’s edits without rewrite, leaving it flagged and off', async () => {
+		importRules(A, [
+			stored('jev', { enabled: false, attention: 'jev_condition', legacy: { enabled: true, logic: 'allof', conditions: [], actions: [] } })
+		]);
+		const renamed = await call(one.PATCH as Handler, { id: 'jev', body: { name: 'Invoices' } });
+		expect(renamed.status).toBe(200);
+		expect(getRule(A, 'jev')).toMatchObject({ name: 'Invoices', enabled: false, attention: 'jev_condition' });
+		const edited = await call(one.PATCH as Handler, { id: 'jev', body: draft('Bills', { enabled: false, star: true }) });
+		expect(edited.status).toBe(200);
+		expect(getRule(A, 'jev')).toMatchObject({ name: 'Bills', star: true, enabled: false, attention: 'jev_condition' });
+		expect(getRule(A, 'jev')).toHaveProperty('legacy');
+	});
+
+	it('switches a flagged rule on only as a whole rewritten rule sent with rewrite', async () => {
+		importRules(A, [
+			stored('jev', { enabled: false, attention: 'jev_condition', legacy: { enabled: true, logic: 'allof', conditions: [], actions: [] } }),
+			stored('tab', { enabled: false, attention: 'tab_rule', target: { kind: 'none' } })
+		]);
+		// rewrite alone, with nothing of the rule: refused.
+		expect((await call(one.PATCH as Handler, { id: 'jev', body: { rewrite: true, enabled: true } })).status).toBe(400);
+		expect(getRule(A, 'jev')).toMatchObject({ enabled: false, attention: 'jev_condition' });
+
+		const fixed = await call(one.PATCH as Handler, { id: 'jev', body: { ...draft('Invoices', { enabled: false }), rewrite: true } });
 		expect(fixed.status).toBe(200);
 		expect(getRule(A, 'jev')).toMatchObject({ enabled: true, name: 'Invoices' });
 		expect(getRule(A, 'jev')).not.toHaveProperty('attention');
 		expect(getRule(A, 'jev')).not.toHaveProperty('legacy');
-		// A rewrite that doesn't hold up is refused, and the flag stays.
-		const empty = await call(one.PATCH as Handler, { id: 'tab', body: draft('tab', { target: { kind: 'none' } }) });
+
+		// A rewrite that doesn't hold up is refused, and nothing changes.
+		const before = getRule(A, 'tab');
+		const empty = await call(one.PATCH as Handler, { id: 'tab', body: { ...draft('tab', { target: { kind: 'none' } }), rewrite: true } });
 		expect(empty.status).toBe(400);
-		expect(getRule(A, 'tab')).toMatchObject({ attention: 'tab_rule', enabled: false });
+		expect(getRule(A, 'tab')).toEqual(before);
 	});
 
 	it('dismisses by kind of note', async () => {
@@ -232,20 +266,99 @@ describe('the rules API', () => {
 	});
 });
 
+describe('small edits to a rule an upgrade carried over', () => {
+	const many = Array.from({ length: 21 }, (_, i) => ({ id: `c${i}`, field: 'from' as const, op: 'contains' as const, value: `x${i}`, negate: false }));
+	const carriedOver = () =>
+		importRules(A, [
+			stored('stop-only', { target: { kind: 'none' }, stop: true }),
+			stored('gone', { target: { kind: 'folder', mailboxId: 'DELETED' } }),
+			stored('many', { conditions: many }),
+			stored('long-name', { name: 'n'.repeat(130) }),
+			stored('no-name', { name: '' })
+		]);
+
+	it('switches off any of them, leaving the rest of the rule as stored', async () => {
+		carriedOver();
+		for (const id of ['stop-only', 'gone', 'many', 'long-name', 'no-name']) {
+			const before = getRule(A, id)!;
+			const res = await call(one.PATCH as Handler, { id, body: { enabled: false } });
+			expect(res.status, id).toBe(200);
+			const { enabled, updatedAt: _u, ...rest } = getRule(A, id)!;
+			const { updatedAt: _b, enabled: _e, ...was } = before;
+			expect(enabled).toBe(false);
+			expect(rest).toEqual(was);
+		}
+	});
+
+	it('switches on an unflagged rule whose folder is gone', async () => {
+		carriedOver();
+		await call(one.PATCH as Handler, { id: 'gone', body: { enabled: false } });
+		const res = await call(one.PATCH as Handler, { id: 'gone', body: { enabled: true } });
+		expect(res.status).toBe(200);
+		expect(getRule(A, 'gone')).toMatchObject({ enabled: true, target: { kind: 'folder', mailboxId: 'DELETED' } });
+	});
+
+	it('renames, checking only the name', async () => {
+		carriedOver();
+		expect(await call(one.PATCH as Handler, { id: 'many', body: { name: '' } })).toMatchObject({
+			status: 400,
+			body: { problems: [{ field: 'name', message: 'Give the rule a name.' }] }
+		});
+		expect((await call(one.PATCH as Handler, { id: 'many', body: { name: 'n'.repeat(121) } })).status).toBe(400);
+		expect(await call(one.PATCH as Handler, { id: 'many', body: { name: 'New' } })).toMatchObject({ status: 200 });
+		expect(getRule(A, 'many')).toMatchObject({ name: 'New', conditions: many });
+	});
+
+	it('still holds a full edit to what a new rule is held to', async () => {
+		carriedOver();
+		const res = await call(one.PATCH as Handler, { id: 'many', body: { name: 'Many', conditions: many } });
+		expect(res).toMatchObject({ status: 400, body: { problems: [{ field: 'conditions', message: 'A rule can have at most 20 conditions.' }] } });
+		expect(getRule(A, 'many')).toMatchObject({ name: 'many', conditions: many });
+		const fixed = await call(one.PATCH as Handler, { id: 'many', body: { conditions: many.slice(0, 20) } });
+		expect(fixed.status).toBe(200);
+		expect(getRule(A, 'many')!.conditions).toHaveLength(20);
+	});
+
+	it('creates and saves a rule that only stops later rules, but not one that does nothing', async () => {
+		const made = await call(list.POST as Handler, { body: draft('Stop', { target: { kind: 'none' }, stop: true }) });
+		expect(made.status).toBe(200);
+		const id = (made.body.rule as Rule).id;
+		expect((await call(one.PATCH as Handler, { id, body: { stop: false, star: true } })).status).toBe(200);
+		expect((await call(one.PATCH as Handler, { id, body: { star: false, stop: true } })).status).toBe(200);
+		expect(await call(list.POST as Handler, { body: draft('Nothing', { target: { kind: 'none' } }) })).toMatchObject({
+			status: 400,
+			body: { problems: [{ field: 'actions' }] }
+		});
+		expect((await call(one.PATCH as Handler, { id, body: { stop: false } })).status).toBe(400);
+	});
+});
+
 describe('deleting a folder or a label', () => {
-	it('deletes the rules that file into it, and says how many', async () => {
+	it('deletes the rules that only file into it, and says how many', async () => {
 		await create('to folder');
-		await create('to folder too', { markRead: true });
+		await create('to folder too');
 		await create('to label', { target: { kind: 'label', mailboxId: 'WORK' } });
 		await create('theirs', {}, B);
 
 		const folder = await call(folders as Handler, { body: { action: 'delete', id: 'RCPT' } });
-		expect(folder).toMatchObject({ status: 200, body: { success: true, rulesDeleted: 2 } });
+		expect(folder).toMatchObject({ status: 200, body: { success: true, rulesDeleted: 2, rulesKept: 0 } });
 		expect(listRules(A).map((r) => r.name)).toEqual(['to label']);
 		expect(listRules(B)).toHaveLength(1);
+	});
 
-		const label = await call(labels as Handler, { body: { action: 'delete', id: 'WORK' } });
-		expect(label).toMatchObject({ status: 200, body: { success: true, rulesDeleted: 1 } });
-		expect(listRules(A)).toEqual([]);
+	it('keeps a rule that also marks read, stars or stops, filing nowhere', async () => {
+		const label = { kind: 'label', mailboxId: 'WORK' };
+		await create('→ L', { target: label });
+		await create('→ L + mark read', { target: label, markRead: true });
+		await create('→ L + stop', { target: label, stop: true });
+		await create('→ L + star', { target: label, star: true });
+
+		const res = await call(labels as Handler, { body: { action: 'delete', id: 'WORK' } });
+		expect(res).toMatchObject({ status: 200, body: { success: true, rulesDeleted: 1, rulesKept: 3 } });
+		expect(listRules(A).map((r) => [r.name, r.target, r.markRead, r.stop, r.star])).toEqual([
+			['→ L + mark read', { kind: 'none' }, true, false, false],
+			['→ L + stop', { kind: 'none' }, false, true, false],
+			['→ L + star', { kind: 'none' }, false, false, true]
+		]);
 	});
 });

@@ -88,11 +88,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				return json({ success: false, error: result.error }, { status: 400 });
 			}
 			removeLabelMeta(email, body.id);
-			// The rules that filed under it go with it: they have nothing left to do.
-			const rulesDeleted = locals.activeAccountId ? deleteRulesForMailbox(locals.activeAccountId, body.id) : 0;
+			// The rules that only filed into it go with it; one that also marks
+			// read, stars or stops later rules stays, filing nowhere.
+			const { deleted: rulesDeleted, kept: rulesKept } = locals.activeAccountId
+				? deleteRulesForMailbox(locals.activeAccountId, body.id)
+				: { deleted: 0, kept: 0 };
 
 			const labels = await listLabels(client, accountId, email);
-			return json({ success: true, labels, rulesDeleted });
+			return json({ success: true, labels, rulesDeleted, rulesKept });
 		}
 
 		case 'updateColor': {

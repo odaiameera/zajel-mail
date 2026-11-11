@@ -219,7 +219,7 @@ describe('the preview', () => {
 			matched: 1,
 			scanned: 1,
 			total: 1,
-			problems: [{ field: 'actions', message: 'Give the rule something to do: a place to file mail, mark as read, or star.' }]
+			problems: [{ field: 'actions', message: 'Give the rule something to do: a place to file mail, mark as read, star, or stop later rules.' }]
 		});
 	});
 });

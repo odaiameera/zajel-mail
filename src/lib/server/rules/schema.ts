@@ -134,8 +134,13 @@ export function parseRule(input: unknown, mailboxes: MailboxLike[]): ParsedRule 
 	const markRead = body.markRead === true;
 	const star = body.star === true;
 	const stop = body.stop === true;
-	if (target.kind === 'none' && !markRead && !star && !problems.some((p) => p.field === 'target')) {
-		problems.push({ field: 'actions', message: 'Give the rule something to do: a place to file mail, mark as read, or star.' });
+	// Stopping later rules is something to do in itself: a rule that only
+	// stops is how an owner keeps some mail out of the rules below it.
+	if (target.kind === 'none' && !markRead && !star && !stop && !problems.some((p) => p.field === 'target')) {
+		problems.push({
+			field: 'actions',
+			message: 'Give the rule something to do: a place to file mail, mark as read, star, or stop later rules.'
+		});
 	}
 
 	return {

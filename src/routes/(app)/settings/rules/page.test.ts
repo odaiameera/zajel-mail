@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 vi.mock('$app/navigation', () => ({ invalidateAll: vi.fn() }));
 
 import type { Mailbox } from '$lib/jmap/types';
-import type { Rule, RuleCondition } from '$lib/types/rules';
+import { needsRewrite, type Rule, type RuleCondition } from '$lib/types/rules';
 import Page from './+page.svelte';
 
 beforeEach(() => {
@@ -179,11 +179,14 @@ function stubFetch(rules: Rule[]) {
 				return ok({ rule });
 			}
 			if (method === 'PATCH') {
-				const rule = { ...find()!, ...body };
-				if (body.enabled === true) {
+				const { rewrite, ...edit } = body;
+				const rule = { ...find()!, ...edit };
+				// As the server does it: only a rewrite switches a flagged rule back on.
+				if (rewrite === true) {
+					rule.enabled = true;
 					delete rule.attention;
 					delete rule.legacy;
-				}
+				} else if (needsRewrite(find()!)) rule.enabled = false;
 				server.rules = server.rules.map((r) => (r.id === rule.id ? rule : r));
 				return ok({ rule });
 			}
@@ -278,6 +281,59 @@ describe('Settings → Rules', () => {
 		await fireEvent.click(row('A').getByRole('button', { name: 'Move down' }));
 		await waitFor(() => expect(rows()).toEqual(['C', 'A', 'B']));
 		expect((row('C').getByRole('button', { name: 'Move up' }) as HTMLButtonElement).disabled).toBe(true);
+		expect((row('B').getByRole('button', { name: 'Move down' }) as HTMLButtonElement).disabled).toBe(true);
+	});
+
+	it('moves a rule past the next rule that runs, a split rule’s second half included', async () => {
+		const a = base('a', 'A', { target: { kind: 'label', mailboxId: 'WORK' } });
+		const a2 = base('a~2', 'A too', { target: { kind: 'folder', mailboxId: 'RCPT' }, stop: true, attention: 'split', note: { splitInto: 2 } });
+		page([a, a2, base('b', 'B')]);
+		await fireEvent.click(within(screen.getByText('B').closest('li') as HTMLElement).getByRole('button', { name: 'Move up' }));
+		await waitFor(() => expect(writes()).toHaveLength(1));
+		expect(writes()[0].body).toEqual({ ids: ['a', 'b', 'a~2'] });
+	});
+
+	it('moves past a rule waiting under "Needs your attention", leaving it where it is', async () => {
+		const f = { ...flagged, id: 'f' };
+		page([base('a', 'A'), f, base('b', 'B')]);
+		expect(within(attentionList()).queryByRole('button', { name: /Move/ })).toBeNull();
+		const row = (name: string) => within(screen.getByText(name).closest('li') as HTMLElement);
+		expect((row('A').getByRole('button', { name: 'Move up' }) as HTMLButtonElement).disabled).toBe(true);
+		await fireEvent.click(row('B').getByRole('button', { name: 'Move up' }));
+		await waitFor(() => expect(writes()).toHaveLength(1));
+		expect(writes()[0].body).toEqual({ ids: ['b', 'f', 'a'] });
+	});
+
+	it('lists a split rule and one that lost its tab where they run, each with its note and "Got it"', async () => {
+		page([exact, splitRow, base('c', 'C'), tabRemoved]);
+		expect(screen.queryByRole('heading', { name: 'Needs your attention' })).toBeNull();
+		const rows = () => [...document.querySelectorAll('aside li')].map((li) => li.querySelector('.text-sm')?.textContent);
+		expect(rows()).toEqual(['Receipts', 'Shop', 'C', 'Work mail']);
+		const row = (name: string) => within(screen.getByText(name).closest('li') as HTMLElement);
+		expect(row('Shop').getByText('One of 2 rules a rule filing in several places became.')).toBeTruthy();
+		expect(row('Work mail').getByText('No longer puts mail in the Newsletters tab.')).toBeTruthy();
+		await fireEvent.click(row('Shop').getByRole('button', { name: 'Got it' }));
+		await waitFor(() => expect(writes()).toEqual([{ method: 'POST', url: '/api/rules/split~2/dismiss', body: undefined }]));
+		await waitFor(() => expect(row('Shop').queryByRole('button', { name: 'Got it' })).toBeNull());
+		expect(rows()).toEqual(['Receipts', 'Shop', 'C', 'Work mail']);
+	});
+
+	it('disables moving while a change is being saved', async () => {
+		page([base('a', 'A'), base('b', 'B'), base('c', 'C')]);
+		let release!: () => void;
+		const realFetch = globalThis.fetch;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) => {
+				if (url === '/api/rules/reorder') await new Promise<void>((r) => (release = r));
+				return realFetch(url, init);
+			})
+		);
+		const row = (name: string) => within(screen.getByText(name).closest('li') as HTMLElement);
+		await fireEvent.click(row('B').getByRole('button', { name: 'Move up' }));
+		await waitFor(() => expect((row('C').getByRole('button', { name: 'Move up' }) as HTMLButtonElement).disabled).toBe(true));
+		release();
+		await waitFor(() => expect((row('C').getByRole('button', { name: 'Move up' }) as HTMLButtonElement).disabled).toBe(false));
 	});
 
 	it('saves, then applies the saved rule by its id', async () => {
@@ -341,23 +397,46 @@ describe('Needs your attention', () => {
 		expect(screen.queryByRole('heading', { name: 'Needs your attention' })).toBeNull();
 	});
 
-	it('saves a flagged rule as an exact rule: the whole rule, switched on', async () => {
+	it('saves a flagged rule as an exact rule, once its owner agrees to drop what Jev judged', async () => {
+		const asked = vi.fn(() => true);
+		vi.stubGlobal('confirm', asked);
 		page([flagged]);
 		await fireEvent.click(screen.getByRole('button', { name: 'Save as exact rule' }));
 		await waitFor(() => expect(writes()).toHaveLength(1));
+		expect(asked).toHaveBeenCalledWith(
+			'This rule also required: “it’s an invoice or a request for payment”. Save it without that?'
+		);
 		expect(writes()[0]).toMatchObject({
 			method: 'PATCH',
 			url: '/api/rules/flagged',
-			body: { enabled: true, conditions: flagged.conditions, target: { kind: 'none' }, markRead: true }
+			body: { rewrite: true, conditions: flagged.conditions, target: { kind: 'none' }, markRead: true }
 		});
 		expect(writes()[0].body).not.toHaveProperty('attention');
 		await waitFor(() => expect(screen.queryByRole('heading', { name: 'Needs your attention' })).toBeNull());
 	});
 
+	it('sends nothing when the owner keeps what Jev judged', async () => {
+		vi.stubGlobal('confirm', vi.fn(() => false));
+		page([flagged]);
+		await fireEvent.click(screen.getByRole('button', { name: 'Save as exact rule' }));
+		await new Promise((r) => setTimeout(r, 10));
+		expect(writes()).toEqual([]);
+	});
+
+	it('renames a flagged rule on plain Save, leaving it flagged and off', async () => {
+		page([flagged]);
+		await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Bills' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(writes()).toHaveLength(1));
+		expect(writes()[0]).toEqual({ method: 'PATCH', url: '/api/rules/flagged', body: { name: 'Bills' } });
+		await waitFor(() => expect(within(attentionList()).getByText('Bills')).toBeTruthy());
+		expect(server.rules[0]).toMatchObject({ name: 'Bills', enabled: false, attention: 'jev_condition' });
+	});
+
 	it('notes a rule that lost only its tab, leaves it running, and dismisses the note on "Got it"', async () => {
 		page([exact, tabRemoved]);
-		await fireEvent.click(within(attentionList()).getByText('Work mail'));
-		expect(within(attentionList()).getByRole('button', { name: 'Disable rule' })).toBeTruthy();
+		await fireEvent.click(screen.getByText('Work mail'));
+		expect(within(screen.getByText('Work mail').closest('li') as HTMLElement).getByRole('button', { name: 'Disable rule' })).toBeTruthy();
 		expect(screen.getByText('This rule no longer puts mail in the Newsletters tab.')).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
 		await waitFor(() => expect(writes()).toEqual([{ method: 'POST', url: '/api/rules/tab-removed/dismiss', body: undefined }]));

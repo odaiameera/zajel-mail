@@ -51,7 +51,10 @@ export interface RuleAction {
 }
 
 /**
- * Why a rule is listed under "Needs your attention" on the rules page.
+ * What an upgrade did to a rule, for its owner to see. The first three
+ * switch it off, and the rules page lists it under "Needs your attention";
+ * `tab_removed` and `split` rules still run, and are listed where they run
+ * with their note.
  *
  * - `jev_condition`: it had a condition Jev judged, which rules no longer
  *   have. The rule is switched off, and never runs until its owner has
@@ -275,7 +278,30 @@ export function ruleHolds(
 	return rule.logic === 'anyof' ? results.some(Boolean) : results.every(Boolean);
 }
 
-/** Whether a rule files into this folder or label: deleting the mailbox deletes the rule. */
+/** Whether a rule files into this folder or label. */
 export function filesInto(rule: Pick<Rule, 'target'>, mailboxId: string): boolean {
 	return (rule.target.kind === 'folder' || rule.target.kind === 'label') && rule.target.mailboxId === mailboxId;
+}
+
+/**
+ * What deleting a folder or label does to the rules that file into it, for
+ * the confirmation: those that only file there are deleted, and those that
+ * also mark read, star or stop later rules are kept, filing nowhere (as the
+ * server does it, `deleteRulesForMailbox`). A sentence whose count is 0 is
+ * left out; with no such rules at all, this is ''.
+ */
+export function mailboxDeleteRulesNote(rules: Pick<Rule, 'target' | 'markRead' | 'star' | 'stop'>[], mailboxId: string): string {
+	const filing = rules.filter((r) => filesInto(r, mailboxId));
+	const kept = filing.filter((r) => r.markRead || r.star || r.stop).length;
+	const deleted = filing.length - kept;
+	const parts: string[] = [];
+	if (deleted > 0) {
+		parts.push(`This also deletes ${deleted} ${deleted === 1 ? 'rule that files' : 'rules that file'} into it.`);
+	}
+	if (kept > 0) {
+		parts.push(
+			`${kept} other ${kept === 1 ? 'rule' : 'rules'} will keep marking mail as read (or starring, or stopping later rules) without filing it.`
+		);
+	}
+	return parts.join(' ');
 }

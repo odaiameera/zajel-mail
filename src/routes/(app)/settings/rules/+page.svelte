@@ -19,9 +19,12 @@
 	let selectedId = $state<string | null>(data.rules[0]?.id ?? null);
 	const selected = $derived(rules.find((r) => r.id === selectedId) ?? null);
 
-	// Rules an upgrade had to change, listed apart so they aren't missed.
-	const attentionRules = $derived(rules.filter((r) => r.attention));
-	const otherRules = $derived(rules.filter((r) => !r.attention));
+	// Rules an upgrade switched off until their owner deals with them are
+	// listed apart, so they aren't missed. Every rule that can run is in the
+	// main list, in its real order: one carrying only a note (it was split,
+	// or lost its tab) still runs, so it stays where it runs, note and all.
+	const attentionRules = $derived(rules.filter((r) => needsRewrite(r)));
+	const mainRules = $derived(rules.filter((r) => !needsRewrite(r)));
 
 	let busy = $state(false);
 	let saveError = $state('');
@@ -52,11 +55,14 @@
 	const toggleEnabled = (rule: Rule) =>
 		send(`/api/rules/${encodeURIComponent(rule.id)}`, { method: 'PATCH', body: JSON.stringify({ enabled: !rule.enabled }) });
 
-	/** Move a rule one place up or down among the rules listed with it. */
+	/**
+	 * Move a rule one place up or down the main list: it changes places with
+	 * its neighbour there, and nothing else moves. The rules waiting under
+	 * "Needs your attention" keep their places in the real order between them.
+	 */
 	async function move(rule: Rule, by: -1 | 1) {
-		const group = rule.attention ? attentionRules : otherRules;
-		const at = group.findIndex((r) => r.id === rule.id);
-		const other = group[at + by];
+		const at = mainRules.findIndex((r) => r.id === rule.id);
+		const other = at === -1 ? undefined : mainRules[at + by];
 		if (!other) return;
 		const ids = rules.map((r) => r.id);
 		const i = ids.indexOf(rule.id);
@@ -142,6 +148,12 @@
 			.at(-1);
 		const label = INBOX_CATEGORIES.find((c) => c.key === tab)?.label;
 		return label ? `the ${label} tab` : null;
+	}
+
+	/** A running rule's note, short enough for its row in the list. */
+	function rowNote(rule: Rule): string {
+		if (rule.attention === 'tab_removed') return `No longer puts mail in ${legacyTab(rule) ?? 'an Inbox tab'}.`;
+		return `One of ${rule.note?.splitInto ?? 'several'} rules a rule filing in several places became.`;
 	}
 
 	const tabName = (key: string | undefined) => INBOX_CATEGORIES.find((c) => c.key === key)?.label ?? 'an Inbox tab';
@@ -293,7 +305,7 @@
 
 <svelte:head><title>{pageTitle({ page: 'Filters & Rules', subtitle: 'Settings' })}</title></svelte:head>
 
-{#snippet ruleRow(rule: Rule, group: Rule[], index: number)}
+{#snippet ruleRow(rule: Rule, group: Rule[], index: number, movable: boolean)}
 	<li
 		class="group relative flex items-center gap-2 pl-3 pr-1 py-2 rounded-lg transition-all
 			{selectedId === rule.id
@@ -315,26 +327,39 @@
 				aria-label={rule.enabled ? 'Disable rule' : 'Enable rule'}
 			></button>
 		{/if}
-		<button class="flex-1 min-w-0 text-left cursor-pointer" onclick={() => (selectedId = rule.id)}>
-			<span class="block truncate text-sm">{rule.name || 'Untitled rule'}</span>
-			<span class="block truncate text-2xs text-text-tertiary">{summary(rule)}</span>
-		</button>
-		<div class="flex flex-col shrink-0">
-			<button
-				onclick={() => move(rule, -1)}
-				disabled={busy || index === 0}
-				aria-label="Move up"
-				title="Move up"
-				class="text-text-tertiary hover:text-text disabled:opacity-30 cursor-pointer px-1 text-2xs leading-none"
-			>▲</button>
-			<button
-				onclick={() => move(rule, 1)}
-				disabled={busy || index === group.length - 1}
-				aria-label="Move down"
-				title="Move down"
-				class="text-text-tertiary hover:text-text disabled:opacity-30 cursor-pointer px-1 text-2xs leading-none"
-			>▼</button>
+		<div class="flex-1 min-w-0 flex flex-col">
+			<button class="min-w-0 text-left cursor-pointer" onclick={() => (selectedId = rule.id)}>
+				<span class="block truncate text-sm">{rule.name || 'Untitled rule'}</span>
+				<span class="block truncate text-2xs text-text-tertiary">{summary(rule)}</span>
+			</button>
+			{#if movable && (rule.attention === 'tab_removed' || rule.attention === 'split' || rule.note?.splitInto)}
+				<!-- A note on a rule that runs: said where it runs, until it is read. -->
+				<span class="flex items-center gap-2 text-2xs text-warning" role="note">
+					<span class="truncate">{rowNote(rule)}</span>
+					<button onclick={() => dismiss(rule.id)} disabled={busy} class="shrink-0 underline cursor-pointer disabled:opacity-50">
+						Got it
+					</button>
+				</span>
+			{/if}
 		</div>
+		{#if movable}
+			<div class="flex flex-col shrink-0">
+				<button
+					onclick={() => move(rule, -1)}
+					disabled={busy || index === 0}
+					aria-label="Move up"
+					title="Move up"
+					class="text-text-tertiary hover:text-text disabled:opacity-30 cursor-pointer px-1 text-2xs leading-none"
+				>▲</button>
+				<button
+					onclick={() => move(rule, 1)}
+					disabled={busy || index === group.length - 1}
+					aria-label="Move down"
+					title="Move down"
+					class="text-text-tertiary hover:text-text disabled:opacity-30 cursor-pointer px-1 text-2xs leading-none"
+				>▼</button>
+			</div>
+		{/if}
 	</li>
 {/snippet}
 
@@ -364,16 +389,16 @@
 					<h2 class="px-3 pb-1.5 text-2xs font-semibold text-warning uppercase tracking-wide">Needs your attention</h2>
 					<ul class="flex flex-col gap-0.5 mb-3">
 						{#each attentionRules as rule, i (rule.id)}
-							{@render ruleRow(rule, attentionRules, i)}
+							{@render ruleRow(rule, attentionRules, i, false)}
 						{/each}
 					</ul>
-					{#if otherRules.length > 0}
+					{#if mainRules.length > 0}
 						<h2 class="px-3 pb-1.5 text-2xs font-semibold text-text-tertiary uppercase tracking-wide">Rules</h2>
 					{/if}
 				{/if}
 				<ul class="flex flex-col gap-0.5">
-					{#each otherRules as rule, i (rule.id)}
-						{@render ruleRow(rule, otherRules, i)}
+					{#each mainRules as rule, i (rule.id)}
+						{@render ruleRow(rule, mainRules, i, true)}
 					{/each}
 				</ul>
 			{/if}
@@ -500,10 +525,8 @@
 								put mail in a tab, so that part was removed; the rest of the rule runs as before. To
 								keep a sender’s mail in that tab, pin the sender under
 								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a>.
+								“Got it” beside it in the list clears this note.
 							</p>
-							<button onclick={() => dismiss(selected.id)} disabled={busy} class="btn btn-secondary self-start">
-								Got it
-							</button>
 						</div>
 					{/if}
 					{#if selected?.note?.splitInto}
@@ -516,9 +539,12 @@
 								together do what it did, except that where it moved mail to two folders, the first one
 								decides.
 							</p>
-							<button onclick={() => dismiss(selected.id)} disabled={busy} class="btn btn-secondary self-start">
-								Got it
-							</button>
+							<!-- A rule that runs has its "Got it" on its row in the list. -->
+							{#if needsRewrite(selected)}
+								<button onclick={() => dismiss(selected.id)} disabled={busy} class="btn btn-secondary self-start">
+									Got it
+								</button>
+							{/if}
 						</div>
 					{/if}
 

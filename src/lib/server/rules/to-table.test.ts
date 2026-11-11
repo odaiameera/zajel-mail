@@ -171,6 +171,20 @@ describe('moving stored rules into the rules table', () => {
 		expect(said().map((r) => r.id)).toEqual(['exact']);
 	});
 
+	it('never gives an account with a list of its own another spelling’s rules, even when its list is empty or unreadable', () => {
+		// The old engine read only the exact address's list: the shouting one never ran.
+		store(ME, []);
+		store('ME@EXAMPLE.TEST', [rule('stale', [label('A')])]);
+		rerun();
+		expect(said()).toEqual([]);
+
+		getDb().prepare('DELETE FROM user_rules').run();
+		getDb().prepare('INSERT INTO user_rules (user_email, rules_json) VALUES (?, ?)').run(ME, '{not json');
+		store('ME@EXAMPLE.TEST', [rule('stale', [label('A')])]);
+		rerun();
+		expect(said()).toEqual([]);
+	});
+
 	it('changes nothing run twice', () => {
 		store(ME, [rule('one', [label('A'), label('B')])]);
 		rerun();

@@ -18,6 +18,7 @@ import {
 	importRules,
 	listRules,
 	reorderRules,
+	setRuleBasics,
 	updateRule
 } from './store';
 
@@ -128,16 +129,53 @@ describe('the rules store', () => {
 			.run(A);
 	});
 
-	it('takes a draft’s fields only, and keeps a flagged rule flagged until it is saved switched on', () => {
+	it('keeps a flagged rule flagged and off until it is saved as a rewrite', () => {
 		importRules(A, [flagged('jev')]);
-		// Saved switched off: edited, still flagged.
-		const sneaky = { ...draft('jev', { enabled: false }), attention: undefined, legacy: undefined } as RuleDraft;
-		expect(updateRule(A, 'jev', sneaky)).toMatchObject({ attention: 'jev_condition', legacy: { enabled: true } });
-		// Saved switched on, as a rule that passed parseRule: "Save as exact rule".
-		const saved = updateRule(A, 'jev', draft('jev'))!;
+		// Saved without rewrite, even asking to be on: edited, still flagged and off.
+		const sneaky = { ...draft('jev'), attention: undefined, legacy: undefined } as RuleDraft;
+		expect(updateRule(A, 'jev', sneaky)).toMatchObject({ enabled: false, attention: 'jev_condition', legacy: { enabled: true } });
+		// "Save as exact rule": switched on, flag and old copy gone.
+		const saved = updateRule(A, 'jev', draft('jev', { enabled: false }), { rewrite: true })!;
 		expect(saved.enabled).toBe(true);
 		expect(saved).not.toHaveProperty('attention');
 		expect(saved).not.toHaveProperty('legacy');
+	});
+
+	it('never takes the server’s own fields from a draft, even one that skipped parseRule', () => {
+		const smuggled = {
+			...draft('one'),
+			attention: 'split',
+			note: { splitInto: 2 },
+			legacy: { enabled: true, logic: 'allof', conditions: [], actions: [] },
+			id: 'mine',
+			position: -5,
+			account_id: B
+		} as unknown as RuleDraft;
+		createRule(A, draft('first'));
+		const made = createRule(A, smuggled);
+		expect(made.id).not.toBe('mine');
+		const row = getRule(A, made.id)!;
+		expect(row).toMatchObject({ position: 1 });
+		for (const key of ['attention', 'note', 'legacy']) expect(row).not.toHaveProperty(key);
+		expect(listRules(B)).toEqual([]);
+
+		const updated = updateRule(A, made.id, { ...smuggled, name: 'edited' } as RuleDraft, { rewrite: true })!;
+		expect(updated).toMatchObject({ id: made.id, position: 1, name: 'edited' });
+		for (const key of ['attention', 'note', 'legacy']) expect(updated).not.toHaveProperty(key);
+		expect(getRule(A, 'mine')).toBeNull();
+		expect(listRules(B)).toEqual([]);
+	});
+
+	it('renames or switches a rule touching nothing else, and never switches a flagged one on', () => {
+		importRules(A, [flagged('jev'), { ...flagged('gone', { target: { kind: 'folder', mailboxId: 'GONE' } }), attention: undefined, legacy: undefined }]);
+		expect(setRuleBasics(A, 'gone', { enabled: true })).toMatchObject({ enabled: true, target: { kind: 'folder', mailboxId: 'GONE' } });
+		expect(setRuleBasics(A, 'gone', { name: 'Renamed' })).toMatchObject({ name: 'Renamed', enabled: true });
+		expect(setRuleBasics(A, 'jev', { enabled: true, name: 'Still off' })).toMatchObject({
+			name: 'Still off',
+			enabled: false,
+			attention: 'jev_condition'
+		});
+		expect(setRuleBasics(B, 'gone', { enabled: false })).toBeNull();
 	});
 
 	it('keeps a note an edit doesn’t deal with', () => {
@@ -170,13 +208,15 @@ describe('the rules store', () => {
 		expect(getRule(A, 'jev')).toMatchObject({ attention: 'jev_condition' });
 	});
 
-	it('deletes the rules that file into a mailbox, and only those', () => {
+	it('deletes the rules that only file into a mailbox, keeps those that do more, and touches no others', () => {
 		createRule(A, draft('folder', { target: { kind: 'folder', mailboxId: 'GONE' } }));
 		createRule(A, draft('label', { target: { kind: 'label', mailboxId: 'GONE' } }));
+		createRule(A, draft('label + read', { target: { kind: 'label', mailboxId: 'GONE' }, markRead: true }));
 		createRule(A, draft('other', { target: { kind: 'folder', mailboxId: 'KEEP' } }));
 		createRule(B, draft('theirs', { target: { kind: 'folder', mailboxId: 'GONE' } }));
-		expect(deleteRulesForMailbox(A, 'GONE')).toBe(2);
-		expect(names()).toEqual(['other']);
+		expect(deleteRulesForMailbox(A, 'GONE')).toEqual({ deleted: 2, kept: 1 });
+		expect(names()).toEqual(['label + read', 'other']);
+		expect(listRules(A)[0]).toMatchObject({ target: { kind: 'none' }, markRead: true });
 		expect(names(B)).toEqual(['theirs']);
 	});
 });

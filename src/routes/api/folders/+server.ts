@@ -128,11 +128,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 			const result = await deleteFolder(client, accountId, body.id);
 			if (!result.success) return json({ success: false, error: result.error }, { status: 400 });
-			// The rules that filed into it go with it: they have nowhere left to file.
-			const rulesDeleted = locals.activeAccountId ? deleteRulesForMailbox(locals.activeAccountId, body.id) : 0;
+			// The rules that only filed into it go with it; one that also marks
+			// read, stars or stops later rules stays, filing nowhere.
+			const { deleted: rulesDeleted, kept: rulesKept } = locals.activeAccountId
+				? deleteRulesForMailbox(locals.activeAccountId, body.id)
+				: { deleted: 0, kept: 0 };
 
 			const refreshed = await getMailboxes(client, accountId);
-			return json({ success: true, mailboxes: refreshed, rulesDeleted });
+			return json({ success: true, mailboxes: refreshed, rulesDeleted, rulesKept });
 		}
 
 		case 'move': {
