@@ -26,6 +26,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
 	{ slug: 'search',             group: 'Mail',               label: 'Search' },
 	{ slug: 'composer',           group: 'Mail',               label: 'Composer' },
 	{ slug: 'notifications',      group: 'Mail',               label: 'Notifications' },
+	{ slug: 'auto-reply',         group: 'Mail',               label: 'Auto-reply' },
 
 	{ slug: 'folders',            group: 'Organization',       label: 'Folders' },
 	{ slug: 'labels',             group: 'Organization',       label: 'Labels' },

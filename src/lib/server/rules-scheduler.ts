@@ -8,6 +8,7 @@ import { isRunnable } from '$lib/types/rules';
 import { getRules, getRulesCursor, setRulesCursor } from './db/queries/rules';
 import { matcherProperties, updatesForEmails, type RuleActionCtx } from './rules-engine';
 import { runAccountTasks } from './account-tasks';
+import { AUTO_REPLY_PROPERTIES, answerNewMail, outOfOfficeFor, pruneOldAutoReplies } from './auto-reply';
 
 /**
  * Server-side rule application. Rules are not handed to the mail server;
@@ -17,6 +18,9 @@ import { runAccountTasks } from './account-tasks';
  *
  * This is the only thing that runs rules on new mail. Jev's worker asks for
  * a run before it sorts (see applyRulesNow), and evaluates none itself.
+ *
+ * The same run sends out-of-office replies (auto-reply.ts): it sees each
+ * new Inbox message once, with Jev on or off.
  */
 
 const PAGE = 100;
@@ -47,6 +51,15 @@ export function startRulesScheduler(): void {
 				}
 				console.error('[rules] auto-apply failed', email, err);
 			}
+		}
+	});
+
+	// The daily pass: the out-of-office log is kept a month.
+	cron.schedule('41 3 * * *', () => {
+		try {
+			pruneOldAutoReplies();
+		} catch (err) {
+			console.error('[rules] auto-reply log prune failed', err);
 		}
 	});
 }
@@ -92,10 +105,13 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 	// before instead; what this run handled is remembered and not redone.
 	const nowIso = new Date(Math.floor(Date.now() / 1000) * 1000 - 1000).toISOString();
 
+	// Out-of-office for this account's login, when it is on right now.
+	const outOfOffice = outOfOfficeFor(userEmail);
+
 	const cursor = getRulesCursor(userEmail);
-	if (cursor === null || enabled.length === 0) {
+	if (cursor === null || (enabled.length === 0 && !outOfOffice)) {
 		// First sight of this user, or nothing to do — advance and bail, so
-		// nothing is retro-applied should that change.
+		// nothing is retro-applied (or answered) should that change.
 		setRulesCursor(userEmail, nowIso);
 		return;
 	}
@@ -114,7 +130,9 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 		validMailboxIds: new Set(mailboxes.map((m) => m.id))
 	};
 
-	const { properties, fetchTextBodyValues } = matcherProperties(enabled);
+	const matcher = matcherProperties(enabled);
+	const { fetchTextBodyValues } = matcher;
+	const properties = outOfOffice ? [...new Set([...matcher.properties, ...AUTO_REPLY_PROPERTIES])] : matcher.properties;
 
 	const response = await client.request([
 		[
@@ -142,6 +160,16 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 	const listed = (response.methodResponses[1][1] as { list: Email[] }).list ?? [];
 	const handled = lastHandled.get(userEmail);
 	const emails = handled ? listed.filter((e) => !handled.has(e.id)) : listed;
+
+	// Out-of-office decides on the mail as it arrived, before the rules
+	// below move it. A failure here never stops the rules.
+	if (outOfOffice) {
+		try {
+			await answerNewMail(client, accountId, outOfOffice, emails, mailboxes);
+		} catch (err) {
+			console.error('[rules] out-of-office failed', userEmail, err);
+		}
+	}
 	const { update } = updatesForEmails(emails, enabled, ctx);
 
 	const entries = Object.entries(update);

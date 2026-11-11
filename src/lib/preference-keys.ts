@@ -25,6 +25,9 @@ export const PREFERENCES = [
 	{ key: 'auto_reply_enabled', description: 'Auto-reply on or off' },
 	{ key: 'auto_reply_subject', description: 'Auto-reply subject' },
 	{ key: 'auto_reply_body', description: 'Auto-reply message' },
+	{ key: 'auto_reply_from', description: 'Auto-reply first day' },
+	{ key: 'auto_reply_until', description: 'Auto-reply last day' },
+	{ key: 'auto_reply_tz', description: 'Time zone of the auto-reply dates' },
 	{ key: 'folder_expanded', description: 'Which sidebar folders are expanded' },
 	// Written by /api/user-state/settings and read by getDefaultPageSize();
 	// the one camelCase key, kept so stored rows match.

@@ -126,7 +126,7 @@ With **semantic search** switched on in Settings → Search, it also finds mail 
 - **Archive** works even when your server has no folder with the archive role: it uses your top-level `Archive` folder.
 - **Trash can empty itself** after 7 or 30 days.
 - **Rules** match mail exactly, by sender, recipient, subject, body, size or attachment, and file it: into a folder, under a label, marked read or important, or into Trash. A rule never picks an Inbox tab; a sender pin does that. Rules run on the server about a minute after mail lands, so they keep filtering with every tab closed. A live count shows how many of your newest Inbox messages a rule matches, counted exactly as **Save & apply** then sorts them.
-- **Auto-reply** is hidden for now. It was a Sieve vacation message, which the mail server never sent; it is coming back, sent by Zajel itself.
+- **Auto-reply** (out-of-office) is sent by Zajel itself, with optional start and end dates and one setting for all your linked accounts. A sender gets at most one reply a day; newsletters, mailing lists, automatic mail, spam and mail from before you switched it on get none. Replies go out only while Zajel is running, and the settings page lists the latest ones.
 - **Sender avatars** come from BIMI, site favicons and Gravatar. They're cached on the server, so every device shares one lookup. Lookups that find nothing are remembered too, instead of being retried on every render.
 
 ### The composer
@@ -590,7 +590,7 @@ This started as a mail client and is growing into a full personal workspace: a s
 **Next: IMAP and POP3, including Gmail.** JMAP is the right protocol, but most mail lives behind IMAP.
 - **Gmail first,** through IMAP and SMTP with Google sign-in, so a Gmail account can sit beside a Stalwart one.
 - **IMAP** lets Zajel Mail front Dovecot, Cyrus or any provider without a JMAP endpoint. **POP3** covers accounts that offer nothing else, with a smaller feature set.
-- **Not every feature will be the same on every server.** Sending scheduled mail from the mail server and JMAP's change tracking may be limited or handled by Zajel's own workers. Rules already run in Zajel itself rather than on the mail server, so they work the same everywhere. Each feature will say where it works.
+- **Not every feature will be the same on every server.** Sending scheduled mail from the mail server and JMAP's change tracking may be limited or handled by Zajel's own workers. Rules and auto-reply already run in Zajel itself rather than on the mail server, so they work the same everywhere. Each feature will say where it works.
 - The mail layer already sits behind a typed client boundary, so this means adding a backend, not a rewrite.
 
 **Then: Tasks and Notes.** Tasks is already stubbed in the app rail. Tasks and Notes will both be backed by a **dedicated local SQLite store, independent of Stalwart**. Mail, calendar and contacts belong to the mail server; personal notes and tasks don't, and forcing them through a mail protocol would constrain the data model for no benefit.

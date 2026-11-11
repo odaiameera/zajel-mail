@@ -10,7 +10,11 @@ const state = vi.hoisted(() => ({
 	gate: null as Promise<void> | null,
 	queried: () => {},
 	tasks: [] as string[],
-	tasksFail: false
+	tasksFail: false,
+	outOfOffice: null as Record<string, unknown> | null,
+	answered: [] as string[][],
+	answerFails: false,
+	properties: [] as string[][]
 }));
 
 vi.mock('$lib/jmap/auth', () => ({
@@ -26,6 +30,7 @@ vi.mock('$lib/jmap/auth', () => ({
 				};
 			}
 			if (name === 'Email/query') {
+				state.properties.push(calls[1][1].properties as string[]);
 				const listed = state.emails;
 				state.queried();
 				if (state.gate) await state.gate;
@@ -50,6 +55,15 @@ vi.mock('./account-tasks', () => ({
 		state.tasks.push(email);
 		if (state.tasksFail) throw new Error('tasks broke');
 	}
+}));
+vi.mock('./auto-reply', () => ({
+	AUTO_REPLY_PROPERTIES: ['replyTo', 'header:auto-submitted:asText'],
+	outOfOfficeFor: () => state.outOfOffice,
+	answerNewMail: async (_client: unknown, _accountId: string, _ooo: unknown, emails: { id: string }[]) => {
+		state.answered.push(emails.map((e) => e.id));
+		if (state.answerFails) throw new Error('send broke');
+	},
+	pruneOldAutoReplies: () => {}
 }));
 vi.mock('./auth/accounts', () => ({ listSchedulableAuths: () => [], markNeedsReauth: vi.fn() }));
 vi.mock('./db/queries/rules', () => ({
@@ -98,6 +112,10 @@ beforeEach(() => {
 	state.queried = () => {};
 	state.tasks = [];
 	state.tasksFail = false;
+	state.outOfOffice = null;
+	state.answered = [];
+	state.answerFails = false;
+	state.properties = [];
 });
 
 describe('the auto-apply cursor', () => {
@@ -168,6 +186,44 @@ describe('the account’s one-time tasks', () => {
 		state.emails = page(1, () => '2026-10-20T07:00:00Z');
 		await applyRulesForUser(auth, 'tasks@example.test');
 		expect(state.tasks).toHaveLength(2);
+		expect(state.sets.map((u) => Object.keys(u))).toEqual([['m0']]);
+	});
+});
+
+describe('out-of-office', () => {
+	it('runs with no rules when it is on, reading what the reply decision needs', async () => {
+		state.rules = [];
+		state.outOfOffice = { accountRowId: 'acct' };
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		await applyRulesForUser(auth, 'ooo@example.test');
+		expect(state.answered).toEqual([['m0', 'm1']]);
+		expect(state.properties[0]).toEqual(expect.arrayContaining(['replyTo', 'header:auto-submitted:asText', 'subject']));
+		expect(state.sets).toEqual([]);
+	});
+
+	it('does nothing with no rules when it is off', async () => {
+		state.rules = [];
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		await applyRulesForUser(auth, 'off@example.test');
+		expect(state.properties).toEqual([]);
+		expect(state.answered).toEqual([]);
+	});
+
+	it('answers nothing on first sight of an account', async () => {
+		state.cursor = null;
+		state.outOfOffice = { accountRowId: 'acct' };
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		await applyRulesForUser(auth, 'first@example.test');
+		expect(state.answered).toEqual([]);
+		expect(state.setCursors).toHaveLength(1);
+	});
+
+	it('never stops the rules when it fails', async () => {
+		state.outOfOffice = { accountRowId: 'acct' };
+		state.answerFails = true;
+		state.emails = page(1, () => '2026-10-20T07:00:00Z');
+		await applyRulesForUser(auth, 'fails@example.test');
+		expect(state.answered).toHaveLength(1);
 		expect(state.sets.map((u) => Object.keys(u))).toEqual([['m0']]);
 	});
 });

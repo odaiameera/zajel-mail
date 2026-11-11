@@ -161,6 +161,8 @@ export interface Email {
 	'header:list-id:asText'?: string | null;
 	'header:precedence:asText'?: string | null;
 	'header:auto-submitted:asText'?: string | null;
+	/** Outlook's request not to be sent automatic replies, read before sending one. */
+	'header:x-auto-response-suppress:asText'?: string | null;
 }
 
 export interface EmailQueryResult {

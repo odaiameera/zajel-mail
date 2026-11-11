@@ -1,26 +1,31 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { getPrefs } from '$lib/server/db/queries/app-prefs';
 import { writePreferences } from '$lib/server/preferences';
+import { autoReplySettings, autoReplyStatus, nextSince, parseAutoReplyForm } from '$lib/server/auto-reply';
 
 /**
- * Persist the auto-reply settings.
- *
- * The body used to be percent-encoded into a cookie, which meant a long
- * message could quietly exceed the ~4KB cookie cap and be dropped. In
- * SQLite it is stored whole.
+ * Save the out-of-office settings, all at once from the page's Save
+ * button. The server stamps `auto_reply_since` when it is switched on or
+ * its dates change: mail from before then is never answered. Answers with
+ * the new status line.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.user) error(401, 'Not signed in');
-	const body = (await request.json()) as {
-		enabled?: boolean;
-		subject?: string;
-		body?: string;
-	};
+	const parsed = parseAutoReplyForm(((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>);
+	if ('error' in parsed) return json({ error: parsed.error }, { status: 400 });
 
-	const patch: Record<string, string> = {};
-	if (body.enabled !== undefined) patch.auto_reply_enabled = body.enabled ? 'on' : 'off';
-	if (body.subject !== undefined) patch.auto_reply_subject = body.subject;
-	if (body.body !== undefined) patch.auto_reply_body = body.body;
-	writePreferences(locals.user.id, patch);
-	return json({ success: true });
+	const { form } = parsed;
+	const now = new Date();
+	const since = nextSince(autoReplySettings(getPrefs(locals.user.id)), form, now.toISOString());
+	writePreferences(locals.user.id, {
+		auto_reply_enabled: form.enabled ? 'on' : 'off',
+		auto_reply_subject: form.subject,
+		auto_reply_body: form.body,
+		auto_reply_from: form.from,
+		auto_reply_until: form.until,
+		auto_reply_tz: form.tz,
+		auto_reply_since: since
+	});
+	return json({ success: true, status: autoReplyStatus({ ...form, since }, now) });
 };
