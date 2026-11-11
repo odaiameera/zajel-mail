@@ -136,8 +136,8 @@ export interface Rule {
 
 /**
  * A condition is usable only if it would actually constrain matching. An
- * empty text value is dropped (the Sieve compiler does the same) so a
- * half-finished rule never becomes match-everything.
+ * empty text value is dropped so a half-finished rule never becomes
+ * match-everything.
  */
 export function isUsableCondition(c: RuleCondition): boolean {
 	switch (c.field) {

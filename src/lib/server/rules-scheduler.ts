@@ -7,11 +7,11 @@ import type { AuthState, Email } from '$lib/jmap/types';
 import { isRunnable } from '$lib/types/rules';
 import { getRules, getRulesCursor, setRulesCursor } from './db/queries/rules';
 import { matcherProperties, updatesForEmails, type RuleActionCtx } from './rules-engine';
+import { runAccountTasks } from './account-tasks';
 
 /**
- * Server-side rule application. Stalwart on this deployment does not run
- * per-user Sieve scripts at delivery, so we apply rules ourselves a beat
- * after the mail lands: every minute (and opportunistically per request for
+ * Server-side rule application. Rules are not handed to the mail server;
+ * the app applies them itself a beat after the mail lands: every minute (and opportunistically per request for
  * active users) we run each user's enabled rules over the inbox mail that
  * arrived since the last run. Actions are idempotent, so overlap is safe.
  *
@@ -76,6 +76,14 @@ export async function applyRulesNow(auth: AuthState, userEmail: string): Promise
 }
 
 async function runApply(auth: AuthState, userEmail: string): Promise<void> {
+	// The account's one-time jobs ride on this run, which has its
+	// credentials. They never hold the rules up.
+	try {
+		await runAccountTasks(auth, userEmail);
+	} catch (err) {
+		console.error('[rules] account tasks failed', userEmail, err);
+	}
+
 	// Rules that may run: switched on, and not waiting to be rewritten.
 	const enabled = getRules(userEmail).filter(isRunnable);
 	// Stalwart stamps receivedAt to the second and `after` is strict, so a

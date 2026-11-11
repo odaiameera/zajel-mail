@@ -3,13 +3,11 @@ import type { RequestHandler } from './$types';
 import { writePreferences } from '$lib/server/preferences';
 
 /**
- * Persist the auto-reply (vacation) settings. Callers should follow up with a
- * POST to /api/rules/deploy to push the updated Sieve script — the deploy
- * endpoint reads these back and emits a `vacation` block when enabled.
+ * Persist the auto-reply settings.
  *
  * The body used to be percent-encoded into a cookie, which meant a long
- * message could quietly exceed the ~4KB cookie cap and be dropped, taking the
- * vacation responder with it. In SQLite it is stored whole.
+ * message could quietly exceed the ~4KB cookie cap and be dropped. In
+ * SQLite it is stored whole.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.user) error(401, 'Not signed in');

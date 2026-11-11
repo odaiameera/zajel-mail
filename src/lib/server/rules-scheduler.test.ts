@@ -8,7 +8,9 @@ const state = vi.hoisted(() => ({
 	rules: [] as unknown[],
 	sets: [] as Record<string, unknown>[],
 	gate: null as Promise<void> | null,
-	queried: () => {}
+	queried: () => {},
+	tasks: [] as string[],
+	tasksFail: false
 }));
 
 vi.mock('$lib/jmap/auth', () => ({
@@ -42,6 +44,12 @@ vi.mock('$lib/jmap/auth', () => ({
 			throw new Error(`unexpected ${name}`);
 		}
 	})
+}));
+vi.mock('./account-tasks', () => ({
+	runAccountTasks: async (_auth: unknown, email: string) => {
+		state.tasks.push(email);
+		if (state.tasksFail) throw new Error('tasks broke');
+	}
 }));
 vi.mock('./auth/accounts', () => ({ listSchedulableAuths: () => [], markNeedsReauth: vi.fn() }));
 vi.mock('./db/queries/rules', () => ({
@@ -88,6 +96,8 @@ beforeEach(() => {
 	state.sets = [];
 	state.gate = null;
 	state.queried = () => {};
+	state.tasks = [];
+	state.tasksFail = false;
 });
 
 describe('the auto-apply cursor', () => {
@@ -144,6 +154,21 @@ describe('rules that may not run', () => {
 		state.rules = [markRead];
 		await applyRulesForUser(auth, 'flagged@example.test');
 		expect(state.sets.map((u) => Object.keys(u))).toEqual([['m0', 'm1']]);
+	});
+});
+
+describe('the account’s one-time tasks', () => {
+	it('run on every run, rules or none, and never hold the rules up', async () => {
+		state.rules = [];
+		await applyRulesForUser(auth, 'tasks@example.test');
+		expect(state.tasks).toEqual(['tasks@example.test']);
+
+		state.rules = [markRead];
+		state.tasksFail = true;
+		state.emails = page(1, () => '2026-10-20T07:00:00Z');
+		await applyRulesForUser(auth, 'tasks@example.test');
+		expect(state.tasks).toHaveLength(2);
+		expect(state.sets.map((u) => Object.keys(u))).toEqual([['m0']]);
 	});
 });
 

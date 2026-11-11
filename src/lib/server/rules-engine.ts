@@ -50,7 +50,7 @@ function conditionMatches(email: Email, c: RuleCondition, bodyText: string): boo
 	} else if (c.field === 'size') {
 		const kb = parseInt(c.value, 10);
 		if (!Number.isFinite(kb)) return false;
-		// Mirrors the Sieve `size :over` / JMAP `minSize` semantics.
+		// The same reading as JMAP `minSize`: at least this size.
 		res = email.size >= kb * 1024;
 	} else {
 		let hay: string;

@@ -3,8 +3,6 @@ import type { Email } from '$lib/jmap/types';
 import type { Rule, RuleCondition } from '$lib/types/rules';
 import { evaluateRulesForEmail, outcomeToUpdate, updatesForEmails, type RuleActionCtx } from './rules-engine';
 import type { RuleAction } from '$lib/types/rules';
-import { buildJmapFilter } from './rules';
-import { buildSieveContext, compileRulesToSieve } from './sieve';
 
 function email(overrides: Partial<Email> = {}): Email {
 	return {
@@ -66,10 +64,6 @@ describe('evaluateRulesForEmail', () => {
 		const outcome = evaluateRulesForEmail(e, [tab], ctx, '');
 		expect(outcome.firedRuleIds).toEqual(['tab']);
 		expect(outcomeToUpdate(e, outcome)).toEqual({ 'keywords/$seen': true });
-
-		const script = compileRulesToSieve([tab], buildSieveContext([]));
-		expect(script).toContain('addflag "\\\\Seen";');
-		expect(script).not.toContain('$cat_');
 	});
 });
 
@@ -80,7 +74,6 @@ describe('rules that may not run', () => {
 	const flagged = rule('flagged', { conditions: [fromShop], actions: move, attention: 'jev_condition', enabled: true });
 	// The same rule as an old browser tab would save it: the Jev condition still in it.
 	const unconverted = rule('old', { conditions: [fromShop, jev('j')], actions: move });
-	const mailboxes = [{ id: 'finance', name: 'Finance', role: null, parentId: null, sortOrder: 0, totalEmails: 0, unreadEmails: 0 }];
 
 	it('never fire in the engine, though the mail matches their exact conditions', () => {
 		for (const r of [flagged, unconverted, { ...unconverted, logic: 'anyof' as const }]) {
@@ -95,88 +88,5 @@ describe('rules that may not run', () => {
 		const stopper = { ...flagged, actions: [{ type: 'stopProcessing' as const }] };
 		const later = rule('later', { conditions: [fromShop], actions: [{ type: 'markRead' }] });
 		expect(evaluateRulesForEmail(email(), [stopper, later], ctx, '').firedRuleIds).toEqual(['later']);
-	});
-
-	it('give no search filter, so the preview counts nothing for them', () => {
-		expect(buildJmapFilter(flagged)).toBeNull();
-		expect(buildJmapFilter(unconverted)).toBeNull();
-		expect(buildJmapFilter({ ...flagged, attention: undefined })).toEqual({ from: 'shop.example' });
-	});
-
-	it('are left out of Sieve rather than widened', () => {
-		for (const r of [flagged, unconverted]) {
-			const script = compileRulesToSieve([r], buildSieveContext(mailboxes));
-			expect(script).not.toMatch(/^\s*fileinto /m);
-			expect(script).not.toContain('if header');
-		}
-		expect(compileRulesToSieve([{ ...flagged, attention: undefined }], buildSieveContext(mailboxes))).toContain('fileinto "Finance";');
-	});
-});
-
-describe('Move to trash in Sieve', () => {
-	const trashIt = rule('trash', { conditions: [fromShop], actions: [{ type: 'delete' }, { type: 'markRead' }] });
-	const box = (id: string, name: string, role: string | null) => ({
-		id,
-		name,
-		role,
-		parentId: null,
-		sortOrder: 0,
-		totalEmails: 0,
-		unreadEmails: 0
-	});
-
-	it('files the message into Trash instead of discarding it', () => {
-		const script = compileRulesToSieve([trashIt], buildSieveContext([box('in', 'Inbox', 'inbox'), box('tr', 'Deleted Items', 'trash')]));
-		expect(script).not.toContain('discard');
-		expect(script).toContain('fileinto "Deleted Items";');
-		// Like the app's own engine, it doesn't stop the rule's later actions.
-		expect(script).toContain('addflag "\\\\Seen";');
-		expect(script).not.toContain('stop;');
-	});
-
-	it('drops the action when the account has no Trash', () => {
-		const script = compileRulesToSieve([trashIt], buildSieveContext([box('in', 'Inbox', 'inbox')]));
-		expect(script).not.toContain('discard');
-		expect(script).not.toMatch(/^\s*fileinto /m);
-	});
-});
-
-describe('buildJmapFilter negation', () => {
-	const cond = (over: Partial<RuleCondition>): RuleCondition => ({
-		id: 'c',
-		field: 'subject',
-		op: 'contains',
-		value: 'hello',
-		negate: false,
-		...over
-	});
-	const only = (c: RuleCondition): Rule => ({
-		id: 'r',
-		name: 'r',
-		enabled: true,
-		logic: 'allof',
-		conditions: [c],
-		actions: [],
-		createdAt: 0
-	});
-
-	it('reads NOT and "doesn\'t contain" as the engine does: together they cancel out', () => {
-		const not = { operator: 'NOT', conditions: [{ subject: 'hello' }] };
-		expect(buildJmapFilter(only(cond({ op: 'not_contains' })))).toEqual(not);
-		expect(buildJmapFilter(only(cond({ negate: true })))).toEqual(not);
-		expect(buildJmapFilter(only(cond({ op: 'not_contains', negate: true })))).toEqual({ subject: 'hello' });
-	});
-
-	it('ignores an operator left behind on Has attachment and Size, as the engine does', () => {
-		expect(buildJmapFilter(only(cond({ field: 'hasAttachment', op: 'not_contains', value: '' })))).toEqual({
-			hasAttachment: true
-		});
-		expect(buildJmapFilter(only(cond({ field: 'size', op: 'not_contains', value: '100' })))).toEqual({
-			minSize: 102400
-		});
-		expect(buildJmapFilter(only(cond({ field: 'hasAttachment', negate: true, value: '' })))).toEqual({
-			operator: 'NOT',
-			conditions: [{ hasAttachment: true }]
-		});
 	});
 });

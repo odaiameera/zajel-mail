@@ -140,21 +140,28 @@ const tabRemoved: Rule = {
 let pinned: { sender: string; category: string; savesBefore: number }[] = [];
 /** Whether the pins endpoint answers; a test turns it off. */
 let pinsWork = true;
+/** What the preview endpoint answers; a test may change it after stubFetch. */
+let previewAnswer: Record<string, number> = { matched: 3, scanned: 3, total: 3 };
+/** What the page posted to /api/rules/apply, with how many saves came before. */
+let applied: { body: unknown; savesBefore: number }[] = [];
 
 /** The page's requests, answered; returns the rules it saved, newest last. */
 function stubFetch(): Rule[][] {
 	const saved: Rule[][] = [];
 	pinned = [];
 	pinsWork = true;
+	previewAnswer = { matched: 3, scanned: 3, total: 3 };
+	applied = [];
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async (url: string, init?: RequestInit) => {
 			if (url === '/api/preferences/rules') saved.push(JSON.parse(String(init?.body)).rules);
+			if (url === '/api/rules/apply') applied.push({ body: JSON.parse(String(init?.body)), savesBefore: saved.length });
 			if (url === '/api/jev/pins') {
 				if (!pinsWork) return new Response(JSON.stringify({ error: 'Unknown account' }), { status: 404 });
 				pinned.push({ ...JSON.parse(String(init?.body)), savesBefore: saved.length });
 			}
-			return new Response(JSON.stringify(url === '/api/rules/preview' ? { count: 3 } : { success: true }), { status: 200 });
+			return new Response(JSON.stringify(url === '/api/rules/preview' ? previewAnswer : { success: true }), { status: 200 });
 		})
 	);
 	return saved;
@@ -358,5 +365,29 @@ describe('Settings → Rules', () => {
 		expect(screen.queryByText(/This rule became a sender pin/)).toBeNull();
 		await fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
 		await waitFor(() => expect(saved).toEqual([[]]));
+	});
+
+	it('says how much of the Inbox the match count looked at', async () => {
+		stubFetch();
+		previewAnswer = { matched: 12, scanned: 500, total: 900 };
+		page([exact]);
+		await waitFor(() => expect(screen.getByText(/of your newest 500 Inbox messages match this rule/)).toBeTruthy(), { timeout: 2000 });
+		expect(screen.getByText('12')).toBeTruthy();
+	});
+
+	it('says plainly when the whole Inbox was counted', async () => {
+		stubFetch();
+		previewAnswer = { matched: 1, scanned: 40, total: 40 };
+		page([exact]);
+		await waitFor(() => expect(screen.getByText(/Inbox message matches this rule/)).toBeTruthy(), { timeout: 2000 });
+	});
+
+	it('saves, then applies the saved rule by its id', async () => {
+		const saved = stubFetch();
+		page([exact]);
+		await fireEvent.click(screen.getByRole('button', { name: /Save & apply now/ }));
+		await waitFor(() => expect(applied).toHaveLength(1));
+		expect(applied[0]).toEqual({ body: { ruleIds: ['exact'] }, savesBefore: 1 });
+		expect(saved).toHaveLength(1);
 	});
 });

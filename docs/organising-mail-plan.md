@@ -90,18 +90,18 @@ Two behaviour changes follow from this:
 
 ## Data model
 
-Next migration number is 028. Old tables stay until the last stage, so an interrupted upgrade loses nothing.
+Stage 3 took 028 (`account_tasks`, one-time jobs per account such as retiring the Sieve script) and stage 4 takes 029, so the numbers below start at 030. Old tables stay until the last stage, so an interrupted upgrade loses nothing.
 
-- **028 `rules`**: one row per rule, keyed by account id: position, enabled, name, conditions, one target (folder or label by id; Trash, Archive, Junk by role), `mark_read`, `star`, `stop`, an `attention` note, and the original rule kept as `legacy_json`.
+- **030 `rules`**: one row per rule, keyed by account id: position, enabled, name, conditions, one target (folder or label by id; Trash, Archive, Junk by role), `mark_read`, `star`, `stop`, an `attention` note, and the original rule kept as `legacy_json`.
   - Surviving actions: move, label, mark read, star (renamed from "mark important", which clashed with the Important tab), stop. "Delete" becomes a move to Trash.
   - A rule with several targets becomes adjacent rows, one per target.
   - **Rules with a Jev condition** are disabled and listed under "Needs your attention", never silently dropped.
   - **Rules that only set a tab** become sender pins when they are a simple sender match, and stay listed as a note saying which pin they became until the owner dismisses it; otherwise they are listed for attention, with the reason and, where they name a sender, a one-click pin. No conversion is silent.
   - Deleting a folder or label deletes its rules (the confirmation says how many).
 - **`auto_reply_sent`** (with stage 4, numbered in order of shipping): account, sender address, day. One row per reply, so a sender gets at most one a day; pruned after a week.
-- **029 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).
-- **030**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows).
-- **031**: drop `user_rules`, `rules_cursor`, `label_meta`, `folder_meta`, `jev_rule_feedback` and the unused Jev columns.
+- **031 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).
+- **032**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows).
+- **033**: drop `user_rules`, `rules_cursor`, `label_meta`, `folder_meta`, `jev_rule_feedback` and the unused Jev columns.
 
 ## Settings
 
@@ -118,13 +118,13 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 | 0 | **Done.** Tested on the real server: Stalwart does not run the Sieve script at delivery | — |
 | 1 | **Done.** Rules become exact-match only; Jev rule conditions and their endpoints removed | Accounts with Jev rules switch runner |
 | 2 | **Done.** Tabs belong to Jev: "set tab" removed from rules, tab rules become pins | Pins now act with Jev off |
-| 3 | One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
+| 3 | **Done.** One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
 | 4 | Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
-| 5 | Rules table (028) and validated saves | Splitting multi-target rules |
-| 6 | Folders and labels consistent: `filing.ts`, one metadata API (029), one picker | Moves now leave every folder, not just the Inbox |
-| 7 | One new-mail pipeline (030); `jev/worker.ts` split | The largest change |
+| 5 | Rules table (030) and validated saves | Splitting multi-target rules |
+| 6 | Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
+| 7 | One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
 | 8 | The two settings pages | UI only |
-| 9 | Clean-up (031): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
+| 9 | Clean-up (033): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
 
 Stages 1 and 2 remove the most complexity for the least risk, and can ship before anything structural moves. Between stages 3 and 4 the Auto-reply settings page is hidden, since it does nothing today either. The README's Jev section and `docs/jev-plan.md` are updated in each stage.
 
@@ -150,4 +150,47 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 
 ## Status
 
-Stages 0, 1 and 2 are done. Later stages follow one PR at a time.
+Stages 0 to 3 are done. Later stages follow one PR at a time.
+
+## Design notes
+
+The designs each stage was built to, kept for the reasons behind them.
+
+### Stage 3 design: one matcher, Sieve removed
+
+#### Why
+- "How many emails match" (preview) and "Save & apply" disagree today. Preview counts with a mail-server search over every folder (`buildJmapFilter`, `src/lib/server/rules.ts`), which is word-based and can't express "is", "starts with" or "ends with". Apply uses the real engine on the Inbox. The apply endpoint's own comment calls the search approach wrong (`src/routes/api/rules/apply/+server.ts`, the comment above the scan loop).
+- Apply acts on rules sent in the request body instead of the saved ones.
+- Sieve does nothing on this server but is compiled and uploaded on every save, and can switch off a script made in another mail client.
+
+#### 3a. One scan for preview and apply
+New `src/lib/server/rules-scan.ts`:
+- `scanInbox(client, accountId, rules, opts)` pages the Inbox newest first and runs each page through the existing engine (`matcherProperties`, `updatesForEmails` in `src/lib/server/rules-engine.ts`).
+- `opts.apply`: when false it only counts; when true it writes, with the batching and rejected-write accounting that the apply endpoint has today (moved here, not rewritten).
+- `opts.limit`: stop after this many messages. `opts.onProgress`, `opts.cancelled` as today.
+- Returns `{ scanned, matched, applied, failed, failedReason, total }`.
+
+`/api/rules/preview`:
+- Takes the rule being edited (unsaved), passes it through the same guard a saved rule gets (`isRunnable`, and the save-time conversion in `src/lib/server/rules-upgrade.ts`), then `scanInbox` with `apply: false`.
+- Limit: the newest 500 Inbox messages; 200 when the rule has a body condition (bodies are fetched).
+- Returns `{ matched, scanned, total }`. The editor shows "12 of your newest 500 Inbox messages match", or "12 Inbox messages match" when the whole Inbox was scanned.
+
+`/api/rules/apply`:
+- Takes `{ ruleIds?: string[] }` and loads those rules from the store (all enabled rules when omitted). Rules in the request body are no longer accepted. The page saves first, then applies, which it already does.
+- Keeps its preflight (missing or unset targets), its progress stream and Cancel.
+
+Deleted: `src/lib/server/rules.ts` and the tests for `buildJmapFilter`.
+
+#### 3b. Sieve removed
+- Deleted: `src/lib/server/sieve.ts`, `/api/rules/deploy` and its test, the Sieve tests in `rules-engine.test.ts`, the deploy call and both Sieve banners on the rules page, Sieve mentions in comments and the README.
+- **The script already on the server is retired once per account.** New migration `028_account_tasks.sql`: `account_tasks(account_id, name, done_at)`, cascading from `mail_accounts`. On an account's next rules run (it has the credentials), task `retire_sieve_script`:
+  - `SieveScript/get`; if a script named `mailrules` exists, deactivate it if it is the active one (`onSuccessDeactivateScript`) and destroy it. A script with any other name is never touched.
+  - Mark done on success, and also when the server has no Sieve capability. Any other failure is retried on the next run and never blocks rules.
+- **Auto-reply settings page**: removed from the settings navigation and redirected to `/settings` in this commit (it has never worked); stage 4 brings it back.
+
+#### Stage 3 tests
+- Preview and apply report the same matches for the same rule on the same Inbox (the test the plan asked for), including for "is", "starts with", NOT, and a body condition.
+- Preview never writes; preview of a rule flagged for attention reports 0 without scanning.
+- Apply ignores rules in the request body; unknown rule ids are refused; Cancel stops at the next page.
+- `retire_sieve_script`: deactivates and destroys `mailrules`; leaves another active script alone; no Sieve capability marks it done; a failure retries; runs once.
+- The form-action and route tests still pass with `/api/rules/deploy` gone.
