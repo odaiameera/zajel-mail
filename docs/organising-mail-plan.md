@@ -74,7 +74,7 @@ Two behaviour changes follow from this:
 
 **New: `src/lib/server/auto-reply.ts`**: out-of-office sent by the app (see "Out-of-office" below).
 
-**Deleted**: `rules-scheduler.ts`, `rules-store.ts`, `rules.ts` (the JMAP-filter matcher), `jev/rules.ts`, `sieve.ts`, `/api/rules/jev-test`, `/api/rules/deploy`, `/api/jev/rule-feedback`, `/api/preferences/rules`, `/api/preferences/labels`. The two pickers, `FolderPicker` and `FolderLocationPicker`, become one `MailboxPicker`.
+**Deleted**: `rules-scheduler.ts`, `rules-store.ts`, `rules.ts` (the JMAP-filter matcher), `jev/rules.ts`, `sieve.ts`, `/api/rules/jev-test`, `/api/rules/deploy`, `/api/jev/rule-feedback`, `/api/preferences/rules`, `/api/preferences/labels`. `FolderPicker` becomes `MailboxPicker` (stage 6); `FolderLocationPicker` keeps its select, built from the same folder list.
 
 **Sieve is removed entirely.** Stage 0 was run on the owner's server: out-of-office was switched on and saved without error (so the script was uploaded and activated), a message was sent from Outlook, and no reply arrived in Outlook's Inbox or Junk. Stalwart on this deployment is not running the user's Sieve script at delivery, which matches the comment at `src/lib/server/rules-scheduler.ts:12-13`. So:
 - The Sieve copy of the rules has never done anything; removing it changes no behaviour.
@@ -120,8 +120,8 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 | 2 | **Done.** Tabs belong to Jev: "set tab" removed from rules, tab rules become pins | Pins now act with Jev off |
 | 3 | **Done.** One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
 | 4 | **Done.** Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
-| 5 | Rules table (030) and validated saves | Splitting multi-target rules |
-| 6 | Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
+| 5 | **Done.** Rules table (030) and validated saves | Splitting multi-target rules |
+| 6 | **Done.** Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
 | 7 | One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
 | 8 | The two settings pages | UI only |
 | 9 | Clean-up (033): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
@@ -145,12 +145,12 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 ## Open questions for the owner
 
 1. **Out-of-office per account?** Answered: one setting for all linked accounts, with optional start and end dates (stage 4).
-2. **Rules to Junk**: should a rule be allowed to move mail to Junk?
+2. **Rules to Junk**: answered: yes, as the owner's exact rule; no spam-training keywords are set (stage 5).
 3. **Mail delivered straight to another folder** (not the Inbox) is never seen by rules. Keep it that way?
 
 ## Status
 
-Stages 0 to 4 are done. Later stages follow one PR at a time.
+Stages 0 to 6 are done. Later stages follow one PR at a time.
 
 ## Design notes
 
@@ -261,3 +261,208 @@ Migration `029_auto_reply.sql`: `auto_reply_log(account_id, sender, sent_at, ema
 - **Replying to the wrong mail.** Guarded by rules 2 to 8, the cap, and one-per-day. Stalwart's own spam filtering has already filed most spam into Junk, which is never seen here; mail Jev later moves to Junk may get a reply first.
 - **Preview cost.** Up to 500 messages are fetched per preview (200 with bodies), debounced as today.
 - **Replies only while the app runs.** Stated on the page.
+
+### Stage 5 design: rules in their own table, saved one at a time, validated
+
+#### Why
+- Rules are one JSON blob per mail **address** (`user_rules`), while everything else about an account is keyed by the account row. Removing an account leaves its rules behind.
+- The page saves by posting the whole list; the server stores whatever it is sent (`saveRules`, `src/lib/server/rules-store.ts`). There is no validation and no way to reorder.
+- A rule holds a free list of actions. The agreed model is simpler: a rule files into **one** place (a folder or a label), and may also mark as read, star, or stop later rules.
+
+#### The rule, after this stage
+```
+id, name, enabled, logic (all / any), conditions[]
+target:  none | folder <mailbox id> | label <mailbox id> | trash | archive | junk
+markRead, star, stop        (booleans)
+attention, legacy, note     (set by the server only)
+```
+- `star` is today's "mark important", renamed because it clashed with the Important tab. `delete` becomes target `trash`.
+- `target: none` is allowed, for rules that only mark as read or star.
+- Order matters and is stored as `position`. Running in order: labels add up; the **first** matching rule that moves a message decides its folder; `stop` ends evaluation. (Today two matching move rules leave a message in both folders; a message lives in one folder, so the first wins.)
+- Rules may move mail to Junk (the owner's exact rule; no spam-training keywords are set). Mail delivered straight to another folder is still not seen by rules. Both as today.
+
+#### Data
+Migration `030_rules.sql`: table `rules` (`id`, `account_id` cascading from `mail_accounts`, `position`, `enabled`, `name`, `logic`, `conditions_json`, `target_kind`, `target_mailbox_id`, `target_role`, `mark_read`, `star`, `stop`, `attention`, `note_json`, `legacy_json`, `created_at`, `updated_at`), indexed by `(account_id, position)`.
+
+One-time data step `data/rules_to_table` (the `DATA_STEPS` runner in `src/lib/server/db/migrate.ts`; runs after the two existing rule steps, so it reads rules that are already exact-only and tab-free):
+- For each `user_rules` row whose address has a mail account (exact match, then case-insensitive) and whose account has no rows in `rules` yet, convert each stored rule and insert, all in one transaction.
+- A rule with several filing actions becomes adjacent rows, one per target, in the original order: same name, same conditions; `markRead` and `star` on the first row; `stop` on the last. Rows after the first carry a dismissible note: "This rule filed mail in several places, so it is now N rules."
+- Flagged rules (`jev_condition`, `tab_rule`, `tab_pinned`, `tab_removed`) keep their flag, note and `legacy` exactly.
+- A rule whose target mailbox no longer exists is carried over unchanged (the engine already skips it; the page marks it "target missing").
+- Addresses with no account are left where they are. `user_rules` and `rules_cursor` are not dropped or written by this stage (dropped in the last stage), so a failed or interrupted upgrade loses nothing.
+- Unlinking an account now deletes its rules: add the count to `unlinkLosses` (`src/lib/server/auth/accounts.ts`) so the unlink confirmation says so.
+
+#### Code
+Create `src/lib/server/rules/` and move what exists into it (imports updated, no behaviour change): `rules-engine.ts` → `rules/engine.ts`, `rules-scan.ts` → `rules/scan.ts`, `rules-upgrade.ts` → `rules/upgrade.ts`. New:
+- `rules/schema.ts`: `parseRule(input, mailboxes)`, the only way a rule enters the store. It returns a clean rule or a list of plain-English problems. Checks: name (1–120 characters); logic; 1–20 conditions with known field and operator, value up to 500 characters, a number for size; at least one usable condition; target mailbox exists and is of the stated kind (reuse `isLabelMailbox` / `labelMailboxIds` in `src/lib/types/labels.ts`; never the `Labels` container, Remind Me Later or Scheduled); role targets exist on the account; the rule does something (a target, mark read or star). Unknown fields are dropped; `attention`, `note` and `legacy` can never be set by a client.
+- `rules/store.ts`: `listRules`, `getRule`, `createRule`, `updateRule`, `deleteRule`, `reorderRules`, `dismissNote`, `deleteRulesForMailbox`, all by account id.
+- `rules/engine.ts`: evaluates the new shape. `evaluateRulesForEmail` and `updatesForEmails` keep their names and callers (scheduler, scan).
+
+API (all for the active account; every write goes through `parseRule`):
+- `GET /api/rules`, `POST /api/rules` (create).
+- `PATCH /api/rules/[id]` (edit, enable/disable), `DELETE /api/rules/[id]`.
+- `POST /api/rules/reorder` `{ ids }` (must be exactly the account's rule ids).
+- `POST /api/rules/[id]/dismiss`: clears a `tab_removed` or split note; deletes a `tab_pinned` stub.
+- `POST /api/rules/[id]/pin`: the existing "Pin <sender> to <tab>" for a flagged tab rule, done in one server call (create or replace the pin, delete the rule).
+- A flagged rule (`jev_condition`, `tab_rule`) can only be enabled by a `PATCH` that makes it a valid exact rule, which clears the flag ("Save as exact rule").
+- `/api/rules/preview` takes a draft through `parseRule` (problems are returned, not thrown); `/api/rules/apply` is unchanged (`{ ruleIds }`).
+- Deleted: `/api/preferences/rules`, `rules-store.ts`, `db/queries/rules.ts`'s rule functions (the cursor functions stay), the `mail_rules` cookie import, and the save-time conversion (no whole-list saves remain to convert).
+
+Deleting a folder or label (`/api/folders`, the label delete in `src/lib/jmap/labels.ts` callers) also deletes the rules that file into it; the confirmation says how many.
+
+#### The page
+`src/routes/(app)/settings/rules/` keeps its place until the settings pass, but is rebuilt on the new API:
+- New `src/lib/components/settings/RuleEditor.svelte` (reused by the "Folders & labels" page in stage 8): name; conditions; "Then": one target picker (a folder, a label, Trash, Archive, Junk, or nothing) and three checkboxes (mark as read, star, stop processing later rules); the live match count; **Save**, **Save & apply**, Cancel, Delete. Nothing is sent until Save. Validation problems from the server are shown beside the fields.
+- The list: each rule as "conditions → target", with its on/off switch, and **move up / move down** (there is no way to reorder today).
+- "Needs your attention" as now, using the new dismiss and pin calls.
+- Rules are loaded by the page's own server load, not by the app layout on every navigation.
+
+#### Tests
+- `parseRule`: each check, with the message it returns; unknown fields dropped; client-set `attention` ignored; a label id given as a folder (and the reverse) refused; the `Labels` container refused.
+- Store: create / update / delete / reorder; another account's rule id is "not found"; reorder with a missing or foreign id refused; cascade on account delete.
+- Data step: single-action rules; a rule with two labels and a move becomes three rows with flags and `stop` placed as designed and the note on rows two and three; `delete` → Trash; `markImportant` → star; each flagged kind carried over intact; missing target; address without an account left alone; case-different address; running twice changes nothing; a failure half-way leaves no rows and no marker.
+- Engine: labels add up; first move wins; `stop`; mark read and star; flagged or disabled rules never run; target missing is skipped.
+- API: every route requires sign-in and the active account; enabling a flagged rule without fixing it is refused; dismiss and pin behave per kind.
+- Folder / label delete removes its rules and reports the count.
+- Page and editor: nothing sent until Save; server problems shown; move up / down calls reorder; Save & apply applies the saved rule.
+- Scheduler, scan, preview and apply tests still pass on the new shape (preview and apply still agree).
+
+#### Verification on the owner's server
+1. After deploying, every rule is still listed, in the same order, and files the same mail (try two that were multi-action before).
+2. Reorder two rules; create, edit and delete one; "Save & apply" on one.
+3. Delete a label that a rule files into: the confirmation names the rule count, and the rule is gone.
+
+#### Risks
+- **Splitting multi-target rules** changes how the list looks; the note on the extra rows says why.
+- **First move wins**: mail that two move rules used to leave in two folders now goes to the first rule's folder only.
+- **Size**: storage, API, engine shape, migration and the editor in one stage. It is built as three commits (storage and migration; API and engine; page and editor), each passing on its own.
+
+#### As built
+- `target_kind` is stored as `none`, `folder`, `label` or `role`, with the role in `target_role`; the API's target is `{ kind: 'none' | 'folder' | 'label' | 'trash' | 'archive' | 'junk', mailboxId? }`. Rule ids are unique per account (primary key `(account_id, id)`): ids from the old lists are kept, and the extra rows of a split rule are `<id>~2`, `<id>~3`.
+- The split note is a new `RuleAttention`, `split`, with `note.splitInto`. A split rule that was already flagged keeps its flag on every row (a rule waiting to be rewritten must not run in part), and its extra rows carry the split note beside the flag.
+- A folder with the role Trash, Archive or Junk given as a folder is stored as that role. The Inbox, Sent and Drafts are refused as targets.
+- A `PATCH` of only `enabled` and/or `name` is a small edit: only those are checked (a name of 1–120 characters) and saved, so a rule the upgrade carried over (21 conditions, a deleted folder, a stop-only rule) can always be switched off, renamed, or (unflagged) switched on. A `PATCH` with any of `logic`, `conditions`, `target`, `markRead`, `star`, `stop` is a full edit and goes through `parseRule`; the editor sends a rename alone as a small edit.
+- A rule waiting to be rewritten (`jev_condition`, `tab_rule`, `tab_pinned`) is switched on, and its flag, note and `legacy` cleared, only by a full edit that passes `parseRule` and carries `rewrite: true` ("Save as exact rule"). Any other edit of it is saved but leaves it flagged and off; asking to switch it on without `rewrite` is refused. The editor has a plain **Save** and a separate **Save as exact rule**, which for a `jev_condition` rule first asks: "This rule also required: “…”. Save it without that?"
+- A rule that only stops later rules is valid: "does something" is a target, mark read, star or stop.
+- The main list holds every rule that can run, in its real order, a split or `tab_removed` rule included with its note and "Got it" on its row. "Needs your attention" holds only the rules switched off by a flag, without move buttons. Move up / down swaps a rule with its neighbour in the main list and sends the whole order with just those two exchanged.
+- The data step never gives an account another spelling's list when a `user_rules` row with its exact address exists, even an empty or unreadable one: the old engine read only that one.
+- The preview counts a draft whose only problems are its name or target, and returns the problems with the count; problems with its conditions count nothing.
+- Deleting a folder or label deletes the rules that only file into it. A rule that also marks read, stars or stops later rules is kept with its target set to none, so the rules below it don't start acting on mail it used to stop. The delete responses report `rulesDeleted` and `rulesKept`; the confirmations work both out from `GET /api/rules` before asking and name each count that isn't 0.
+
+### Stage 6 design: folders and labels behave one way everywhere
+
+#### Why
+"Where does this message live" is decided differently depending on who asks:
+- A hand move leaves the source folder, or every folder, or (from a label view) the **label**, depending on the caller. A rule's move leaves only the Inbox. The assistant's snooze leaves one folder; the app's snooze leaves all.
+- "Move to…" offers labels, Remind Me Later and Scheduled as if they were folders. Picking a label there takes the message out of its folder. The move endpoints and the assistant accept the `Labels` container as a destination.
+- Removing a message's only label sends it to Archive from the app, and silently does nothing from the assistant.
+- Colour and icon live in two tables keyed by mail address, written through three APIs (label colour is written twice on edit); deleting a folder leaves its row behind; the sidebar reads label colour from the server and folder colour from a client store.
+- Six pieces of code each decide what kind of mailbox something is, and disagree.
+
+#### The rules, in one place
+A message is in **exactly one folder** and **any number of labels**.
+
+Kinds of mailbox (one function decides, see below):
+- `system`: has a role (Inbox, Archive, Sent, Drafts, Junk, Trash…).
+- `special`: Remind Me Later and Scheduled (found as today, by role or by name at the top level).
+- `labels-root`: the top-level mailbox named `Labels`.
+- `label`: a direct child of `labels-root`.
+- `folder`: everything else.
+
+Operations:
+1. **Move to a folder.** Allowed destinations: a `folder`, or the system folders Inbox, Archive, Junk, Trash. Never a label, the labels root, Remind Me Later, Scheduled, Drafts or Sent. Afterwards the message is in the destination and keeps all its labels; it has left every other non-label mailbox, whichever one the caller thought it was in.
+2. **Add a label.** The label is added; nothing else changes.
+3. **Remove a label.** The label is removed. If that would leave the message in no mailbox at all, it goes to Archive. Always, from every caller.
+4. Trash, Archive, Spam, Not spam, Snooze are moves under rule 1 with their existing extras (`$junk` / `$notjunk` keywords, destroying mail already in Trash, creating the reminder). Reminder return and cancel stay as they are (the message is only in Remind Me Later, plus labels).
+5. Scheduled send's own handling of Drafts/Sent is out of scope.
+
+#### Code
+
+**New `src/lib/mailboxes.ts`** (pure, used by server and client):
+- `mailboxKind(mailbox, mailboxes)` → the five kinds above. Replaces the inline checks in `src/lib/utils/folder-tree.ts` (`filterUserFolders` is rebuilt on it), `src/routes/api/folders/+server.ts` (`isSystem` / `isLabel`), `src/lib/server/rules/schema.ts` (`parseTarget`), `src/lib/server/agent/tools.ts` (`list_folders`), `Sidebar.svelte` (`pseudoRole`), and the scattered Remind Me Later name checks. `src/lib/types/labels.ts`'s `findLabelsParentId` / `isLabelMailbox` / `labelMailboxIds` stay as the low-level helpers it uses.
+- `canMoveInto(mailbox, mailboxes)` → rule 1's destination test.
+- `nextMailboxIds(current, op, mailboxes)` → the resulting `mailboxIds` for `{move: id}`, `{addLabel: id}`, `{removeLabel: id, archiveId}`. The one place the rules above are written. Extracted from `updateEmailMailboxes` (`src/lib/jmap/email.ts` ~654-670).
+- `folderOptions(mailboxes)` → the folder tree as a flat, indented list (from `buildFolderTree`), for pickers.
+
+**New `src/lib/server/filing.ts`**: `moveToFolder(client, accountId, ids, targetId)`, `addLabel(...)`, `removeLabel(...)`. Each loads the mailboxes, refuses a bad target with a plain error, computes with `nextMailboxIds`, writes whole `mailboxIds` objects (the existing Stalwart all-digit-id workaround), and reports rejected writes.
+- `src/lib/jmap/email.ts`: `moveAway` and the `leave` / `sourceMailboxId` logic are deleted. `moveEmail(s)`, `trashEmail`, `archiveEmail`, `markAsSpam`, `markAsNotSpam` and their bulk forms are rebuilt on `filing.ts` (or replaced by it where the caller is server code); `sourceMailboxId` parameters disappear from them and from the endpoints' bodies (accepted and ignored for one release so an open tab doesn't break).
+- `src/lib/jmap/labels.ts` `applyLabel` / `removeLabel` become the `filing.ts` functions; `deleteLabelMailbox`'s detach keeps its Archive fallback through `nextMailboxIds`.
+- Callers moved onto `filing.ts`: `src/routes/api/email/[id]/+server.ts`, `src/routes/api/email/bulk/+server.ts`, `src/routes/api/email/[id]/label/+server.ts`, `src/routes/api/reminders` (snooze), `src/lib/server/agent/tools.ts` (`move_to_folder`, `set_label`, `archive`, `move_to_trash`, `snooze`), `src/lib/server/jobs/runner.ts`, `src/lib/server/telegram/notifier.ts`, the Jev worker's Junk move and rescue, and the rules engine (`src/lib/server/rules/engine.ts`: a rule's move now uses `nextMailboxIds`, so it leaves every folder, not just the Inbox).
+- A `moveTo` request whose target is a label is treated as **add label** (the sidebar's drop on a label, and old clients). A target that is the labels root, Remind Me Later, Scheduled, Drafts or Sent is refused with 400.
+- `/api/folders`: Remind Me Later and Scheduled can no longer be renamed, moved or deleted.
+
+**Pickers**
+- New `src/lib/components/MailboxPicker.svelte` replaces `FolderPicker.svelte` (used in `EmailList.svelte` and `EmailDetail.svelte`). Two sections: **Move to** (Inbox, Archive, Junk, Trash, then the folder tree, indented) and **Label** (the labels; picking one adds the label and does not move the message). No Remind Me Later, Scheduled or labels root.
+- `modals/FolderLocationPicker.svelte` and the target select in `settings/RuleEditor.svelte` keep their `<select>` form but are built from `folderOptions` / `mailboxKind`, so all three list the same folders in the same order.
+- The sidebar: dropping on Remind Me Later is no longer allowed (it created no reminder).
+
+**Metadata**
+- Migration `031_mailbox_meta.sql`: `mailbox_meta(account_id, mailbox_id, color, icon, display_name, created_at, updated_at)`, all three values nullable, primary key `(account_id, mailbox_id)`, cascading from `mail_accounts`. Filled in the same migration from `label_meta` and `folder_meta` by joining the address to `mail_accounts.email` (exact match first, then case-insensitive only for addresses with no exact match). The old tables are left alone (dropped in the last stage).
+- One store, `src/lib/server/db/queries/mailbox-meta.ts`, keyed by account id; a value can be set back to nothing (today's `COALESCE` upsert can't clear one).
+- One API: `PATCH /api/mailboxes/[id]/meta` `{ color?, icon?, displayName? }` (null clears). Deleting a folder or a label deletes its row server-side.
+- The app layout returns the active account's metadata; the sidebar reads label **and** folder colour and icon from it. `src/lib/stores/userState.ts` loses its folder and label parts.
+- Deleted: `/api/user-state/labels/**`, `/api/user-state/folders/**`, the `updateColor` action of `/api/preferences/labels`, `db/queries/label-meta.ts`, `db/queries/folder-meta.ts`. `CreateMailboxModal.svelte` writes metadata once, through the new route. (`/api/preferences/labels` create / rename / delete stays until the settings pages are merged.)
+
+**The old keyword-label migration** (`migrateKeywordLabelsIfNeeded`, `src/lib/server/labels.ts`): runs only when the `mail_labels` cookie is present (today it runs on every page load until a marker cookie is set); writes through `filing.ts` (it uses a patch form the code elsewhere says Stalwart rejects, and ignores the result); checks the result before deleting the cookie.
+
+#### What the owner will notice
+1. "Move to…" lists folders as a tree, and labels in their own "Label" section. Picking a label adds it; it no longer takes the message out of its folder.
+2. Moving a message while looking at a label keeps the label (it used to drop the label and leave a copy in the old folder).
+3. A message that was in two folders ends up only in the one it is moved to.
+4. A rule's move takes the message out of every folder, not just the Inbox.
+5. Snoozing from the assistant or Telegram behaves like snoozing in the app.
+6. Taking the last label off a message always sends it to Archive.
+7. Remind Me Later and Scheduled can't be renamed or deleted, and aren't offered as places to move mail.
+8. Colours and icons carry over; a folder's or label's colour can now be cleared.
+
+#### Tests
+- `mailboxes.test.ts`: `mailboxKind` for each kind (including a label's child, a top-level folder called "Scheduled", an account with no `Labels`); `canMoveInto` for each; `nextMailboxIds` for: move from one folder; move when in two folders; move keeps labels; move from a label-only message; add label; remove label; remove the only label → Archive; remove a label that isn't on the message.
+- `filing.test.ts`: each bad destination refused; rejected writes reported; bulk.
+- `src/routes/api/email/bulk/moves.test.ts` updated: moving to a folder from a label view now gives the folder **and** the label (today's assertion at ~138 changes); a `moveTo` onto a label adds it and keeps the folder; the labels root, Remind Me Later, Scheduled, Drafts, Sent refused.
+- Rules engine: a move leaves every folder and keeps labels. Jev worker: Junk move and rescue unchanged in result for Inbox mail.
+- Agent tools: `move_to_folder` refuses the labels root / specials; `set_label` off on a label-only message → Archive; `snooze` leaves every folder; `list_folders` kinds.
+- `/api/folders`: Remind Me Later and Scheduled protected.
+- Metadata: the migration (label and folder rows, case-different address, address without an account, both tables holding the same mailbox id); clearing a colour; folder delete and label delete remove the row; another account's mailbox id refused; the layout provides metadata.
+- `MailboxPicker`: sections, order, tree indentation, nothing special listed; picking a label calls add-label.
+- Keyword migration: not run without the cookie; cookie kept when a write is refused.
+
+#### Verification on the owner's server
+1. Move a message from a label view to a folder: it is in the folder and still has the label.
+2. "Move to…" → a label: the message keeps its folder and gains the label.
+3. Remove a message's only label (one that is in no folder): it appears in Archive.
+4. Folder and label colours and icons look as before; clear one and reload.
+
+#### Risks
+- **Behaviour changes 2, 3 and 4** are deliberate and visible; they are the point of the stage.
+- **Many callers move at once.** Three commits, each passing on its own: (1) `mailboxes.ts`, `filing.ts` and every mail-moving caller; (2) metadata; (3) pickers and the keyword migration.
+
+#### Done means
+Every test point has a test seen to fail without its behaviour; `npm run lint` clean, `npm run check` 0 errors, full `npx vitest run` passing on each commit; README and `docs/organising-mail-plan.md` updated (stage 6 marked done, this design added to its notes).
+
+#### As built
+- `mailboxKind`, `canMoveInto`, `nextMailboxIds` and `folderOptions` are in `src/lib/mailboxes.ts`, with the folder tree helpers (`buildFolderTree`, `flattenFolderTree`, `filterUserFolders`, `byPosition`), `isScheduledMailbox` and the Remind Me Later and Scheduled names. `src/lib/utils/folder-tree.ts` and `src/lib/jmap/mailbox.ts` re-export them. Remind Me Later is found by name at the top level, without a role (no server gives it one).
+- `nextMailboxIds` returns null when taking a label off would leave a message in nothing and no Archive is known yet; `filing.ts` then finds or makes Archive and asks again, so Archive is only made when it is needed.
+- `filing.ts` also has `fileInto` (the endpoints' "Move to": a label adds it, anything else is a move), `moveToTrash`, `moveToArchive`, `markSpam`, `markNotSpam` and `snoozeEmail`. Snoozing from the app, the assistant and Telegram all use `snoozeEmail`: the message comes back to the folder the caller named only if it is really in it, otherwise to the first folder it is in, otherwise the Inbox. Telegram names the Inbox. The assistant can now snooze a message that is only in a label (it comes back to the Inbox).
+- The rules engine and the Jev worker's Junk move and rescue keep their own batched writes and refusal records; their moves go through `nextMailboxIds` (`RuleOutcome` is now `moveTo` plus `labels`), not through `filing.ts`'s writes.
+- Trash deletes for good only on an explicit `permanent: true` for a message really in Trash (see "After review"). `sourceMailboxId` is ignored by every mail endpoint; only the reminder endpoint still reads it, as a hint for where a snoozed message comes back to, used only when the message is really there. "Trust sender" brings a message out of Junk when it is really in Junk, whatever the view.
+- `list_folders` says `folder` (mail can be moved into it), `label`, or `not for filing`.
+- The sidebar no longer accepts a drop on Remind Me Later from the first commit on, since the server refuses that move from then.
+- `mailbox_meta`: a row with no values left is removed. Where both old tables had the same mailbox for an account, the colour and icon changed last win (on a tie, the folder's). A display name comes only from `label_meta`, and a `folder_meta` row with no colour or icon brings nothing. An empty icon, colour or name became NULL.
+- `PATCH /api/mailboxes/[id]/meta` takes the active account's folders and labels only: an id the account doesn't have is 404; a system folder, Remind Me Later, Scheduled or the Labels container is 400.
+- Labels' colours still reach the sidebar in the label list (`listLabels`), because a label with no colour of its own gets one from the automatic palette; the list is built from `mailbox_meta` in the same page load as `mailboxMeta`.
+- The create and edit dialog writes colour and icon only, in one call, and has a "No color" choice so a colour can be cleared. Renaming a label clears any stored display name, so the label's own name shows. A colour sent with `/api/preferences/labels` `create` is still stored, for an open tab of the older app. `Label.createdAt` is gone (it came from `label_meta` and nothing read it).
+- The keyword-label migration no longer sets or reads the `mail_labels_migrated` marker. It asks for marked messages from the start each round (the old code moved its position forward while clearing the keyword, so it skipped messages), and clears the keyword with `false` in the same write as the label.
+
+#### After review
+Principle: never take a message out of a mailbox the app can't identify, and never destroy mail unless the person is looking at Trash.
+- **A label made during a pass is kept.** A move leaves every mailbox the list knows and calls something other than a label; an id the list doesn't know is kept. The Jev worker and the rules scheduler fetch the mailbox list once more, at most once a pass, when a message about to be written is in a mailbox the list doesn't know.
+- **Deleting for good needs `permanent: true`** on the single and bulk Trash, and the message really being in Trash. Without it, Trash on a message already in Trash changes nothing. The app sends it only from the Trash list itself: its rows, its bulk Trash, its reading pane, and a message opened from it (`/email/<id>?from=trash`). Never from a label, Search, Starred, the assistant or Telegram.
+- **Undo after Trash** uses a new `restore` action: `{ action: 'restore', mailboxId }` takes a message out of Trash, labels kept, back to any folder or system folder, Sent and Drafts included. Remind Me Later, Scheduled, a label, the Labels container, Trash or an unknown id send it to the Inbox. A message no longer in Trash is left alone.
+- **One answer to "can mail go here"**: `canDropOn` in `src/lib/mailboxes.ts` (the sidebar's), on top of `canMoveInto`, which now also refuses a folder named "Sent Messages", as the old picker and sidebar did.
+- **The old keyword-label migration** gives the cookie's colour only to a label it made, and after a run that leaves the cookie it waits an hour before trying again for that account (in memory; the warning is logged the first time, then at most once a day).
+- **Bulk actions** write 50 updates to an `Email/set` (`EMAIL_SET_BATCH`, also used by the rules) and answer 200 with `failed: [ids]` when at least one message was written, 500 when none was. Spam corrections are recorded for the written ones only. The list says "3 messages couldn’t be moved" (or archived, moved to Trash, deleted, moved to Spam) and refreshes.
+- **Telegram's Archive button** answers "No Archive folder" when there is none and none can be made.
+- **The label endpoint** answers with the message's resulting `mailboxIds`, and the open message shows them, so taking off its only label shows it in Archive without a reload.
+
+#### Notes for the PR
+- A tab left open across the deploy can't change folder or label colours until it is reloaded: the routes it used are gone (404 / 400). No mail is affected.

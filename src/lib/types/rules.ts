@@ -2,11 +2,14 @@ import type { InboxCategory } from './categories';
 
 /**
  * A rule matches mail exactly: by sender, recipient, subject, body, size or
- * attachment, and files it: into a folder, under a label, read, flagged or
- * in Trash. Rules once also took a plain-English condition that Jev judged,
- * and could put mail in an Inbox tab. Both are gone: the tabs belong to
- * Jev and to sender pins. A stored rule that relied on either is listed for
- * its owner (see `RuleAttention`).
+ * attachment. It files what it matches into one place (a folder, a label,
+ * Trash, Archive or Junk, or nowhere), and may also mark it read, star it,
+ * or stop the rules after it. Rules once also took a plain-English
+ * condition that Jev judged, could put mail in an Inbox tab, and held a
+ * free list of actions. All three are gone: the tabs belong to Jev and to
+ * sender pins, and a rule that filed into several places became one rule
+ * per place. A stored rule that relied on any of them is listed for its
+ * owner (see `RuleAttention`).
  */
 export type RuleConditionField = 'from' | 'to' | 'subject' | 'body' | 'size' | 'hasAttachment';
 export type RuleConditionOp = 'contains' | 'not_contains' | 'is' | 'starts_with' | 'ends_with';
@@ -29,6 +32,10 @@ export interface RuleCondition {
 	negate: boolean;
 }
 
+/**
+ * The actions of a rule as rules were stored before each rule filed into
+ * one place (see `ActionRule`). Only the upgrade reads them.
+ */
 export type RuleActionType =
 	| 'moveToFolder'
 	| 'applyLabel'
@@ -44,7 +51,10 @@ export interface RuleAction {
 }
 
 /**
- * Why a rule is listed under "Needs your attention" on the rules page.
+ * What an upgrade did to a rule, for its owner to see. The first three
+ * switch it off, and the rules page lists it under "Needs your attention";
+ * `tab_removed` and `split` rules still run, and are listed where they run
+ * with their note.
  *
  * - `jev_condition`: it had a condition Jev judged, which rules no longer
  *   have. The rule is switched off, and never runs until its owner has
@@ -61,10 +71,15 @@ export interface RuleAction {
  *   say). The tab part is gone and the rest still runs; this is only a note
  *   for the owner, who can dismiss it.
  *
+ * - `split`: it filed mail in several places, and a rule now files into
+ *   one, so it became several rules side by side. Every one after the first
+ *   says so (`RuleNote.splitInto`) until the owner dismisses it; together
+ *   they do what the one rule did.
+ *
  * No conversion is silent: every rule an upgrade changes in a way its owner
  * could notice carries one of these until they have seen it.
  */
-export type RuleAttention = 'jev_condition' | 'tab_rule' | 'tab_pinned' | 'tab_removed';
+export type RuleAttention = 'jev_condition' | 'tab_rule' | 'tab_pinned' | 'tab_removed' | 'split';
 
 /** A sender pin: an address or `@domain`, and the tab its new mail goes to. */
 export interface RulePin {
@@ -118,7 +133,12 @@ export interface LegacyRule {
 	actions: { type: string; value?: string }[];
 }
 
-export interface Rule {
+/**
+ * A rule as rules were stored before this version: a free list of actions,
+ * kept per mail address. Only the upgrade reads it now, to bring what was
+ * stored then into the rules table (see rules/upgrade.ts).
+ */
+export interface ActionRule {
 	id: string;
 	name: string;
 	enabled: boolean;
@@ -132,6 +152,62 @@ export interface Rule {
 	legacy?: LegacyRule;
 	/** For `tab_rule` and `tab_pinned`: what became of the rule's tab. */
 	tabNote?: TabNote;
+}
+
+/** The folders with a role a rule can file into, named by that role. */
+export type RuleRole = 'trash' | 'archive' | 'junk';
+export const RULE_ROLES: readonly RuleRole[] = ['trash', 'archive', 'junk'];
+
+/**
+ * The one place a rule files what it matches. A folder or a label is named
+ * by its mailbox id; Trash, Archive and Junk by their role.
+ */
+export type RuleTarget = { kind: 'none' } | { kind: 'folder' | 'label'; mailboxId: string } | { kind: RuleRole };
+
+/** What the server keeps beside a flagged rule, for its owner to read. */
+export interface RuleNote {
+	/** For `tab_rule` and `tab_pinned`: what became of the rule's tab. */
+	tab?: TabNote;
+	/** The rule this one came from filed mail in this many places, and is now this many rules. */
+	splitInto?: number;
+}
+
+/** What a rule's owner says about it: everything a client may send. */
+export interface RuleDraft {
+	name: string;
+	enabled: boolean;
+	logic: RuleLogic;
+	conditions: RuleCondition[];
+	target: RuleTarget;
+	markRead: boolean;
+	/** Flag the message (shown as a star). */
+	star: boolean;
+	/** Run no later rule on a message this one matched. */
+	stop: boolean;
+}
+
+/** One thing wrong with a rule a client sent, for the part of the editor it is about. */
+export interface RuleProblem {
+	field: 'name' | 'logic' | 'conditions' | 'target' | 'actions';
+	/** For a condition: which one, counted from 0. */
+	index?: number;
+	message: string;
+}
+
+/**
+ * A stored rule. `attention`, `note` and `legacy` are the server's: an
+ * upgrade sets them and the owner's dealing with the rule clears them. No
+ * client ever sends them.
+ */
+export interface Rule extends RuleDraft {
+	id: string;
+	/** Its place in the account's list: rules run in this order. */
+	position: number;
+	createdAt: number;
+	updatedAt: number;
+	attention?: RuleAttention;
+	note?: RuleNote;
+	legacy?: LegacyRule;
 }
 
 /**
@@ -161,7 +237,7 @@ export function isUsableCondition(c: RuleCondition): boolean {
  * doesn't know (a `jev` one from before they were removed). Such a rule
  * must not run on its other conditions alone: that would widen it.
  */
-export function hasOnlyKnownConditions(rule: Pick<Rule, 'conditions'>): boolean {
+export function hasOnlyKnownConditions(rule: { conditions: RuleCondition[] }): boolean {
 	return Array.isArray(rule.conditions) && rule.conditions.every((c) => CONDITION_FIELDS.has(c?.field));
 }
 
@@ -170,7 +246,7 @@ export function hasOnlyKnownConditions(rule: Pick<Rule, 'conditions'>): boolean 
  * it is. Its owner rewrites it, deletes it or, for a rule that became a
  * pin, just dismisses what is left of it.
  */
-export function needsRewrite(rule: Pick<Rule, 'attention'>): boolean {
+export function needsRewrite(rule: { attention?: RuleAttention }): boolean {
 	return rule.attention === 'jev_condition' || rule.attention === 'tab_rule' || rule.attention === 'tab_pinned';
 }
 
@@ -179,7 +255,7 @@ export function needsRewrite(rule: Pick<Rule, 'attention'>): boolean {
  * owner to rewrite it (even if someone switched it back on without doing
  * so), and made only of conditions this version can match.
  */
-export function isRunnable(rule: Rule): boolean {
+export function isRunnable(rule: Pick<Rule, 'enabled' | 'attention' | 'conditions'>): boolean {
 	// Stored rules are whatever a browser sent: an entry may not be a rule at all.
 	if (!rule || typeof rule !== 'object') return false;
 	return !!rule.enabled && !needsRewrite(rule) && hasOnlyKnownConditions(rule);
@@ -192,7 +268,7 @@ export function conditionHolds(c: RuleCondition, matched: boolean): boolean {
 
 /** Whether a rule matches, given whether each usable condition matched. */
 export function ruleHolds(
-	rule: Pick<Rule, 'conditions' | 'logic'>,
+	rule: { conditions: RuleCondition[]; logic: RuleLogic },
 	matches: (c: RuleCondition) => boolean
 ): boolean {
 	if (!hasOnlyKnownConditions(rule)) return false; // never on part of a rule
@@ -200,4 +276,32 @@ export function ruleHolds(
 	if (conds.length === 0) return false; // never match-everything
 	const results = conds.map((c) => conditionHolds(c, matches(c)));
 	return rule.logic === 'anyof' ? results.some(Boolean) : results.every(Boolean);
+}
+
+/** Whether a rule files into this folder or label. */
+export function filesInto(rule: Pick<Rule, 'target'>, mailboxId: string): boolean {
+	return (rule.target.kind === 'folder' || rule.target.kind === 'label') && rule.target.mailboxId === mailboxId;
+}
+
+/**
+ * What deleting a folder or label does to the rules that file into it, for
+ * the confirmation: those that only file there are deleted, and those that
+ * also mark read, star or stop later rules are kept, filing nowhere (as the
+ * server does it, `deleteRulesForMailbox`). A sentence whose count is 0 is
+ * left out; with no such rules at all, this is ''.
+ */
+export function mailboxDeleteRulesNote(rules: Pick<Rule, 'target' | 'markRead' | 'star' | 'stop'>[], mailboxId: string): string {
+	const filing = rules.filter((r) => filesInto(r, mailboxId));
+	const kept = filing.filter((r) => r.markRead || r.star || r.stop).length;
+	const deleted = filing.length - kept;
+	const parts: string[] = [];
+	if (deleted > 0) {
+		parts.push(`This also deletes ${deleted} ${deleted === 1 ? 'rule that files' : 'rules that file'} into it.`);
+	}
+	if (kept > 0) {
+		parts.push(
+			`${kept} other ${kept === 1 ? 'rule' : 'rules'} will keep marking mail as read (or starring, or stopping later rules) without filing it.`
+		);
+	}
+	return parts.join(' ');
 }

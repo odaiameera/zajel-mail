@@ -4,6 +4,7 @@ import {
 	hasOnlyKnownConditions,
 	isRunnable,
 	isUsableCondition,
+	mailboxDeleteRulesNote,
 	needsRewrite,
 	ruleHolds,
 	type Rule,
@@ -29,8 +30,13 @@ function rule(overrides: Partial<Rule> = {}): Rule {
 		enabled: true,
 		logic: 'allof',
 		conditions: [from()],
-		actions: [{ type: 'applyLabel', value: 'lbl' }],
+		target: { kind: 'label', mailboxId: 'lbl' },
+		markRead: false,
+		star: false,
+		stop: false,
+		position: 0,
 		createdAt: 0,
+		updatedAt: 0,
 		...overrides
 	};
 }
@@ -105,5 +111,21 @@ describe('isRunnable', () => {
 		// Nor that an entry is a rule.
 		expect(isRunnable(null as unknown as Rule)).toBe(false);
 		expect(isRunnable('rule' as unknown as Rule)).toBe(false);
+	});
+});
+
+describe('mailboxDeleteRulesNote', () => {
+	const L = { kind: 'label' as const, mailboxId: 'L' };
+	const r = (over: Partial<Rule> = {}) => ({ target: L, markRead: false, star: false, stop: false, ...over });
+
+	it('names the rules deleted and the rules kept, leaving out a sentence whose count is 0', () => {
+		expect(mailboxDeleteRulesNote([r(), r({ markRead: true }), r({ stop: true })], 'L')).toBe(
+			'This also deletes 1 rule that files into it. 2 other rules will keep marking mail as read (or starring, or stopping later rules) without filing it.'
+		);
+		expect(mailboxDeleteRulesNote([r(), r()], 'L')).toBe('This also deletes 2 rules that file into it.');
+		expect(mailboxDeleteRulesNote([r({ star: true })], 'L')).toBe(
+			'1 other rule will keep marking mail as read (or starring, or stopping later rules) without filing it.'
+		);
+		expect(mailboxDeleteRulesNote([r({ target: { kind: 'folder', mailboxId: 'X' } }), r({ target: { kind: 'none' }, stop: true })], 'L')).toBe('');
 	});
 });

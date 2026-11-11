@@ -2,25 +2,25 @@ import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
-import { getRules } from '$lib/server/db/queries/rules';
-import { scanInbox } from '$lib/server/rules-scan';
-import { userEmailFromAuth } from '$lib/server/user';
+import { roleMailboxId, ruleContext } from '$lib/server/rules/engine';
+import { scanInbox } from '$lib/server/rules/scan';
+import { listRules } from '$lib/server/rules/store';
 import { isRunnable } from '$lib/types/rules';
 
 /**
  * Run saved rules over the mail already in the Inbox ("Save & apply now"),
  * streaming progress. The rules are read from the store, never taken from
  * the request: the page saves first, then applies, so what acts is what
- * was saved and passed the save-time checks. `ruleIds` picks some of them;
+ * was saved and passed `parseRule`. `ruleIds` picks some of them;
  * without it every enabled rule runs.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.auth) {
+	if (!locals.auth || !locals.activeAccountId) {
 		return new Response('Not authenticated', { status: 401 });
 	}
 
 	const body = (await request.json().catch(() => ({}))) as { ruleIds?: unknown };
-	const saved = getRules(userEmailFromAuth(locals.auth));
+	const saved = listRules(locals.activeAccountId);
 	let chosen = saved;
 	if (body.ruleIds !== undefined) {
 		if (!Array.isArray(body.ruleIds) || !body.ruleIds.every((id) => typeof id === 'string')) {
@@ -58,34 +58,24 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				}
 
 				const mailboxes = await getMailboxes(client, accountId);
-				const validIds = new Set(mailboxes.map((m) => m.id));
+				const ctx = ruleContext(mailboxes);
 				const inbox = mailboxes.find((m) => m.role === 'inbox');
 
-				// Preflight: a rule whose label/folder target was deleted would
-				// "apply" as a stream of server-side rejections. Name the broken
-				// rule instead of pretending it ran.
+				// Preflight: a rule whose folder or label was deleted would "apply"
+				// as a stream of server-side rejections, or quietly not at all.
+				// Name the broken rule instead of pretending it ran.
 				for (const rule of activeRules) {
-					const stale = rule.actions.find(
-						(a) =>
-							(a.type === 'moveToFolder' || a.type === 'applyLabel') &&
-							a.value &&
-							!validIds.has(a.value)
-					);
-					if (stale) {
-						send({
-							type: 'error',
-							message: `Rule "${rule.name}" targets a ${stale.type === 'moveToFolder' ? 'folder' : 'label'} that no longer exists. Open the rule and pick the target again.`
-						});
-						return;
-					}
-					const unset = rule.actions.find(
-						(a) => (a.type === 'moveToFolder' || a.type === 'applyLabel') && !a.value
-					);
-					if (unset) {
-						send({
-							type: 'error',
-							message: `Rule "${rule.name}" has a ${unset.type === 'moveToFolder' ? '"move to folder"' : '"apply label"'} action with no target selected.`
-						});
+					const t = rule.target;
+					const gone =
+						t.kind === 'folder' || t.kind === 'label'
+							? !ctx.validMailboxIds?.has(t.mailboxId)
+							: t.kind !== 'none' && !roleMailboxId(ctx, t.kind);
+					if (gone) {
+						const where =
+							t.kind === 'folder' || t.kind === 'label'
+								? `a ${t.kind} that no longer exists`
+								: `${t.kind === 'junk' ? 'Junk' : t.kind === 'trash' ? 'Trash' : 'Archive'}, which this account doesn’t have`;
+						send({ type: 'error', message: `Rule "${rule.name}" files into ${where}. Open the rule and pick where it files mail again.` });
 						return;
 					}
 				}

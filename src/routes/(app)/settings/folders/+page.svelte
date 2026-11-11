@@ -3,11 +3,11 @@
 	import { invalidateAll, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { pageTitle } from '$lib/utils/title';
+	import { mailboxDeleteRulesNote, type Rule } from '$lib/types/rules';
 	import type { LayoutData } from '../$types';
 	import type { Mailbox } from '$lib/jmap/types';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
-	import { userState } from '$lib/stores/userState';
-	import { colorByHex, DEFAULT_LABEL_COLOR, type LabelColor } from '$lib/constants/colors';
+	import { colorByHex, type LabelColor } from '$lib/constants/colors';
 	import { buildFolderTree, flattenFolderTree, moveStep } from '$lib/utils/folder-tree';
 	import CreateMailboxModal from '$lib/components/modals/CreateMailboxModal.svelte';
 	import MailboxIcon from '$lib/components/MailboxIcon.svelte';
@@ -15,7 +15,7 @@
 	type EditingMailbox = {
 		id: string;
 		name: string;
-		color: LabelColor;
+		color: LabelColor | null;
 		icon?: string | null;
 		parentId?: string | null;
 	};
@@ -43,11 +43,11 @@
 	}
 
 	function openEdit(folder: Mailbox) {
-		const meta = $userState.folders.get(folder.id);
+		const meta = data.mailboxMeta[folder.id];
 		modalEditing = {
 			id: folder.id,
 			name: folder.name,
-			color: meta?.color ? colorByHex(meta.color) : DEFAULT_LABEL_COLOR,
+			color: meta?.color ? colorByHex(meta.color) : null,
 			icon: meta?.icon ?? null,
 			parentId: folder.parentId
 		};
@@ -72,8 +72,16 @@
 		await invalidateAll();
 	}
 
+	/** What deleting a folder or label does to the rules that file into it, for the confirmation; '' when there are none. */
+	async function rulesNote(id: string): Promise<string> {
+		const res = await fetch('/api/rules').catch(() => null);
+		const body = res?.ok ? ((await res.json().catch(() => null)) as { rules?: Rule[] } | null) : null;
+		const note = mailboxDeleteRulesNote(body?.rules ?? [], id);
+		return note ? ` ${note}` : '';
+	}
+
 	async function deleteFolder(folder: Mailbox) {
-		const msg = `Delete "${folder.name}"? Messages inside will not be deleted — move them first if you want to keep them somewhere else.`;
+		const msg = `Delete "${folder.name}"? Messages inside will not be deleted — move them first if you want to keep them somewhere else.${await rulesNote(folder.id)}`;
 		if (!confirm(msg)) return;
 		const res = await fetch('/api/folders', {
 			method: 'POST',
@@ -123,7 +131,7 @@
 				{#each flatFolders as opt (opt.id)}
 					{@const folder = folderById.get(opt.id)}
 					{#if folder}
-						{@const meta = $userState.folders.get(folder.id)}
+						{@const meta = data.mailboxMeta[folder.id]}
 						<div
 							class="group flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-hover/50 border border-border/60"
 							style="padding-left: {12 + opt.depth * 16}px"

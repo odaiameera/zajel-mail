@@ -15,9 +15,10 @@
 	import type { Mailbox } from '$lib/jmap/types';
 	import type { Label } from '$lib/types/labels';
 	import { findLabelsParentId } from '$lib/types/labels';
-	import { userState } from '$lib/stores/userState';
+	import type { MailboxMetaMap } from '$lib/types/mailbox-meta';
 	import { showToast } from '$lib/stores/toast';
-	import { REMIND_ME_LATER_NAME, isScheduledMailbox } from '$lib/jmap/mailbox';
+	import { isScheduledMailbox } from '$lib/jmap/mailbox';
+	import { canDropOn, mailboxKind } from '$lib/mailboxes';
 	import {
 		buildFolderTree,
 		descendantIds,
@@ -45,6 +46,10 @@
 
 	const expanded = createFolderExpandedStore(folderExpanded);
 
+	// Colour and icon of each folder, from the page (mailbox_meta). Labels
+	// carry theirs in `labels`, built from the same table.
+	const meta = $derived((page.data.mailboxMeta ?? {}) as MailboxMetaMap);
+
 	// --- Mailbox classification ---
 
 	const systemOrder: Record<string, number> = {
@@ -59,14 +64,14 @@
 	};
 
 	/**
-	 * The "Remind Me Later" mailbox is a plain user-named mailbox in JMAP
-	 * (no role), so we tag it client-side as a pseudo-system folder so it
-	 * sorts next to Inbox and gets its own icon.
+	 * "Remind Me Later" and "Scheduled" are the app's own mailboxes, usually
+	 * without a role in JMAP, so they are tagged here as pseudo-system folders
+	 * that sort next to the Inbox and get their own icons.
 	 */
 	function pseudoRole(m: Mailbox): string | null {
-		if (isScheduledMailbox(m)) return 'scheduled';
-		if (m.role) return m.role;
-		if (m.name === REMIND_ME_LATER_NAME && m.parentId === null) return 'remind-me-later';
+		const kind = mailboxKind(m, mailboxes);
+		if (kind === 'special') return isScheduledMailbox(m) ? 'scheduled' : 'remind-me-later';
+		if (kind === 'system') return m.role;
 		return null;
 	}
 
@@ -127,13 +132,11 @@
 	const EMAIL_DRAG_TYPE = 'application/x-email-ids';
 	let dragOverId = $state<string | null>(null);
 
-	function canDropOn(m: Mailbox): boolean {
-		if (m.role === 'drafts' || m.role === 'sent') return false;
-		if (m.name === 'Sent Messages') return false;
-		// Only Send later puts mail in Scheduled.
-		if (isScheduledMailbox(m)) return false;
-		return true;
-	}
+	/**
+	 * Mail can be dropped on a folder it may be moved into, or on a label,
+	 * which adds the label. Not on Drafts, Sent, Scheduled (only Send later
+	 * puts mail there) or Remind Me Later (a drop there set no reminder).
+	 */
 
 	function hasEmailPayload(e: DragEvent): boolean {
 		return !!e.dataTransfer?.types?.includes(EMAIL_DRAG_TYPE);
@@ -159,7 +162,7 @@
 		if (dragOverId === id) dragOverId = null;
 	}
 
-	async function onRowDrop(e: DragEvent, targetMailboxId: string, targetIsLabel: boolean) {
+	async function onRowDrop(e: DragEvent, targetMailboxId: string) {
 		if (!hasEmailPayload(e)) return;
 		e.preventDefault();
 		dragOverId = null;
@@ -170,18 +173,10 @@
 		try { ids = JSON.parse(raw); } catch { return; }
 		if (!Array.isArray(ids) || ids.length === 0) return;
 
-		// Dropping on a label should ADD the label (multi-mailbox membership)
-		// without removing the email from its home folder — so omit
-		// sourceMailboxId. For real folders, include the current list's
-		// mailbox so the move actually moves.
-		const body: Record<string, unknown> = {
-			ids,
-			action: 'moveTo',
-			targetMailboxId
-		};
-		if (!targetIsLabel && currentMailboxId) {
-			body.sourceMailboxId = currentMailboxId;
-		}
+		// The server decides what a drop does: on a folder the messages move
+		// there (out of every other folder, keeping their labels); on a label
+		// they gain the label and stay where they are.
+		const body = { ids, action: 'moveTo', targetMailboxId };
 
 		await fetch('/api/email/bulk', {
 			method: 'POST',
@@ -257,7 +252,7 @@
 	}
 
 	async function rowDrop(e: DragEvent, target: { id: string; parentId: string | null }, isLabel: boolean) {
-		if (hasEmailPayload(e)) return onRowDrop(e, target.id, isLabel);
+		if (hasEmailPayload(e)) return onRowDrop(e, target.id);
 		if (!hasMailboxPayload(e)) return;
 		e.preventDefault();
 		const drag = mailboxDrag;
@@ -321,18 +316,6 @@
 		if (mailboxDrop?.id === id) return `${base} ${mailboxDrop.where === 'before' ? 'drop-before' : 'drop-after'}`;
 		return base;
 	}
-
-	/** The mailbox the user is currently viewing, so folder drops can
-	 *  detach from it. Derived from the URL. */
-	const currentMailboxId = $derived.by(() => {
-		const path = page.url.pathname;
-		const m = path.match(/^\/folder\/([^/]+)/);
-		if (m) return m[1];
-		if (path.startsWith('/inbox')) {
-			return systemFolders.find((f) => f.role === 'inbox')?.id ?? '';
-		}
-		return '';
-	});
 </script>
 
 <aside class="w-full h-full bg-surface flex flex-col overflow-hidden">
@@ -385,7 +368,7 @@
 							? 'bg-accent/10 text-accent-fg'
 							: 'text-text/85 hover:bg-surface-hover hover:text-text'}"
 				>
-					<span class="w-4 h-4 shrink-0 flex items-center justify-center text-current"><MailboxIcon node={$userState.folders.get(mailbox.id)?.iconNode} fallback="folder" color={$userState.folders.get(mailbox.id)?.color ?? null} /></span>
+					<span class="w-4 h-4 shrink-0 flex items-center justify-center text-current"><MailboxIcon node={meta[mailbox.id]?.iconNode} fallback="folder" color={meta[mailbox.id]?.color ?? null} /></span>
 				</a>
 			{/each}
 
@@ -408,13 +391,13 @@
 		<nav class="flex-1 overflow-y-auto py-1 px-2">
 			<!-- System folders -->
 			{#each systemFolders as mailbox (mailbox.id)}
-				{@const droppable = canDropOn(mailbox)}
+				{@const droppable = canDropOn(mailbox, mailboxes)}
 				<a
 					href={getMailboxHref(mailbox)}
 					ondragover={droppable ? onRowDragOver : undefined}
 					ondragenter={droppable ? (e) => onRowDragEnter(e, mailbox.id) : undefined}
 					ondragleave={droppable ? (e) => onRowDragLeave(e, mailbox.id) : undefined}
-					ondrop={droppable ? (e) => onRowDrop(e, mailbox.id, false) : undefined}
+					ondrop={droppable ? (e) => onRowDrop(e, mailbox.id) : undefined}
 					class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors
 						{dragOverId === mailbox.id
 							? 'bg-accent/20 text-accent-fg ring-1 ring-accent/40'
@@ -562,10 +545,8 @@
 			>
 				<span
 					class="w-4 h-4 shrink-0 flex items-center justify-center"
-					style={$userState.folders.get(node.id)?.color
-						? `color: ${$userState.folders.get(node.id)?.color}`
-						: ''}
-				><MailboxIcon node={$userState.folders.get(node.id)?.iconNode} fallback="folder" /></span>
+					style={meta[node.id]?.color ? `color: ${meta[node.id]?.color}` : ''}
+				><MailboxIcon node={meta[node.id]?.iconNode} fallback="folder" /></span>
 				<span class="flex-1 truncate">{node.name}</span>
 				{#if node.unreadEmails > 0}
 					<span class="text-xs font-medium bg-accent/15 text-accent-fg px-1.5 py-0.5 rounded-full shrink-0">{node.unreadEmails}</span>

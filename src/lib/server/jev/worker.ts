@@ -3,7 +3,7 @@ import { listSchedulableAuths, markNeedsReauth } from '$lib/server/auth/accounts
 import { JMAPAuthError, type JMAPClient } from '$lib/jmap/client';
 import { createClient, fetchSession } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
-import type { AuthState, Email, JMAPSession, MethodCall } from '$lib/jmap/types';
+import type { AuthState, Email, JMAPSession, Mailbox, MethodCall } from '$lib/jmap/types';
 import { categoryKeywordPatch, categoryOf, type InboxCategory } from '$lib/types/categories';
 import { isRunnable } from '$lib/types/rules';
 import {
@@ -12,7 +12,7 @@ import {
 	updateJevSettings,
 	type SpamMode
 } from '$lib/server/db/queries/jev-settings';
-import { getRules } from '$lib/server/db/queries/rules';
+import { listRules } from '$lib/server/rules/store';
 import { listPins, pinFor, senderHistory, type SenderPin } from '$lib/server/db/queries/jev-learning';
 import {
 	addUsage,
@@ -24,7 +24,7 @@ import {
 	recordDecision,
 	recordFailure
 } from '$lib/server/db/queries/jev-decisions';
-import { emptyOutcome, outcomeToUpdate, type RuleOutcome } from '$lib/server/rules-engine';
+import { emptyOutcome, outcomeToUpdate, type RuleOutcome } from '$lib/server/rules/engine';
 import { askJev, JevError, jevMode } from './client';
 import {
 	CATEGORY_QUESTION,
@@ -39,6 +39,7 @@ import { isUrgent, URGENT_QUESTION, URGENT_QUESTION_ID } from '$lib/server/teleg
 import { flushAlerts, queueUrgent, urgentAlertsWanted } from '$lib/server/telegram/notifier';
 import { errorFields, logEvent } from '$lib/server/log';
 import { INBOX_HOLD_MS, isHeld, JEV_SORTED_KEYWORD } from '$lib/inbox-hold';
+import { hasUnknownMailbox } from '$lib/mailboxes';
 import type { JevQuestion, JevResponse } from './types';
 import { startJevWatchers } from './stream';
 import { applyRulesNow } from '$lib/server/rules-scheduler';
@@ -248,16 +249,18 @@ interface SpamRecord {
 	action: string | null;
 }
 
-/** Move a message from one mailbox to another. */
-function moveOutcome(from: string, to: string): RuleOutcome {
+/**
+ * Move a message to Junk or back to the Inbox. It is a move like any other
+ * (see `nextMailboxIds`): the message keeps its labels and leaves every
+ * other folder.
+ */
+function moveOutcome(to: string): RuleOutcome {
 	const outcome = emptyOutcome();
-	outcome.removeMailboxIds.add(from);
-	outcome.addMailboxIds.add(to);
+	outcome.moveTo = to;
 	return outcome;
 }
 
-const hasWork = (o: RuleOutcome) =>
-	o.addMailboxIds.size > 0 || o.removeMailboxIds.size > 0 || Object.keys(o.keywords).length > 0;
+const hasWork = (o: RuleOutcome) => o.moveTo !== null || o.labels.size > 0 || Object.keys(o.keywords).length > 0;
 
 type Placement = Pick<Email, 'mailboxIds' | 'keywords'>;
 
@@ -458,7 +461,7 @@ export async function sortNewMail(
 	// after the message is showing. With tabs off, a rule's move has to land
 	// before a spam verdict could send the same message to Junk. Rules don't
 	// wait on TypeSafe, so they keep working while it is down.
-	if (getRules(accountEmail).some(isRunnable)) {
+	if (listRules(accountRowId).some(isRunnable)) {
 		try {
 			await applyRulesNow(auth, accountEmail);
 		} catch (err) {
@@ -538,6 +541,8 @@ export async function sortNewMail(
 		accountId,
 		accountRowId,
 		inboxId: inbox.id,
+		mailboxes,
+		mailboxesRefreshed: false,
 		junkId: junk?.id ?? null,
 		spamMode,
 		jev: !jevOn ? 'off' : paused ? 'wait' : 'ask',
@@ -576,6 +581,10 @@ interface Batch {
 	accountId: string;
 	accountRowId: string;
 	inboxId: string;
+	/** Every mailbox on the account, for the filing rules a move follows. */
+	mailboxes: Mailbox[];
+	/** Whether `mailboxes` has been fetched again in this pass (at most once). */
+	mailboxesRefreshed: boolean;
 	/** Watched while spam checking is on. */
 	junkId: string | null;
 	spamMode: SpamMode;
@@ -704,14 +713,14 @@ async function judgeAndApply(
 		if (junked) {
 			const rescue = acting && action === 'rescue';
 			plans.set(j.email.id, {
-				outcome: rescue && b.junkId ? moveOutcome(b.junkId, b.inboxId) : emptyOutcome(),
+				outcome: rescue && b.junkId ? moveOutcome(b.inboxId) : emptyOutcome(),
 				tab: null,
 				pin: null,
 				spam
 			});
 		} else if (acting && action === 'junk' && b.junkId) {
 			toJunk.add(j.email.id);
-			plans.set(j.email.id, { outcome: moveOutcome(b.inboxId, b.junkId), tab: null, pin: null, spam });
+			plans.set(j.email.id, { outcome: moveOutcome(b.junkId), tab: null, pin: null, spam });
 		} else {
 			plans.set(j.email.id, { ...planFor(j, wantsTabs && !chosen.has(j.email.id), pinOf(j.email)), spam });
 		}
@@ -723,7 +732,7 @@ async function judgeAndApply(
 	if (wantsTabs) {
 		for (const [id, plan] of plans) {
 			const email = fetched.get(id)!;
-			const staysInInbox = plan.outcome.addMailboxIds.has(b.inboxId) || (!inJunk(email) && !toJunk.has(id));
+			const staysInInbox = plan.outcome.moveTo === b.inboxId || (!inJunk(email) && !toJunk.has(id));
 			if (staysInInbox && isHeld(email, now)) plan.outcome.keywords[JEV_SORTED_KEYWORD] = true;
 		}
 	}
@@ -735,6 +744,13 @@ async function judgeAndApply(
 	// rule: it stays as it was put, and Jev's answer is recorded unapplied.
 	const withWork = [...plans].filter(([, p]) => hasWork(p.outcome));
 	const placement = await currentPlacement(b.client, b.accountId, withWork.map(([id]) => id));
+	// The mailbox list is from the start of the pass. A message now in a
+	// mailbox it doesn't know (a label made meanwhile) needs a fresh one, or
+	// the move couldn't tell that label from a folder. Once per pass at most.
+	if (!b.mailboxesRefreshed && hasUnknownMailbox([...placement.values()].map((p) => p.mailboxIds), b.mailboxes)) {
+		b.mailboxes = await getMailboxes(b.client, b.accountId);
+		b.mailboxesRefreshed = true;
+	}
 	const updates: [string, Record<string, unknown>][] = [];
 	const moved = new Set<string>();
 	for (const [id, plan] of withWork) {
@@ -749,7 +765,7 @@ async function judgeAndApply(
 			}
 			continue;
 		}
-		const update = outcomeToUpdate({ ...snapshot, ...current }, plan.outcome);
+		const update = outcomeToUpdate({ ...snapshot, ...current }, plan.outcome, b.mailboxes);
 		if (Object.keys(update).length > 0) updates.push([id, update]);
 	}
 	const notWritten = await writeUpdates(b.client, b.accountId, updates, b.writes);

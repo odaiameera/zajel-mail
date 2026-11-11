@@ -45,9 +45,9 @@ export const PATCH: RequestHandler = async ({ request, params, locals }) => {
 
 /**
  * Unlink a mail account. Data keyed by its address (labels, folders,
- * signatures, rules, reminders) stays and re-attaches on re-link; data keyed
- * by this row cascades away (see {@link unlinkLosses}), and the client shows
- * the counts before asking.
+ * signatures, reminders) stays and re-attaches on re-link; data keyed by
+ * this row, rules included, cascades away (see {@link unlinkLosses}), and
+ * the client shows the counts before asking.
  */
 export const DELETE: RequestHandler = async ({ params, locals, cookies }) => {
 	if (!locals.user) error(401, 'Not signed in');

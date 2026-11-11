@@ -1,80 +1,25 @@
 import type { Cookies } from '@sveltejs/kit';
 import type { JMAPClient } from '$lib/jmap/client';
-import {
-	LABEL_MIGRATION_COOKIE,
-	LEGACY_LABELS_COOKIE,
-	DEFAULT_LABEL_COLOR,
-	type Label
-} from '$lib/types/labels';
+import { LEGACY_LABELS_COOKIE, DEFAULT_LABEL_COLOR, type Label } from '$lib/types/labels';
 import { createLabelMailbox, listLabelMailboxes } from '$lib/jmap/labels';
 import { autoLabelColor } from '$lib/constants/colors';
-import {
-	deleteLabelMeta,
-	getLabelsForUser,
-	upsertLabelMeta
-} from '$lib/server/db/queries/label-meta';
+import { listMailboxMeta, setMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
 import { lucideNode } from '$lib/server/lucide-icons';
-
-export interface LabelMetaEntry {
-	color: string;
-	displayName: string;
-	icon: string | null;
-	createdAt: number;
-}
-
-export type LabelMeta = Record<string, LabelMetaEntry>;
-
-const COOKIE_BASE = {
-	path: '/',
-	maxAge: 60 * 60 * 24 * 365,
-	httpOnly: false,
-	sameSite: 'strict',
-	secure: true
-} as const;
-
-/** Hydrate the per-user label metadata into the `Record<id, …>` shape the
- *  rest of the server code expects. The data lives in SQLite; this reshapes it. */
-export function getLabelMeta(userEmail: string): LabelMeta {
-	const rows = getLabelsForUser(userEmail);
-	const out: LabelMeta = {};
-	for (const r of rows) {
-		out[r.mailboxId] = {
-			color: r.color,
-			displayName: r.displayName,
-			icon: r.icon,
-			createdAt: r.createdAt
-		};
-	}
-	return out;
-}
-
-export function updateLabelMeta(
-	userEmail: string,
-	id: string,
-	patch: Partial<LabelMetaEntry>
-): void {
-	upsertLabelMeta(userEmail, id, {
-		displayName: patch.displayName ?? null,
-		color: patch.color ?? null
-	});
-}
-
-export function removeLabelMeta(userEmail: string, id: string): void {
-	deleteLabelMeta(userEmail, id);
-}
+import { addLabel } from '$lib/server/filing';
 
 /**
  * Merge the JMAP label mailboxes (children of the "Labels" container) with
- * SQLite-backed color meta into the Label[] shape the UI consumes. The
- * mailbox's own name is the display name; SQLite only overrides color (and an
- * optional renamed display name kept in sync on rename).
+ * their colour and icon (mailbox_meta, kept by the mail account `accountRowId`)
+ * into the Label[] shape the UI consumes. The mailbox's own name is the
+ * label's name unless a display name was stored.
  */
 export async function listLabels(
 	client: JMAPClient,
 	accountId: string,
-	userEmail: string
+	accountRowId: string | null | undefined
 ): Promise<Label[]> {
-	const [mailboxes, meta] = [await listLabelMailboxes(client, accountId), getLabelMeta(userEmail)];
+	const mailboxes = await listLabelMailboxes(client, accountId);
+	const meta = Object.fromEntries((accountRowId ? listMailboxMeta(accountRowId) : []).map((row) => [row.mailboxId, row]));
 
 	// Labels nobody has coloured used to all fall back to the same blue, so
 	// colour told them apart not at all. Give each its own from the automatic
@@ -99,8 +44,7 @@ export async function listLabels(
 			name: entry?.displayName?.trim() || m.name,
 			color: entry?.color ?? autoColors.get(m.id) ?? DEFAULT_LABEL_COLOR,
 			icon: entry?.icon || null,
-			iconNode: lucideNode(entry?.icon),
-			createdAt: entry?.createdAt ?? 0
+			iconNode: lucideNode(entry?.icon)
 		};
 	});
 
@@ -111,70 +55,110 @@ export async function listLabels(
 	);
 }
 
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
 /**
- * One-shot migration from keyword-based labels (cookie `mail_labels` +
- * `keywords/<id>` on emails) to mailbox-based labels. Idempotent; the marker
- * cookie makes subsequent loads a no-op. Most accounts have nothing to migrate.
+ * Per account, after a run that left the cookie in place: when to try
+ * again, and when that was last logged. In memory, as the account tasks
+ * keep theirs: a restart may try once more straight away.
+ */
+const keywordMigrationWait = new Map<string, { retryAt: number; warnedAt: number }>();
+
+/**
+ * The old keyword labels: an early version kept labels in a `mail_labels`
+ * cookie and marked messages with a keyword per label. They become label
+ * mailboxes, and each marked message gets the label (through filing, like
+ * any other label) with the keyword cleared in the same write.
+ *
+ * Runs only while that cookie is there, so a page load without it costs
+ * nothing. The cookie goes once every label has been carried over. If the
+ * mail server refuses a write, or anything else fails, it stays, and the
+ * next try for that account waits an hour (the failure is logged the first
+ * time, then at most once a day). The cookie's colour is given only to a
+ * label this run made: one that already exists keeps the colour its owner
+ * gave it.
  */
 export async function migrateKeywordLabelsIfNeeded(
 	client: JMAPClient,
 	accountId: string,
-	userEmail: string,
-	cookies: Cookies
+	accountRowId: string | null | undefined,
+	cookies: Cookies,
+	now = Date.now()
 ): Promise<void> {
-	if (cookies.get(LABEL_MIGRATION_COOKIE) === 'v1') return;
-
 	const rawOld = cookies.get(LEGACY_LABELS_COOKIE);
-	if (!rawOld) {
-		cookies.set(LABEL_MIGRATION_COOKIE, 'v1', COOKIE_BASE);
-		return;
-	}
+	if (!rawOld) return;
 
-	type OldLabel = { id: string; name: string; color: string; createdAt?: number };
+	const key = accountRowId || accountId;
+	const waiting = keywordMigrationWait.get(key);
+	if (waiting && now < waiting.retryAt) return;
+
+	type OldLabel = { id: string; name: string; color: string };
 	let oldLabels: OldLabel[] = [];
 	try {
 		const parsed = JSON.parse(decodeURIComponent(rawOld));
-		if (Array.isArray(parsed)) oldLabels = parsed;
+		if (Array.isArray(parsed)) {
+			oldLabels = parsed.filter(
+				(l): l is OldLabel => !!l && typeof l.id === 'string' && l.id !== '' && typeof l.name === 'string' && l.name.trim() !== ''
+			);
+		}
 	} catch {
-		// Malformed cookie — treat as empty and move on.
+		// Malformed cookie: nothing in it can be carried over.
 	}
 
-	if (oldLabels.length === 0) {
-		cookies.set(LABEL_MIGRATION_COOKIE, 'v1', COOKIE_BASE);
-		cookies.delete(LEGACY_LABELS_COOKIE, { path: '/' });
-		return;
-	}
-
-	// Existing label mailboxes, indexed by lowercased display name, so we can
-	// reuse a child instead of failing on a duplicate-name create.
-	const existing = await listLabelMailboxes(client, accountId);
-	const existingByName = new Map(existing.map((m) => [m.name.toLowerCase(), m.id]));
-
-	for (const old of oldLabels) {
+	let failure: unknown = null;
+	if (oldLabels.length > 0) {
 		try {
-			let newId = existingByName.get(old.name.trim().toLowerCase());
+			// Existing label mailboxes, by lower-cased name, so a label that was
+			// carried over before is reused rather than created twice.
+			const existing = await listLabelMailboxes(client, accountId);
+			const existingByName = new Map(existing.map((m) => [m.name.toLowerCase(), m.id]));
 
-			if (!newId) {
-				const result = await createLabelMailbox(client, accountId, old.name);
-				if ('error' in result) continue;
-				newId = result.id;
+			for (const old of oldLabels) {
+				try {
+					let newId = existingByName.get(old.name.trim().toLowerCase());
+					if (!newId) {
+						const result = await createLabelMailbox(client, accountId, old.name);
+						if ('error' in result) {
+							failure ??= new Error(`the label “${old.name}” could not be made: ${result.error}`);
+							continue;
+						}
+						newId = result.id;
+						existingByName.set(old.name.trim().toLowerCase(), newId);
+						// Only a label made here takes the old colour.
+						if (accountRowId && old.color) setMailboxMeta(accountRowId, newId, { color: old.color });
+					}
+					await migrateEmailsForLabel(client, accountId, old.id, newId);
+				} catch (err) {
+					failure ??= err;
+				}
 			}
-
-			upsertLabelMeta(userEmail, newId, {
-				displayName: old.name,
-				color: old.color || DEFAULT_LABEL_COLOR
-			});
-
-			await migrateEmailsForLabel(client, accountId, old.id, newId);
-		} catch {
-			// Per-label failures are non-fatal; the next load will retry.
+		} catch (err) {
+			failure ??= err;
 		}
 	}
 
-	cookies.set(LABEL_MIGRATION_COOKIE, 'v1', COOKIE_BASE);
-	cookies.delete(LEGACY_LABELS_COOKIE, { path: '/' });
+	if (failure === null) {
+		keywordMigrationWait.delete(key);
+		cookies.delete(LEGACY_LABELS_COOKIE, { path: '/' });
+		return;
+	}
+	const warn = !waiting || now - waiting.warnedAt >= DAY;
+	keywordMigrationWait.set(key, { retryAt: now + HOUR, warnedAt: warn ? now : waiting.warnedAt });
+	if (warn) {
+		console.warn(
+			'[labels] carrying over the old labels failed; will try again in an hour',
+			failure instanceof Error ? failure.message : failure
+		);
+	}
 }
 
+/**
+ * Give every message marked with the old keyword the label, clearing the
+ * keyword in the same write. A refused write throws (EmailUpdateError), so
+ * the caller keeps the cookie. Each round asks again from the start: what
+ * was written no longer has the keyword.
+ */
 async function migrateEmailsForLabel(
 	client: JMAPClient,
 	accountId: string,
@@ -182,41 +166,20 @@ async function migrateEmailsForLabel(
 	newMailboxId: string
 ): Promise<void> {
 	const PAGE = 200;
-	let position = 0;
+	let lastFirst: string | null = null;
 
 	for (let safety = 0; safety < 100; safety++) {
 		const response = await client.request([
-			[
-				'Email/query',
-				{
-					accountId,
-					filter: { hasKeyword: oldKeyword },
-					position,
-					limit: PAGE,
-					calculateTotal: true
-				},
-				'q'
-			]
+			['Email/query', { accountId, filter: { hasKeyword: oldKeyword }, limit: PAGE }, 'q']
 		]);
-
-		const queryResult = response.methodResponses[0][1] as {
-			ids?: string[];
-			total?: number;
-		};
-		const ids = queryResult.ids ?? [];
+		const ids = (response.methodResponses[0][1] as { ids?: string[] }).ids ?? [];
 		if (ids.length === 0) return;
+		// The same page twice: the server kept the keyword on. Stop rather than spin.
+		if (ids[0] === lastFirst) throw new Error('The old label keyword could not be cleared');
+		lastFirst = ids[0];
 
-		const update: Record<string, Record<string, unknown>> = {};
-		for (const id of ids) {
-			update[id] = {
-				[`mailboxIds/${newMailboxId}`]: true,
-				[`keywords/${oldKeyword}`]: null
-			};
-		}
-
-		await client.request([['Email/set', { accountId, update }, 's']]);
-
+		await addLabel(client, accountId, ids, newMailboxId, { keywords: { [oldKeyword]: false } });
 		if (ids.length < PAGE) return;
-		position += ids.length;
 	}
+	throw new Error('Too many messages to carry over in one go');
 }

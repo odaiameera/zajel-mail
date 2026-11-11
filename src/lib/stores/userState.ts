@@ -1,33 +1,14 @@
 import { writable } from 'svelte/store';
-import type { IconNode } from '$lib/types/icon-node';
 
 /**
- * Single source of truth on the client for everything that lives in the
- * server-side SQLite. Components subscribe and use the helpers below to
- * read/write — no fetch calls scattered across the UI.
+ * The client's copy of the person's own settings kept in the server-side
+ * SQLite: name, avatar, signatures, identities. Components subscribe and use
+ * the helpers below to read and write. Folder and label colours and icons
+ * are not here: they come with the page (layout data `mailboxMeta`).
  */
 export interface AvatarValue {
 	data: string;
 	offset: { x: number; y: number; zoom: number };
-}
-
-export interface LabelMetaValue {
-	mailboxId: string;
-	displayName: string;
-	color: string;
-	/** A Lucide icon name, or null for the colour dot. */
-	icon?: string | null;
-	/** Its drawing, sent by the server with the name. */
-	iconNode?: IconNode | null;
-}
-
-export interface FolderMetaValue {
-	mailboxId: string;
-	displayName: string;
-	color: string;
-	/** A Lucide icon name, or null for the plain folder. */
-	icon: string | null;
-	iconNode?: IconNode | null;
 }
 
 export interface SignatureValue {
@@ -50,8 +31,6 @@ export interface UserStateSnapshot {
 	displayName: string | null;
 	avatar: AvatarValue | null;
 	settings: Record<string, unknown>;
-	labels: Map<string, LabelMetaValue>;
-	folders: Map<string, FolderMetaValue>;
 	signatures: SignatureValue[];
 	identities: IdentityValue[];
 	identitySignatures: Map<string, number>;
@@ -62,8 +41,6 @@ const initial: UserStateSnapshot = {
 	displayName: null,
 	avatar: null,
 	settings: {},
-	labels: new Map(),
-	folders: new Map(),
 	signatures: [],
 	identities: [],
 	identitySignatures: new Map()
@@ -82,15 +59,13 @@ async function getJson<T>(url: string, fallback: T): Promise<T> {
 }
 
 export async function loadUserState(): Promise<void> {
-	const [settings, avatar, labels, folders, signatures, identities, identitySignatures] =
+	const [settings, avatar, signatures, identities, identitySignatures] =
 		await Promise.all([
 			getJson<{ displayName: string | null; settings: Record<string, unknown> } | null>(
 				'/api/user-state/settings',
 				null
 			),
 			getJson<AvatarValue | null>('/api/user-state/avatar', null),
-			getJson<LabelMetaValue[]>('/api/user-state/labels', []),
-			getJson<FolderMetaValue[]>('/api/user-state/folders', []),
 			getJson<SignatureValue[]>('/api/user-state/signatures', []),
 			getJson<IdentityValue[]>('/api/identities', []),
 			getJson<Array<{ identityId: string; signatureId: number }>>(
@@ -104,8 +79,6 @@ export async function loadUserState(): Promise<void> {
 		displayName: settings?.displayName ?? null,
 		avatar: avatar ?? null,
 		settings: settings?.settings ?? {},
-		labels: new Map(labels.map((l) => [l.mailboxId, l])),
-		folders: new Map(folders.map((f) => [f.mailboxId, f])),
 		signatures,
 		identities,
 		identitySignatures: new Map(identitySignatures.map((m) => [m.identityId, m.signatureId]))
@@ -176,73 +149,6 @@ export async function updateSettings(patch: {
 		displayName: patch.displayName ?? s.displayName,
 		settings: patch.settings ? { ...s.settings, ...patch.settings } : s.settings
 	}));
-}
-
-/** The saved row as the server returns it (with an icon's drawing), or null. */
-async function patchMeta<T>(url: string, patch: object): Promise<T | null> {
-	try {
-		const res = await fetch(url, {
-			method: 'PATCH',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify(patch)
-		});
-		return res.ok ? ((await res.json()) as T | null) : null;
-	} catch {
-		return null;
-	}
-}
-
-export async function setLabelMeta(
-	mailboxId: string,
-	patch: { displayName?: string; color?: string; icon?: string | null }
-): Promise<void> {
-	const saved = await patchMeta<LabelMetaValue>(`/api/user-state/labels/${encodeURIComponent(mailboxId)}`, patch);
-	userState.update((s) => {
-		const next = new Map(s.labels);
-		const existing = next.get(mailboxId) ?? {
-			mailboxId,
-			displayName: '',
-			color: '#8B5CF6'
-		};
-		next.set(mailboxId, saved ?? { ...existing, ...patch });
-		return { ...s, labels: next };
-	});
-}
-
-export async function deleteLabelMeta(mailboxId: string): Promise<void> {
-	await fetch(`/api/user-state/labels/${encodeURIComponent(mailboxId)}`, { method: 'DELETE' });
-	userState.update((s) => {
-		const next = new Map(s.labels);
-		next.delete(mailboxId);
-		return { ...s, labels: next };
-	});
-}
-
-export async function setFolderMeta(
-	mailboxId: string,
-	patch: { displayName?: string; color?: string; icon?: string | null }
-): Promise<void> {
-	const saved = await patchMeta<FolderMetaValue>(`/api/user-state/folders/${encodeURIComponent(mailboxId)}`, patch);
-	userState.update((s) => {
-		const next = new Map(s.folders);
-		const existing = next.get(mailboxId) ?? {
-			mailboxId,
-			displayName: '',
-			color: '#8B5CF6',
-			icon: null
-		};
-		next.set(mailboxId, saved ?? { ...existing, ...patch });
-		return { ...s, folders: next };
-	});
-}
-
-export async function deleteFolderMeta(mailboxId: string): Promise<void> {
-	await fetch(`/api/user-state/folders/${encodeURIComponent(mailboxId)}`, { method: 'DELETE' });
-	userState.update((s) => {
-		const next = new Map(s.folders);
-		next.delete(mailboxId);
-		return { ...s, folders: next };
-	});
 }
 
 export async function createSignature(

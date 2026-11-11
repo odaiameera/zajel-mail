@@ -3,6 +3,7 @@
 	import { invalidateAll, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { pageTitle } from '$lib/utils/title';
+	import { mailboxDeleteRulesNote, type Rule } from '$lib/types/rules';
 	import type { LayoutData } from '../$types';
 	import type { Label } from '$lib/types/labels';
 	import { colorByHex, type LabelColor } from '$lib/constants/colors';
@@ -13,7 +14,7 @@
 	type EditingMailbox = {
 		id: string;
 		name: string;
-		color: LabelColor;
+		color: LabelColor | null;
 		icon?: string | null;
 		parentId?: string | null;
 	};
@@ -59,8 +60,16 @@
 		await invalidateAll();
 	}
 
+	/** What deleting a folder or label does to the rules that file into it, for the confirmation; '' when there are none. */
+	async function rulesNote(id: string): Promise<string> {
+		const res = await fetch('/api/rules').catch(() => null);
+		const body = res?.ok ? ((await res.json().catch(() => null)) as { rules?: Rule[] } | null) : null;
+		const note = mailboxDeleteRulesNote(body?.rules ?? [], id);
+		return note ? ` ${note}` : '';
+	}
+
 	async function deleteLabel(label: Label) {
-		const msg = `Delete "${label.name}"? Emails tagged with this label will not be deleted.`;
+		const msg = `Delete "${label.name}"? Emails tagged with this label will not be deleted.${await rulesNote(label.id)}`;
 		if (!confirm(msg)) return;
 		const res = await fetch('/api/preferences/labels', {
 			method: 'POST',

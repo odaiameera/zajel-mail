@@ -90,7 +90,7 @@ describe('EmailList selection', () => {
 		// ever be what this list shows.
 		await fireEvent.click(screen.getByLabelText('Select email from Omar'));
 		await fireEvent.click(bulkBar().getByTitle('Trash'));
-		expect(bulkBodies()).toEqual([{ ids: ['t1'], action: 'trash', sourceMailboxId: 'TR' }]);
+		expect(bulkBodies()).toEqual([{ ids: ['t1'], action: 'trash', permanent: true }]);
 	});
 
 	it('loses rows that leave the list on a refresh, and keeps the rest', async () => {
@@ -104,7 +104,76 @@ describe('EmailList selection', () => {
 		// Another device moved a2 away; the list refreshes in place.
 		await rerender({ emails: [a1], total: 1, title: 'Projects', mailboxId: 'A' });
 		await fireEvent.click(bulkBar().getByTitle('Archive'));
-		expect(bulkBodies()).toEqual([{ ids: ['a1'], action: 'archive', sourceMailboxId: 'A' }]);
+		expect(bulkBodies()).toEqual([{ ids: ['a1'], action: 'archive' }]);
+	});
+});
+
+describe('EmailList Trash', () => {
+	const rowPatches = (id: string) =>
+		fetchMock.mock.calls
+			.filter(([url, init]) => String(url) === `/api/email/${id}` && init?.method === 'PATCH')
+			.map(([, init]) => JSON.parse(String(init?.body)));
+
+	it.each([
+		['Starred', ''],
+		['Search results', ''],
+		['Work', 'WORK']
+	])('never deletes for good from %s, even a message already in Trash', async (title, mailboxId) => {
+		renderList({ emails: [email('t1', 'Omar', 'TR')], title, mailboxId });
+		await fireEvent.click(screen.getByTitle('Delete'));
+		await waitFor(() => expect(rowPatches('t1')).toHaveLength(1));
+		expect(rowPatches('t1')[0]).toEqual({ action: 'trash' });
+
+		await fireEvent.click(screen.getByLabelText('Select email from Omar'));
+		await fireEvent.click(bulkBar().getByTitle('Trash'));
+		expect(bulkBodies()).toEqual([{ ids: ['t1'], action: 'trash' }]);
+	});
+
+	it('deletes for good from a row in the Trash list, and opens its message knowing so', async () => {
+		renderList({ emails: [email('t1', 'Omar', 'TR')], title: 'Trash', mailboxId: 'TR' });
+		await fireEvent.click(screen.getByTitle('Delete'));
+		await waitFor(() => expect(rowPatches('t1')).toHaveLength(1));
+		expect(rowPatches('t1')[0]).toEqual({ action: 'trash', permanent: true });
+		expect(screen.getByText('Hello from Omar').closest('a')!.getAttribute('href')).toBe('/email/t1?from=trash');
+	});
+});
+
+describe('EmailList bulk notices', () => {
+	/** What the bulk endpoint answers; everything else answers `{}`. */
+	function bulkAnswers(body: unknown) {
+		fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+			String(input) === '/api/email/bulk'
+				? new Response(JSON.stringify(body), { status: 200 })
+				: new Response('{}', { status: 200 })
+		);
+	}
+	afterEach(() => fetchMock.mockImplementation(async () => new Response('{}', { status: 200 })));
+
+	it('says how many messages couldn’t be moved, and refreshes', async () => {
+		const { toasts } = await import('$lib/stores/toast');
+		const { get } = await import('svelte/store');
+		const { invalidateAll } = await import('$app/navigation');
+		vi.mocked(invalidateAll).mockClear();
+		toasts.set([]);
+		bulkAnswers({ success: true, failed: ['a2', 'a3', 'a4'] });
+		renderList({ emails: ['a1', 'a2', 'a3', 'a4'].map((id) => email(id, `S${id}`, 'A')), title: 'Projects', mailboxId: 'A' });
+		await fireEvent.click(screen.getByLabelText('Select email from Sa1'));
+		await fireEvent.click(bulkBar().getByTitle('Archive'));
+		await waitFor(() => expect(get(toasts).map((t) => t.message)).toEqual(['3 messages couldn’t be archived']));
+		expect(invalidateAll).toHaveBeenCalled();
+	});
+
+	it('says nothing when every message was written', async () => {
+		const { toasts } = await import('$lib/stores/toast');
+		const { get } = await import('svelte/store');
+		toasts.set([]);
+		bulkAnswers({ success: true, failed: [] });
+		renderList({ emails: [email('a1', 'Dana', 'A')], title: 'Projects', mailboxId: 'A' });
+		await fireEvent.click(screen.getByLabelText('Select email from Dana'));
+		await fireEvent.click(bulkBar().getByTitle('Spam'));
+		await waitFor(() => expect(bulkBodies()).toHaveLength(1));
+		await new Promise((r) => setTimeout(r, 10));
+		expect(get(toasts)).toEqual([]);
 	});
 });
 

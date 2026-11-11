@@ -1,10 +1,9 @@
 import { env } from '$env/dynamic/private';
 import { createClient } from '$lib/jmap/auth';
-import { moveEmails, updateEmailMailboxes } from '$lib/jmap/email';
-import { ensureArchiveMailbox, ensureRemindMeLaterMailbox, getMailboxes } from '$lib/jmap/mailbox';
-import { labelMailboxIds } from '$lib/types/labels';
+import { updateEmailMailboxes } from '$lib/jmap/email';
+import { getMailboxes } from '$lib/jmap/mailbox';
 import { authStateForAccount, getAccount, listAccounts } from '$lib/server/auth/accounts';
-import { scheduleReminder } from '$lib/server/db/queries/reminders';
+import { FilingError, moveToArchive, snoozeEmail } from '$lib/server/filing';
 import { recordAudit } from '$lib/server/agent/store';
 import { errorFields, logEvent } from '$lib/server/log';
 import {
@@ -322,20 +321,28 @@ async function runButton(token: ButtonToken): Promise<string> {
 		await updateEmailMailboxes(client, auth.accountId, { [token.emailId]: { keywords: { $seen: true } } });
 		return 'Marked read';
 	}
-	const boxes = await getMailboxes(client, auth.accountId);
-	const labels = labelMailboxIds(boxes);
 	if (token.action === 'archive') {
-		const archive = await ensureArchiveMailbox(client, auth.accountId);
-		if (!archive) return 'No Archive folder';
-		await moveEmails(client, auth.accountId, [token.emailId], archive, undefined, labels);
+		try {
+			await moveToArchive(client, auth.accountId, [token.emailId]);
+		} catch (err) {
+			// The account has no Archive and none could be made. Anything else
+			// is a plain failure, answered by the caller.
+			if (err instanceof FilingError) return 'No Archive folder';
+			throw err;
+		}
 		return 'Archived';
 	}
-	// Snooze: into Remind Me Later, back in an hour.
+	// Snooze: into Remind Me Later, back in an hour, the same as in the app.
+	// The alert was about Inbox mail, so the Inbox is the folder it is
+	// expected to be in; where it really is decides.
+	const boxes = await getMailboxes(client, auth.accountId);
 	const inbox = boxes.find((m) => m.role === 'inbox');
-	const rml = await ensureRemindMeLaterMailbox(client, auth.accountId);
-	if (!inbox || !rml) return 'Can’t snooze that';
-	await moveEmails(client, auth.accountId, [token.emailId], rml, inbox.id, labels);
-	scheduleReminder(account.email, auth.accountId, token.emailId, inbox.id, new Date(Date.now() + SNOOZE_MS).toISOString());
+	try {
+		await snoozeEmail(client, auth.accountId, account.email, token.emailId, new Date(Date.now() + SNOOZE_MS), inbox?.id);
+	} catch (err) {
+		if (err instanceof FilingError) return 'Can’t snooze that';
+		throw err;
+	}
 	return 'Snoozed for an hour';
 }
 

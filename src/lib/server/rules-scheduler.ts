@@ -3,12 +3,16 @@ import { listSchedulableAuths, markNeedsReauth } from './auth/accounts';
 import { JMAPAuthError } from '$lib/jmap/client';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
+import { EMAIL_SET_BATCH } from '$lib/jmap/email';
 import type { AuthState, Email } from '$lib/jmap/types';
 import { isRunnable } from '$lib/types/rules';
-import { getRules, getRulesCursor, setRulesCursor } from './db/queries/rules';
-import { matcherProperties, updatesForEmails, type RuleActionCtx } from './rules-engine';
+import { accountIdForEmail } from './db/queries/account-tasks';
+import { getRulesCursor, setRulesCursor } from './db/queries/rules';
+import { listRules } from './rules/store';
+import { matcherProperties, ruleContext, updatesForEmails } from './rules/engine';
 import { runAccountTasks } from './account-tasks';
 import { AUTO_REPLY_PROPERTIES, answerNewMail, outOfOfficeFor, pruneOldAutoReplies } from './auto-reply';
+import { hasUnknownMailbox } from '$lib/mailboxes';
 
 /**
  * Server-side rule application. Rules are not handed to the mail server;
@@ -24,7 +28,7 @@ import { AUTO_REPLY_PROPERTIES, answerNewMail, outOfOfficeFor, pruneOldAutoRepli
  */
 
 const PAGE = 100;
-const BATCH = 50;
+const BATCH = EMAIL_SET_BATCH;
 
 let started = false;
 
@@ -98,7 +102,8 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 	}
 
 	// Rules that may run: switched on, and not waiting to be rewritten.
-	const enabled = getRules(userEmail).filter(isRunnable);
+	const accountRow = accountIdForEmail(userEmail);
+	const enabled = accountRow ? listRules(accountRow).filter(isRunnable) : [];
 	// Stalwart stamps receivedAt to the second and `after` is strict, so a
 	// cursor at this run's own instant would skip mail landing later in that
 	// second, after the query below. The next run reads from the second
@@ -118,17 +123,12 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 
 	const client = createClient(auth);
 	const { accountId } = auth;
-	const mailboxes = await getMailboxes(client, accountId);
+	let mailboxes = await getMailboxes(client, accountId);
 	const inbox = mailboxes.find((m) => m.role === 'inbox');
 	if (!inbox) {
 		setRulesCursor(userEmail, nowIso);
 		return;
 	}
-	const ctx: RuleActionCtx = {
-		inboxId: inbox.id,
-		trashId: mailboxes.find((m) => m.role === 'trash')?.id,
-		validMailboxIds: new Set(mailboxes.map((m) => m.id))
-	};
 
 	const matcher = matcherProperties(enabled);
 	const { fetchTextBodyValues } = matcher;
@@ -170,7 +170,13 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 			console.error('[rules] out-of-office failed', userEmail, err);
 		}
 	}
-	const { update } = updatesForEmails(emails, enabled, ctx);
+	// A message in a mailbox the list above doesn't know (a label made since
+	// it was loaded) needs a fresh list, or a move couldn't tell that label
+	// from a folder. Once per run at most.
+	if (hasUnknownMailbox(emails.map((e) => e.mailboxIds ?? {}), mailboxes)) {
+		mailboxes = await getMailboxes(client, accountId);
+	}
+	const { update } = updatesForEmails(emails, enabled, ruleContext(mailboxes));
 
 	const entries = Object.entries(update);
 	for (let i = 0; i < entries.length; i += BATCH) {

@@ -52,7 +52,8 @@ import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
 import { getJevSettings, updateJevSettings } from '$lib/server/db/queries/jev-settings';
 import { enqueueEmails, getDecision, getUsage, recordCorrections } from '$lib/server/db/queries/jev-decisions';
-import { setRules, setRulesCursor } from '$lib/server/db/queries/rules';
+import { setRulesCursor } from '$lib/server/db/queries/rules';
+import { importRules } from '$lib/server/rules/store';
 import { applyRulesForUser } from '$lib/server/rules-scheduler';
 import { INBOX_HOLD_MS, isHeld } from '$lib/inbox-hold';
 import { recordSenderMoves, setPin } from '$lib/server/db/queries/jev-learning';
@@ -64,6 +65,12 @@ const ACCT = 'acct-1';
 const ME = 'me@example.test';
 const auth = { authHeader: 'Basic x', accountId: 'jmap-acc', apiUrl: 'https://mail.example/jmap/', sessionState: '' } as AuthState;
 const T0 = new Date('2026-10-18T09:00:00Z');
+
+/** The account's rules, replaced. */
+function setRules(_email: string, rules: Rule[]): void {
+	getDb().prepare('DELETE FROM rules WHERE account_id = ?').run(ACCT);
+	importRules(ACCT, rules);
+}
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
 
 interface FakeEmail {
@@ -85,6 +92,10 @@ interface FakeEmail {
 /** Just enough JMAP for a sorting pass, over an in-memory mailbox. */
 class FakeJmap {
 	emails = new Map<string, FakeEmail>();
+	/** Mailbox/get calls answered. */
+	mailboxGets = 0;
+	/** Mailboxes made after the first Mailbox/get: every later one lists them. */
+	madeLater: { id: string; name: string; role: null; sortOrder: number; parentId: string | null }[] = [];
 
 	add(id: string, minutes: number, extra: Partial<FakeEmail> = {}) {
 		this.emails.set(id, {
@@ -121,9 +132,13 @@ class FakeJmap {
 							{ id: 'sent', name: 'Sent', role: 'sent', sortOrder: 2, parentId: null },
 							{ id: 'archive', name: 'Archive', role: 'archive', sortOrder: 3, parentId: null },
 							{ id: 'junk', name: 'Junk', role: 'junk', sortOrder: 4, parentId: null },
-							{ id: 'trash', name: 'Trash', role: 'trash', sortOrder: 5, parentId: null }
+							{ id: 'trash', name: 'Trash', role: 'trash', sortOrder: 5, parentId: null },
+							{ id: 'labels', name: 'Labels', role: null, sortOrder: 6, parentId: null },
+							{ id: 'news', name: 'News', role: null, sortOrder: 0, parentId: 'labels' },
+							...(this.mailboxGets > 0 ? this.madeLater : [])
 						]
 					};
+					this.mailboxGets++;
 					break;
 				case 'Email/query': {
 					const f = args.filter as { operator?: string; conditions?: Record<string, string>[] } & Record<string, string>;
@@ -629,8 +644,13 @@ describe('sortNewMail', () => {
 			enabled: true,
 			logic: 'allof',
 			conditions: [{ id: 's1', field: 'subject', op: 'contains', value: 'invoice', negate: false }],
-			actions: [{ type: 'markRead' }],
-			createdAt: 0
+			target: { kind: 'none' },
+			markRead: true,
+			star: false,
+			stop: false,
+			position: 0,
+			createdAt: 0,
+			updatedAt: 0
 		};
 		setRules(ME, [markAll]);
 		setRulesCursor(ME, at(0).toISOString());
@@ -824,6 +844,51 @@ describe('sortNewMail', () => {
 			expect(fake.emails.get('dmarcError')!.mailboxIds).toEqual({ junk: true });
 		});
 
+		it('moves to Junk and back like any other move: labels stay on', async () => {
+			updateJevSettings(ACCT, { spamMode: 'active' });
+			fake.add('spammy', 1, { ...flagged, mailboxIds: { inbox: true, news: true } });
+			fake.add('wronglyJunked', 2, {
+				mailboxIds: { junk: true, news: true },
+				'header:authentication-results:asText:all': ['mx.example.test; spf=pass; dkim=pass; dmarc=pass']
+			});
+
+			await sortNewMail(ACCT, ME, auth, at(10));
+
+			expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true, news: true });
+			expect(fake.emails.get('wronglyJunked')!.mailboxIds).toEqual({ inbox: true, news: true });
+		});
+
+		it('keeps a label made during the pass on a move to Junk and back, fetching the folders again once', async () => {
+			updateJevSettings(ACCT, { spamMode: 'active' });
+			// Made, and put on these messages, after the pass loaded its folder list.
+			fake.madeLater = [
+				{ id: 'newlbl', name: 'Fresh', role: null, sortOrder: 0, parentId: 'labels' },
+				{ id: 'newdir', name: 'Fresh folder', role: null, sortOrder: 0, parentId: null }
+			];
+			fake.add('spammy', 1, { ...flagged, mailboxIds: { inbox: true, news: true, newlbl: true } });
+			fake.add('wronglyJunked', 2, {
+				mailboxIds: { junk: true, newlbl: true, newdir: true },
+				'header:authentication-results:asText:all': ['mx.example.test; spf=pass; dkim=pass; dmarc=pass']
+			});
+
+			await sortNewMail(ACCT, ME, auth, at(10));
+
+			expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true, news: true, newlbl: true });
+			// The fresh list knows the new folder: the move leaves it, as any move leaves every folder.
+			expect(fake.emails.get('wronglyJunked')!.mailboxIds).toEqual({ inbox: true, newlbl: true });
+			expect(fake.mailboxGets).toBe(2);
+		});
+
+		it('fetches the folders only once in a pass whose mail is all in folders it knows', async () => {
+			updateJevSettings(ACCT, { spamMode: 'active' });
+			fake.add('spammy', 1, { ...flagged, mailboxIds: { inbox: true, news: true } });
+
+			await sortNewMail(ACCT, ME, auth, at(10));
+
+			expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true, news: true });
+			expect(fake.mailboxGets).toBe(1);
+		});
+
 		it('leaves Junk alone while spam checks are off', async () => {
 			fake.add('wronglyJunked', 1, { mailboxIds: { junk: true } });
 			await sortNewMail(ACCT, ME, auth, at(10));
@@ -962,8 +1027,13 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 		enabled: true,
 		logic: 'allof',
 		conditions: [{ id: 'c1', field: 'from', op: 'contains', value: 'github.com', negate: false }],
-		actions: [{ type: 'applyLabel', value: 'archive' }],
-		createdAt: 0
+		target: { kind: 'label', mailboxId: 'archive' },
+		markRead: false,
+		star: false,
+		stop: false,
+		position: 0,
+		createdAt: 0,
+		updatedAt: 0
 	};
 
 	it('lets exact rules act before it marks new mail, so a rule’s label is there when the message shows', async () => {
@@ -1018,7 +1088,7 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 
 	it('runs rules first with the tabs off too, so a rule’s move lands before a spam verdict could take the message', async () => {
 		updateJevSettings(ACCT, { inboxTabs: false, spamMode: 'active' });
-		const githubToArchive: Rule = { ...labelGithub, id: 'gh-move', actions: [{ type: 'moveToFolder', value: 'archive' }] };
+		const githubToArchive: Rule = { ...labelGithub, id: 'gh-move', target: { kind: 'folder', mailboxId: 'archive' } };
 		setRules(ME, [githubToArchive]);
 		setRulesCursor(ME, at(0).toISOString());
 		// Stalwart flagged it, and nobody here knows the sender: Jev would junk it.
@@ -1041,7 +1111,7 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 		const flagged: Rule = {
 			...labelGithub,
 			id: 'flagged',
-			actions: [{ type: 'moveToFolder', value: 'archive' }],
+			target: { kind: 'folder', mailboxId: 'archive' },
 			attention: 'jev_condition',
 			enabled: true
 		};
@@ -1253,8 +1323,13 @@ describe('sender pins, with Jev off or out of reach', () => {
 				enabled: true,
 				logic: 'allof',
 				conditions: [{ id: 'c1', field: 'subject', op: 'contains', value: 'receipt', negate: false }],
-				actions: [{ type: 'moveToFolder', value: 'archive' }],
-				createdAt: 0
+				target: { kind: 'folder', mailboxId: 'archive' },
+				markRead: false,
+				star: false,
+				stop: false,
+				position: 0,
+				createdAt: 0,
+				updatedAt: 0
 			}
 		]);
 		setRulesCursor(ME, at(0).toISOString());
@@ -1436,8 +1511,13 @@ describe('sender pins, with Jev off or out of reach', () => {
 				enabled: true,
 				logic: 'allof',
 				conditions: [{ id: 'c', field: 'subject', op: 'contains', value: 'x', negate: false }],
-				actions: [{ type: 'markRead' }],
-				createdAt: 0
+				target: { kind: 'none' },
+				markRead: true,
+				star: false,
+				stop: false,
+				position: 0,
+				createdAt: 0,
+				updatedAt: 0
 			}
 		]);
 		setRulesCursor(ME, at(0).toISOString());
@@ -1470,8 +1550,13 @@ describe('sender pins, with Jev off or out of reach', () => {
 				enabled: true,
 				logic: 'allof',
 				conditions: [{ id: 'c', field: 'subject', op: 'contains', value: 'x', negate: false }],
-				actions: [{ type: 'markRead' }],
-				createdAt: 0
+				target: { kind: 'none' },
+				markRead: true,
+				star: false,
+				stop: false,
+				position: 0,
+				createdAt: 0,
+				updatedAt: 0
 			}
 		]);
 		setRulesCursor(ME, at(0).toISOString());
@@ -1488,11 +1573,15 @@ describe('sender pins, with Jev off or out of reach', () => {
 		await expect(sortNewMail(ACCT, ME, auth, at(10))).rejects.toBeInstanceOf(JMAPAuthError);
 	});
 
-	it('sorts on when a stored rule is not a rule at all', async () => {
+	it('sorts on when a stored rule can’t be read', async () => {
 		updateJevSettings(ACCT, { jevEnabled: false });
 		setPin(ACCT, '@linkedin.com', 'updates');
-		// Rules are stored as a browser sent them.
-		setRules(ME, [null, 'text', { id: 'half' }] as unknown as Rule[]);
+		// A row whose conditions can't be read: it never runs, and holds nothing up.
+		getDb()
+			.prepare(
+				`INSERT INTO rules (account_id, id, position, name, conditions_json, created_at, updated_at) VALUES (?, 'half', 0, '', 'not json', 0, 0)`
+			)
+			.run(ACCT);
 		fake.add('jobs', JUST_NOW, linkedIn);
 
 		await sortNewMail(ACCT, ME, auth, at(10));

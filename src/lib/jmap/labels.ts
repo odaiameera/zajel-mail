@@ -1,7 +1,8 @@
 import type { JMAPClient } from './client';
 import type { Mailbox } from './types';
-import { emailMailboxMembership, updateEmailMailboxes, type EmailMailboxChange } from './email';
+import { emailMailboxMembership, sendEmailUpdates } from './email';
 import { LABELS_PARENT_NAME, findLabelsParentId } from '$lib/types/labels';
+import { nextMailboxIds, sameMailboxIds } from '$lib/mailboxes';
 
 export type CreateLabelResult = { id: string } | { error: string };
 export type MutateLabelResult = { success: true; id?: string } | { success: false; error: string };
@@ -172,15 +173,21 @@ async function detachAll(
 		lastFirst = ids[0];
 
 		const membership = await emailMailboxMembership(client, accountId, ids);
-		const changes: Record<string, EmailMailboxChange> = {};
+		const update: Record<string, Record<string, unknown>> = {};
 		for (const emailId of ids) {
 			const cur = membership.get(emailId);
 			if (!cur) continue;
-			const alone = Object.keys(cur).every((mb) => mb === labelMailboxId);
-			if (alone) fallbackId ??= await fallback();
-			changes[emailId] = { remove: [labelMailboxId], add: alone && fallbackId ? [fallbackId] : [] };
+			// The same rule as taking the label off by hand (nextMailboxIds).
+			// Only the label's own id matters here, so no mailbox list is needed.
+			const op = (archiveId: string | null) => ({ removeLabel: labelMailboxId, archiveId });
+			let next = nextMailboxIds(cur, op(fallbackId), []);
+			if (next === null) {
+				fallbackId = await fallback();
+				next = nextMailboxIds(cur, op(fallbackId || null), []);
+			}
+			if (next && !sameMailboxIds(next, cur)) update[emailId] = { mailboxIds: next };
 		}
-		await updateEmailMailboxes(client, accountId, changes);
+		await sendEmailUpdates(client, accountId, update);
 		if (ids.length < DETACH_PAGE) return;
 	}
 	throw new Error('Could not take the messages out of the label');
@@ -228,41 +235,4 @@ export async function deleteLabelMailbox(
 		return { success: false, error: err.description ?? err.type ?? 'Delete failed' };
 	}
 	return { success: true, id };
-}
-
-/**
- * Add `labelMailboxId` to the email's mailboxIds (multi-mailbox membership).
- * Goes through the full-object write path — label mailboxes are created
- * late, so they're prime candidates for the all-digit ids that Stalwart's
- * pointer parser (jmap-tools ≤ 0.1.4) rejects.
- */
-export async function applyLabel(
-	client: JMAPClient,
-	accountId: string,
-	emailId: string,
-	labelMailboxId: string
-): Promise<void> {
-	await updateEmailMailboxes(client, accountId, {
-		[emailId]: { add: [labelMailboxId] }
-	});
-}
-
-/**
- * Remove `labelMailboxId` from the email's mailboxIds. A message that is in
- * nothing but this label would be left with no mailbox, which JMAP refuses
- * and the writer used to answer by quietly changing nothing; it goes into
- * `fallback()` (Archive) instead, so removing the label always removes it.
- */
-export async function removeLabel(
-	client: JMAPClient,
-	accountId: string,
-	emailId: string,
-	labelMailboxId: string,
-	fallback?: () => Promise<string>
-): Promise<void> {
-	const cur = (await emailMailboxMembership(client, accountId, [emailId])).get(emailId);
-	const alone = !!cur && cur[labelMailboxId] === true && Object.keys(cur).every((mb) => mb === labelMailboxId);
-	await updateEmailMailboxes(client, accountId, {
-		[emailId]: { remove: [labelMailboxId], add: alone && fallback ? [await fallback()] : [] }
-	});
 }

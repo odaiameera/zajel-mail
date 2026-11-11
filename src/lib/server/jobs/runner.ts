@@ -1,9 +1,9 @@
 import { createClient } from '$lib/jmap/auth';
 import { JMAPAuthError, JMAPError, JMAPMethodError } from '$lib/jmap/client';
-import { moveEmails, searchEmails, updateEmailMailboxes } from '$lib/jmap/email';
-import { ensureArchiveMailbox, getMailboxes } from '$lib/jmap/mailbox';
+import { searchEmails, updateEmailMailboxes } from '$lib/jmap/email';
+import { FilingError, moveToArchive } from '$lib/server/filing';
+import { getMailboxes } from '$lib/jmap/mailbox';
 import { CATEGORY_KEYWORDS, categoryCondition } from '$lib/types/categories';
-import { labelMailboxIds } from '$lib/types/labels';
 import { authStateForAccount, getAccount } from '$lib/server/auth/accounts';
 import { runChat } from '$lib/server/ai/chat';
 import { MailAssistantError } from '$lib/server/ai/mail-assistant';
@@ -160,9 +160,12 @@ export async function runJob(job: AgentJob, nowMs = Date.now()): Promise<JobOutc
 		const ids = emails.map((e) => e.id);
 		if (ids.length === 0) return { status: 'ok', result: 'Nothing to tidy' };
 		if (spec.action === 'archive') {
-			const archive = await ensureArchiveMailbox(client, auth.accountId);
-			if (!archive) return { status: 'failed', result: 'No Archive folder' };
-			await moveEmails(client, auth.accountId, ids, archive, undefined, labelMailboxIds(boxes));
+			try {
+				await moveToArchive(client, auth.accountId, ids, { mailboxes: boxes });
+			} catch (err) {
+				if (err instanceof FilingError) return { status: 'failed', result: 'No Archive folder' };
+				throw err;
+			}
 		} else {
 			await updateEmailMailboxes(client, auth.accountId, Object.fromEntries(ids.map((id) => [id, { keywords: { $seen: true } }])));
 		}

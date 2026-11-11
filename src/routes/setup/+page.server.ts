@@ -12,7 +12,7 @@ import { DEFAULT_LABEL_COLOR } from '$lib/constants/colors';
  * First-run flow, two steps on one page:
  *   1. Create the webmail's master login (before any app_user exists).
  *   2. Link the first mail account (logged in, zero accounts linked).
- * Any SQLite data keyed by the linked address (labels, rules, signatures,
+ * Any SQLite data keyed by the linked address (labels, signatures,
  * calendar meta) re-attaches the moment the account is linked.
  */
 export const load: PageServerLoad = async ({ locals }) => {

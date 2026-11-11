@@ -14,7 +14,10 @@ const state = vi.hoisted(() => ({
 	outOfOffice: null as Record<string, unknown> | null,
 	answered: [] as string[][],
 	answerFails: false,
-	properties: [] as string[][]
+	properties: [] as string[][],
+	mailboxGets: 0,
+	/** Mailboxes made after the first Mailbox/get: every later one lists them. */
+	madeLater: [] as Record<string, unknown>[]
 }));
 
 vi.mock('$lib/jmap/auth', () => ({
@@ -24,7 +27,19 @@ vi.mock('$lib/jmap/auth', () => ({
 			if (name === 'Mailbox/get') {
 				return {
 					methodResponses: [
-						['Mailbox/get', { list: [{ id: 'IN', name: 'Inbox', role: 'inbox', parentId: null }] }, '0']
+						[
+							'Mailbox/get',
+							{
+								list: [
+									{ id: 'IN', name: 'Inbox', role: 'inbox', parentId: null },
+									{ id: 'LBLS', name: 'Labels', role: null, parentId: null },
+									{ id: 'WORK', name: 'Work', role: null, parentId: 'LBLS' },
+									{ id: 'PRJ', name: 'Projects', role: null, parentId: null },
+									...(state.mailboxGets++ > 0 ? state.madeLater : [])
+								]
+							},
+							'0'
+						]
 					],
 					sessionState: ''
 				};
@@ -66,8 +81,9 @@ vi.mock('./auto-reply', () => ({
 	pruneOldAutoReplies: () => {}
 }));
 vi.mock('./auth/accounts', () => ({ listSchedulableAuths: () => [], markNeedsReauth: vi.fn() }));
+vi.mock('./db/queries/account-tasks', () => ({ accountIdForEmail: () => 'acct' }));
+vi.mock('./rules/store', () => ({ listRules: () => state.rules }));
 vi.mock('./db/queries/rules', () => ({
-	getRules: () => state.rules,
 	getRulesCursor: () => state.cursor,
 	setRulesCursor: (_user: string, iso: string) => state.setCursors.push(iso)
 }));
@@ -83,8 +99,13 @@ const markRead: Rule = {
 	enabled: true,
 	logic: 'allof',
 	conditions: [{ id: 'c1', field: 'subject', op: 'contains', value: 'x', negate: false }],
-	actions: [{ type: 'markRead' }],
-	createdAt: 0
+	target: { kind: 'none' },
+	markRead: true,
+	star: false,
+	stop: false,
+	position: 0,
+	createdAt: 0,
+	updatedAt: 0
 };
 
 /** `n` Inbox messages, oldest first, stamped by `receivedAt(i)`. */
@@ -116,6 +137,8 @@ beforeEach(() => {
 	state.answered = [];
 	state.answerFails = false;
 	state.properties = [];
+	state.mailboxGets = 0;
+	state.madeLater = [];
 });
 
 describe('the auto-apply cursor', () => {
@@ -158,7 +181,7 @@ describe('rules that may not run', () => {
 		state.emails = page(2, () => '2026-10-20T07:00:00Z');
 		// Flagged by the upgrade, then switched back on without being fixed.
 		const flagged = { ...markRead, attention: 'jev_condition', enabled: true };
-		// As an old browser tab would save it, the Jev condition still there.
+		// As it was stored before the upgrade, the Jev condition still there.
 		const unconverted = {
 			...markRead,
 			id: 'r2',
@@ -258,5 +281,38 @@ describe('applyRulesNow', () => {
 		await now;
 
 		expect(state.sets.map((u) => Object.keys(u))).toEqual([['m0'], ['m1']]);
+	});
+});
+
+describe('a label made during the run', () => {
+	const toProjects: Rule = { ...markRead, id: 'r2', markRead: false, target: { kind: 'folder', mailboxId: 'PRJ' } };
+
+	it('stays on a message a rule moves, and the folders are fetched once more', async () => {
+		state.rules = [toProjects];
+		state.madeLater = [
+			{ id: 'NEWLBL', name: 'Fresh', role: null, parentId: 'LBLS' },
+			{ id: 'NEWDIR', name: 'Fresh folder', role: null, parentId: null }
+		];
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		state.emails[0].mailboxIds = { IN: true, WORK: true, NEWLBL: true };
+		state.emails[1].mailboxIds = { IN: true, NEWDIR: true };
+		await applyRulesForUser(auth, 'newlabel@example.test');
+		expect(state.sets).toEqual([
+			{
+				m0: { mailboxIds: { PRJ: true, WORK: true, NEWLBL: true } },
+				// The fresh list knows the new folder: the move leaves it.
+				m1: { mailboxIds: { PRJ: true } }
+			}
+		]);
+		expect(state.mailboxGets).toBe(2);
+	});
+
+	it('fetches the folders once when every message is in folders it knows', async () => {
+		state.rules = [toProjects];
+		state.emails = page(1, () => '2026-10-20T07:00:00Z');
+		state.emails[0].mailboxIds = { IN: true, WORK: true };
+		await applyRulesForUser(auth, 'knownlabels@example.test');
+		expect(state.sets).toEqual([{ m0: { mailboxIds: { PRJ: true, WORK: true } } }]);
+		expect(state.mailboxGets).toBe(1);
 	});
 });

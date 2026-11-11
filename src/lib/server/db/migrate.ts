@@ -1,6 +1,6 @@
 import { getDb } from './index';
 import { repairAiSettingsColumns } from '$lib/server/ai/settings';
-import { retireStoredJevConditions, retireStoredTabActions } from '$lib/server/rules-upgrade';
+import { moveStoredRulesToTable, retireStoredJevConditions, retireStoredTabActions } from '$lib/server/rules/upgrade';
 import { errorFields, logEvent } from '$lib/server/log';
 
 /**
@@ -26,7 +26,7 @@ const MIGRATION_SOURCES = import.meta.glob('./migrations/*.sql', {
  */
 const DATA_STEPS: { name: string; needs: string[]; run: () => void }[] = [
 	// Rules are exact-match only: rules with a condition Jev judged are
-	// switched off and flagged for their owner (see rules-upgrade.ts). The
+	// switched off and flagged for their owner (see rules/upgrade.ts). The
 	// accounts that had one also get the mail the Jev worker still had
 	// queued put back in front of the rules scheduler.
 	{
@@ -41,6 +41,15 @@ const DATA_STEPS: { name: string; needs: string[]; run: () => void }[] = [
 		name: 'data/rule_tabs_to_pins',
 		needs: ['004_rules.sql', '006_auth.sql', '014_jev_learning.sql'],
 		run: retireStoredTabActions
+	},
+	// Rules move from one JSON list per address into the rules table, one
+	// row each under their mail account, a rule that filed into several
+	// places becoming one rule per place. After the two steps above, so what
+	// it copies is exact-only and sets no tab. `user_rules` is left as it is.
+	{
+		name: 'data/rules_to_table',
+		needs: ['006_auth.sql', '030_rules.sql', 'data/rules_exact_only', 'data/rule_tabs_to_pins'],
+		run: () => moveStoredRulesToTable()
 	}
 ];
 

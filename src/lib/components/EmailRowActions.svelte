@@ -12,11 +12,18 @@
 		isUnread,
 		sourceMailboxId,
 		hasReminder = false,
-		category = null
+		category = null,
+		trashIsPermanent = false
 	}: {
 		emailId: string;
 		isUnread: boolean;
+		/** The folder the row is shown in, as a hint for where a snoozed message comes back to. */
 		sourceMailboxId: string;
+		/**
+		 * The row is in the Trash list itself: Trash there deletes for good.
+		 * Never from a label, Search, Starred or any other list.
+		 */
+		trashIsPermanent?: boolean;
 		/** Email is parked in Remind Me Later — offer Unsnooze instead of the picker. */
 		hasReminder?: boolean;
 		/** The row's Inbox tab; null when the list isn't a tabbed Inbox. */
@@ -46,7 +53,7 @@
 			const res = await fetch(`/api/email/${emailId}`, {
 				method: 'PATCH',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ action, sourceMailboxId })
+				body: JSON.stringify({ action, ...(action === 'trash' && trashIsPermanent ? { permanent: true } : {}) })
 			});
 			if (!res.ok) {
 				const data = await res.json().catch(() => ({}));

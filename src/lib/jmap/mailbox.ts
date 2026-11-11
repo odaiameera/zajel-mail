@@ -1,5 +1,10 @@
 import type { JMAPClient } from './client';
 import type { Mailbox } from './types';
+import { REMIND_ME_LATER_NAME, SCHEDULED_NAME, isScheduledMailbox } from '$lib/mailboxes';
+
+// Decided in $lib/mailboxes with the other kinds of mailbox; re-exported for
+// the code that has always found them here.
+export { REMIND_ME_LATER_NAME, SCHEDULED_NAME, isScheduledMailbox };
 
 export async function getMailboxes(client: JMAPClient, accountId: string): Promise<Mailbox[]> {
 	const response = await client.request([
@@ -23,8 +28,6 @@ export async function getMailboxes(client: JMAPClient, accountId: string): Promi
 		return a.sortOrder - b.sortOrder;
 	});
 }
-
-export const REMIND_ME_LATER_NAME = 'Remind Me Later';
 
 export async function ensureRemindMeLaterMailbox(
 	client: JMAPClient,
@@ -51,17 +54,6 @@ export async function ensureRemindMeLaterMailbox(
 		created?: Record<string, { id: string }>;
 	};
 	return result.created?.rml1?.id ?? '';
-}
-
-/**
- * Messages waiting for Send later or Undo send. A server may mark such a
- * folder with the 'scheduled' role; otherwise it's ours, found by name at
- * the top level like Remind Me Later.
- */
-export const SCHEDULED_NAME = 'Scheduled';
-
-export function isScheduledMailbox(m: Pick<Mailbox, 'name' | 'role' | 'parentId'>): boolean {
-	return m.role === 'scheduled' || (m.role === null && m.parentId === null && m.name === SCHEDULED_NAME);
 }
 
 export async function ensureScheduledMailbox(client: JMAPClient, accountId: string): Promise<string> {

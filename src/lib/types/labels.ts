@@ -5,13 +5,12 @@ export interface Label {
 	id: string;
 	/** Display name (the mailbox's own name, e.g. "Work Stuff") */
 	name: string;
-	/** Hex color — stored in SQLite `label_meta`, keyed by id */
+	/** Hex colour: the one chosen (mailbox_meta), or one handed out automatically. */
 	color: string;
 	/** A Lucide icon name, or null for the colour dot. */
 	icon?: string | null;
 	/** Its drawing, sent by the server with the name. */
 	iconNode?: IconNode | null;
-	createdAt: number;
 }
 
 /**
@@ -36,9 +35,6 @@ export interface LabelsContext {
 
 /** Default color for labels that have no meta entry. */
 export const DEFAULT_LABEL_COLOR = '#0969da';
-
-/** Cookie marker for the one-shot keyword→mailbox migration (value `v1`). */
-export const LABEL_MIGRATION_COOKIE = 'mail_labels_migrated';
 
 /** Legacy cookie holding the pre-migration keyword-based labels. */
 export const LEGACY_LABELS_COOKIE = 'mail_labels';

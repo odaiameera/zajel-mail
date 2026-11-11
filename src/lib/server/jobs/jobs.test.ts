@@ -19,8 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('$lib/jmap/auth', () => ({ createClient: () => ({}) }));
 vi.mock('$lib/jmap/email', () => ({
 	searchEmails: mocks.searchEmails,
-	updateEmailMailboxes: mocks.updateEmailMailboxes,
-	moveEmails: vi.fn()
+	updateEmailMailboxes: mocks.updateEmailMailboxes
 }));
 vi.mock('$lib/jmap/mailbox', () => ({
 	getMailboxes: mocks.getMailboxes,

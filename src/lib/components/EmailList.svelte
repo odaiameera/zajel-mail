@@ -2,7 +2,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import EmailListItem from './EmailListItem.svelte';
 	import EmailDetail from './EmailDetail.svelte';
-	import FolderPicker from './FolderPicker.svelte';
+	import MailboxPicker from './MailboxPicker.svelte';
 	import ListFilterBar from './ListFilterBar.svelte';
 	import InboxTabs from './InboxTabs.svelte';
 	import CategoryPicker from './CategoryPicker.svelte';
@@ -18,7 +18,9 @@
 	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
 	import { browser } from '$app/environment';
 	import { isPhone } from '$lib/stores/viewport';
-	import { REMIND_ME_LATER_NAME, isScheduledMailbox } from '$lib/jmap/mailbox';
+	import { isScheduledMailbox } from '$lib/jmap/mailbox';
+	import { isRemindMeLaterMailbox } from '$lib/mailboxes';
+	import { showToast } from '$lib/stores/toast';
 
 	let {
 		emails,
@@ -70,6 +72,10 @@
 		mailboxes.some((m) => m.id === mailboxId && isScheduledMailbox(m))
 	);
 	setContext('showRecipients', () => listRole === 'sent' || listRole === 'drafts' || listIsScheduled);
+	// Trash deletes for good only in the Trash list itself (and a message
+	// opened from it), never in a label, Search or Starred.
+	const listIsTrash = $derived(listRole === 'trash');
+	setContext('listIsTrash', () => listIsTrash);
 	// emailId → when it goes out (or that it didn't), for rows in Scheduled.
 	setContext(
 		'scheduledSends',
@@ -212,25 +218,56 @@
 		e.dataTransfer.effectAllowed = 'move';
 	}
 
+	/**
+	 * Move the selection to a folder, or add a label to it: the server tells
+	 * them apart ("Move to" a label adds the label and moves nothing).
+	 */
 	async function bulkMoveTo(targetMailboxId: string) {
 		if (selectedIds.size === 0) return;
 		showMovePicker = false;
 		bulkLoading = 'moveTo';
 		try {
-			await fetch('/api/email/bulk', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					ids: [...selectedIds],
-					action: 'moveTo',
-					targetMailboxId,
-					sourceMailboxId: mailboxId
-				})
-			});
+			await sendBulk({ ids: [...selectedIds], action: 'moveTo', targetMailboxId });
 			selectedIds = new Set();
 			await invalidateAll();
 		} finally {
 			bulkLoading = '';
+		}
+	}
+
+	/** What a failed message wasn't, per action: "3 messages couldn’t be moved". */
+	function failedVerb(payload: { action: string; permanent?: boolean }): string {
+		switch (payload.action) {
+			case 'moveTo': return 'moved';
+			case 'archive': return 'archived';
+			case 'trash': return payload.permanent ? 'deleted' : 'moved to Trash';
+			case 'spam': return 'moved to Spam';
+			case 'notSpam': return 'moved to the Inbox';
+			default: return 'changed';
+		}
+	}
+
+	/**
+	 * Send a bulk action. The server writes what it can and names the
+	 * messages it couldn't change (`failed`); say how many, in the usual
+	 * notice. The caller refreshes the list either way.
+	 */
+	async function sendBulk(payload: { ids: string[]; action: string; [key: string]: unknown }): Promise<void> {
+		const res = await fetch('/api/email/bulk', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload)
+		}).catch(() => null);
+		if (!res) {
+			showToast({ message: 'Network error' });
+			return;
+		}
+		const data = (await res.json().catch(() => ({}))) as { failed?: unknown; error?: string };
+		const failed = Array.isArray(data.failed) ? data.failed.length : 0;
+		if (failed > 0) {
+			showToast({ message: `${failed} message${failed === 1 ? '' : 's'} couldn’t be ${failedVerb(payload)}` });
+		} else if (!res.ok) {
+			showToast({ message: data.error ?? 'That didn’t work. Try again.' });
 		}
 	}
 
@@ -259,7 +296,7 @@
 			case 'archive': return 'Nothing archived';
 		}
 		const listMailbox = mailboxes.find((m) => m.id === mailboxId);
-		if (listMailbox?.name === REMIND_ME_LATER_NAME && listMailbox.parentId === null) return 'Nothing snoozed';
+		if (listMailbox && isRemindMeLaterMailbox(listMailbox)) return 'Nothing snoozed';
 		if (listIsScheduled) return 'Nothing scheduled';
 		return 'This folder is empty';
 	});
@@ -280,10 +317,11 @@
 		if (selectedIds.size === 0) return;
 		bulkLoading = action;
 		try {
-			await fetch('/api/email/bulk', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ ids: [...selectedIds], action, sourceMailboxId: mailboxId })
+			await sendBulk({
+				ids: [...selectedIds],
+				action,
+				// Delete for good only in the Trash list itself.
+				...(action === 'trash' && listIsTrash ? { permanent: true } : {})
 			});
 			selectedIds = new Set();
 			await invalidateAll();
@@ -424,13 +462,14 @@
 						<Icon name="move-to-folder" size={16} />
 					</button>
 					{#if showMovePicker}
-						<FolderPicker
+						<MailboxPicker
 							{mailboxes}
 							labels={allLabels}
 							excludeIds={mailboxId ? [mailboxId] : []}
 							anchor={moveTriggerEl ?? null}
 							align="left"
-							onPick={bulkMoveTo}
+							onMove={bulkMoveTo}
+							onAddLabel={bulkMoveTo}
 							onClose={() => { showMovePicker = false; }}
 						/>
 					{/if}

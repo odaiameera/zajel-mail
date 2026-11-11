@@ -6,7 +6,8 @@
 		value,
 		onChange
 	}: {
-		value: LabelColor;
+		/** null when no colour is chosen: none is shown selected. */
+		value: LabelColor | null;
 		onChange: (color: LabelColor) => void;
 	} = $props();
 </script>
@@ -16,7 +17,7 @@
      circles overlap; in wide containers they over-spread. -->
 <div class="grid w-max grid-cols-5 gap-2.5">
 	{#each LABEL_COLORS as color (color.hex)}
-		{@const selected = value.hex.toLowerCase() === color.hex.toLowerCase()}
+		{@const selected = !!value && value.hex.toLowerCase() === color.hex.toLowerCase()}
 		<button
 			type="button"
 			class="w-8 h-8 rounded-full flex items-center justify-center transition-transform hover:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"

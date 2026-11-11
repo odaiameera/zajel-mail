@@ -8,8 +8,8 @@ import { JMAPAuthError } from '$lib/jmap/client';
 import { listAccounts, markNeedsReauth } from '$lib/server/auth/accounts';
 import { unreadBadges } from '$lib/server/auth/unread-badges';
 import { listLabels, migrateKeywordLabelsIfNeeded } from '$lib/server/labels';
+import { mailboxMetaFor } from '$lib/server/mailbox-meta';
 import { syncIdentities } from '$lib/server/db/queries/identities';
-import { loadRules } from '$lib/server/rules-store';
 import { readPreferences } from '$lib/server/preferences';
 import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
@@ -51,10 +51,10 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			userEmail.split('@')[0] ??
 			'';
 
-		// One-shot migration from keyword-based labels to JMAP mailbox labels.
-		// Idempotent; the marker cookie makes subsequent loads a no-op. Must
-		// finish before the label fetch below sees the mailboxes it creates.
-		await migrateKeywordLabelsIfNeeded(client, locals.auth.accountId, userEmail, cookies);
+		// Old keyword labels become label mailboxes, only while the old
+		// `mail_labels` cookie is there (see migrateKeywordLabelsIfNeeded).
+		// Must finish before the label fetch below sees the mailboxes it creates.
+		await migrateKeywordLabelsIfNeeded(client, locals.auth.accountId, locals.activeAccountId, cookies);
 
 		// Refresh the identity cache on every navigation. Single Identity/get
 		// round-trip; the user picked "always refresh" over stale-while-
@@ -94,7 +94,7 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 		const holdInbox = holdAccount ? knownInboxId(holdAccount) : undefined;
 		const [mailboxList, labels, accountUnread, earlyHold] = await Promise.all([
 			getMailboxes(client, accountId),
-			listLabels(client, locals.auth.accountId, userEmail),
+			listLabels(client, locals.auth.accountId, locals.activeAccountId),
 			// Inbox unread counts for the other accounts' switcher badges.
 			// Cached server-side (30s) so navigations stay cheap.
 			unreadBadges(listAccounts(locals.user.id), locals.activeAccountId),
@@ -108,10 +108,6 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			const hold = !inboxId ? null : inboxId === holdInbox ? earlyHold : await readInboxHold(client, accountId, inboxId);
 			({ mailboxes, releaseAt: inboxHoldEndsAt } = applyInboxHold(holdAccount, mailboxList, hold));
 		}
-
-		// Rules live in SQLite now (device-independent). loadRules also performs
-		// the one-time import from the legacy per-browser `mail_rules` cookie.
-		const rules = loadRules(userEmail, cookies);
 
 		// Sidebar expand/collapse state — Record<id, boolean>. Absence means
 		// "default": section headers expanded, individual folders collapsed.
@@ -161,7 +157,9 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			density,
 			displayName,
 			labels,
-			rules,
+			// Colour, icon and display name of the active account's folders and
+			// labels, by mailbox id (mailbox_meta).
+			mailboxMeta: mailboxMetaFor(locals.activeAccountId),
 			folderExpanded,
 			notificationsEnabled,
 			notifyCalendarEvents,

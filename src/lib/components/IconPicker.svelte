@@ -16,7 +16,8 @@
 		onPick
 	}: {
 		value: string | null;
-		color: string;
+		/** The chosen colour, or null for none. */
+		color: string | null;
 		fallback: 'folder' | 'dot';
 		onPick: (name: string | null) => void;
 	} = $props();
