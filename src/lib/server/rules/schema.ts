@@ -9,6 +9,7 @@ import {
 	type RuleConditionField,
 	type RuleConditionOp,
 	type RuleDraft,
+	type RuleProblem,
 	type RuleRole,
 	type RuleTarget
 } from '$lib/types/rules';
@@ -21,15 +22,6 @@ import {
  * server's), and the problems that stop it being saved, in plain English,
  * each for the part of the editor it is about.
  */
-
-export type RuleProblemField = 'name' | 'logic' | 'conditions' | 'target' | 'actions';
-
-export interface RuleProblem {
-	field: RuleProblemField;
-	/** For a condition: which one, counted from 0. */
-	index?: number;
-	message: string;
-}
 
 export interface ParsedRule {
 	/** The rule as it would be stored. Only to be stored when `problems` is empty. */

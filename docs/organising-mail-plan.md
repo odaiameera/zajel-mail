@@ -120,7 +120,7 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 | 2 | **Done.** Tabs belong to Jev: "set tab" removed from rules, tab rules become pins | Pins now act with Jev off |
 | 3 | **Done.** One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
 | 4 | **Done.** Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
-| 5 | Rules table (030) and validated saves | Splitting multi-target rules |
+| 5 | **Done.** Rules table (030) and validated saves | Splitting multi-target rules |
 | 6 | Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
 | 7 | One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
 | 8 | The two settings pages | UI only |
@@ -145,12 +145,12 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 ## Open questions for the owner
 
 1. **Out-of-office per account?** Answered: one setting for all linked accounts, with optional start and end dates (stage 4).
-2. **Rules to Junk**: should a rule be allowed to move mail to Junk?
+2. **Rules to Junk**: answered: yes, as the owner's exact rule; no spam-training keywords are set (stage 5).
 3. **Mail delivered straight to another folder** (not the Inbox) is never seen by rules. Keep it that way?
 
 ## Status
 
-Stages 0 to 4 are done. Later stages follow one PR at a time.
+Stages 0 to 5 are done. Later stages follow one PR at a time.
 
 ## Design notes
 
@@ -261,3 +261,86 @@ Migration `029_auto_reply.sql`: `auto_reply_log(account_id, sender, sent_at, ema
 - **Replying to the wrong mail.** Guarded by rules 2 to 8, the cap, and one-per-day. Stalwart's own spam filtering has already filed most spam into Junk, which is never seen here; mail Jev later moves to Junk may get a reply first.
 - **Preview cost.** Up to 500 messages are fetched per preview (200 with bodies), debounced as today.
 - **Replies only while the app runs.** Stated on the page.
+
+### Stage 5 design: rules in their own table, saved one at a time, validated
+
+#### Why
+- Rules are one JSON blob per mail **address** (`user_rules`), while everything else about an account is keyed by the account row. Removing an account leaves its rules behind.
+- The page saves by posting the whole list; the server stores whatever it is sent (`saveRules`, `src/lib/server/rules-store.ts`). There is no validation and no way to reorder.
+- A rule holds a free list of actions. The agreed model is simpler: a rule files into **one** place (a folder or a label), and may also mark as read, star, or stop later rules.
+
+#### The rule, after this stage
+```
+id, name, enabled, logic (all / any), conditions[]
+target:  none | folder <mailbox id> | label <mailbox id> | trash | archive | junk
+markRead, star, stop        (booleans)
+attention, legacy, note     (set by the server only)
+```
+- `star` is today's "mark important", renamed because it clashed with the Important tab. `delete` becomes target `trash`.
+- `target: none` is allowed, for rules that only mark as read or star.
+- Order matters and is stored as `position`. Running in order: labels add up; the **first** matching rule that moves a message decides its folder; `stop` ends evaluation. (Today two matching move rules leave a message in both folders; a message lives in one folder, so the first wins.)
+- Rules may move mail to Junk (the owner's exact rule; no spam-training keywords are set). Mail delivered straight to another folder is still not seen by rules. Both as today.
+
+#### Data
+Migration `030_rules.sql`: table `rules` (`id`, `account_id` cascading from `mail_accounts`, `position`, `enabled`, `name`, `logic`, `conditions_json`, `target_kind`, `target_mailbox_id`, `target_role`, `mark_read`, `star`, `stop`, `attention`, `note_json`, `legacy_json`, `created_at`, `updated_at`), indexed by `(account_id, position)`.
+
+One-time data step `data/rules_to_table` (the `DATA_STEPS` runner in `src/lib/server/db/migrate.ts`; runs after the two existing rule steps, so it reads rules that are already exact-only and tab-free):
+- For each `user_rules` row whose address has a mail account (exact match, then case-insensitive) and whose account has no rows in `rules` yet, convert each stored rule and insert, all in one transaction.
+- A rule with several filing actions becomes adjacent rows, one per target, in the original order: same name, same conditions; `markRead` and `star` on the first row; `stop` on the last. Rows after the first carry a dismissible note: "This rule filed mail in several places, so it is now N rules."
+- Flagged rules (`jev_condition`, `tab_rule`, `tab_pinned`, `tab_removed`) keep their flag, note and `legacy` exactly.
+- A rule whose target mailbox no longer exists is carried over unchanged (the engine already skips it; the page marks it "target missing").
+- Addresses with no account are left where they are. `user_rules` and `rules_cursor` are not dropped or written by this stage (dropped in the last stage), so a failed or interrupted upgrade loses nothing.
+- Unlinking an account now deletes its rules: add the count to `unlinkLosses` (`src/lib/server/auth/accounts.ts`) so the unlink confirmation says so.
+
+#### Code
+Create `src/lib/server/rules/` and move what exists into it (imports updated, no behaviour change): `rules-engine.ts` → `rules/engine.ts`, `rules-scan.ts` → `rules/scan.ts`, `rules-upgrade.ts` → `rules/upgrade.ts`. New:
+- `rules/schema.ts`: `parseRule(input, mailboxes)`, the only way a rule enters the store. It returns a clean rule or a list of plain-English problems. Checks: name (1–120 characters); logic; 1–20 conditions with known field and operator, value up to 500 characters, a number for size; at least one usable condition; target mailbox exists and is of the stated kind (reuse `isLabelMailbox` / `labelMailboxIds` in `src/lib/types/labels.ts`; never the `Labels` container, Remind Me Later or Scheduled); role targets exist on the account; the rule does something (a target, mark read or star). Unknown fields are dropped; `attention`, `note` and `legacy` can never be set by a client.
+- `rules/store.ts`: `listRules`, `getRule`, `createRule`, `updateRule`, `deleteRule`, `reorderRules`, `dismissNote`, `deleteRulesForMailbox`, all by account id.
+- `rules/engine.ts`: evaluates the new shape. `evaluateRulesForEmail` and `updatesForEmails` keep their names and callers (scheduler, scan).
+
+API (all for the active account; every write goes through `parseRule`):
+- `GET /api/rules`, `POST /api/rules` (create).
+- `PATCH /api/rules/[id]` (edit, enable/disable), `DELETE /api/rules/[id]`.
+- `POST /api/rules/reorder` `{ ids }` (must be exactly the account's rule ids).
+- `POST /api/rules/[id]/dismiss`: clears a `tab_removed` or split note; deletes a `tab_pinned` stub.
+- `POST /api/rules/[id]/pin`: the existing "Pin <sender> to <tab>" for a flagged tab rule, done in one server call (create or replace the pin, delete the rule).
+- A flagged rule (`jev_condition`, `tab_rule`) can only be enabled by a `PATCH` that makes it a valid exact rule, which clears the flag ("Save as exact rule").
+- `/api/rules/preview` takes a draft through `parseRule` (problems are returned, not thrown); `/api/rules/apply` is unchanged (`{ ruleIds }`).
+- Deleted: `/api/preferences/rules`, `rules-store.ts`, `db/queries/rules.ts`'s rule functions (the cursor functions stay), the `mail_rules` cookie import, and the save-time conversion (no whole-list saves remain to convert).
+
+Deleting a folder or label (`/api/folders`, the label delete in `src/lib/jmap/labels.ts` callers) also deletes the rules that file into it; the confirmation says how many.
+
+#### The page
+`src/routes/(app)/settings/rules/` keeps its place until the settings pass, but is rebuilt on the new API:
+- New `src/lib/components/settings/RuleEditor.svelte` (reused by the "Folders & labels" page in stage 8): name; conditions; "Then": one target picker (a folder, a label, Trash, Archive, Junk, or nothing) and three checkboxes (mark as read, star, stop processing later rules); the live match count; **Save**, **Save & apply**, Cancel, Delete. Nothing is sent until Save. Validation problems from the server are shown beside the fields.
+- The list: each rule as "conditions → target", with its on/off switch, and **move up / move down** (there is no way to reorder today).
+- "Needs your attention" as now, using the new dismiss and pin calls.
+- Rules are loaded by the page's own server load, not by the app layout on every navigation.
+
+#### Tests
+- `parseRule`: each check, with the message it returns; unknown fields dropped; client-set `attention` ignored; a label id given as a folder (and the reverse) refused; the `Labels` container refused.
+- Store: create / update / delete / reorder; another account's rule id is "not found"; reorder with a missing or foreign id refused; cascade on account delete.
+- Data step: single-action rules; a rule with two labels and a move becomes three rows with flags and `stop` placed as designed and the note on rows two and three; `delete` → Trash; `markImportant` → star; each flagged kind carried over intact; missing target; address without an account left alone; case-different address; running twice changes nothing; a failure half-way leaves no rows and no marker.
+- Engine: labels add up; first move wins; `stop`; mark read and star; flagged or disabled rules never run; target missing is skipped.
+- API: every route requires sign-in and the active account; enabling a flagged rule without fixing it is refused; dismiss and pin behave per kind.
+- Folder / label delete removes its rules and reports the count.
+- Page and editor: nothing sent until Save; server problems shown; move up / down calls reorder; Save & apply applies the saved rule.
+- Scheduler, scan, preview and apply tests still pass on the new shape (preview and apply still agree).
+
+#### Verification on the owner's server
+1. After deploying, every rule is still listed, in the same order, and files the same mail (try two that were multi-action before).
+2. Reorder two rules; create, edit and delete one; "Save & apply" on one.
+3. Delete a label that a rule files into: the confirmation names the rule count, and the rule is gone.
+
+#### Risks
+- **Splitting multi-target rules** changes how the list looks; the note on the extra rows says why.
+- **First move wins**: mail that two move rules used to leave in two folders now goes to the first rule's folder only.
+- **Size**: storage, API, engine shape, migration and the editor in one stage. It is built as three commits (storage and migration; API and engine; page and editor), each passing on its own.
+
+#### As built
+- `target_kind` is stored as `none`, `folder`, `label` or `role`, with the role in `target_role`; the API's target is `{ kind: 'none' | 'folder' | 'label' | 'trash' | 'archive' | 'junk', mailboxId? }`. Rule ids are unique per account (primary key `(account_id, id)`): ids from the old lists are kept, and the extra rows of a split rule are `<id>~2`, `<id>~3`.
+- The split note is a new `RuleAttention`, `split`, with `note.splitInto`. A split rule that was already flagged keeps its flag on every row (a rule waiting to be rewritten must not run in part), and its extra rows carry the split note beside the flag.
+- A folder with the role Trash, Archive or Junk given as a folder is stored as that role. The Inbox, Sent and Drafts are refused as targets.
+- A `PATCH` replaces the fields it sends and goes through `parseRule`. To switch on a rule waiting to be rewritten, it must send `conditions` and `target` (the editor sends the whole rule); `{ enabled: true }` alone is refused.
+- The preview counts a draft whose only problems are its name or target, and returns the problems with the count; problems with its conditions count nothing.
+- The folder and label confirmations get the count from `GET /api/rules` before asking; the delete responses report `rulesDeleted`.

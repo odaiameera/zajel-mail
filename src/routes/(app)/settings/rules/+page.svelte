@@ -1,170 +1,94 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import RuleEditor from '$lib/components/settings/RuleEditor.svelte';
 	import { pageTitle } from '$lib/utils/title';
-	import { slide, fade, fly } from 'svelte/transition';
+	import { fade, fly } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
-	import { onDestroy } from 'svelte';
 	import type { PageData } from './$types';
-	import {
-		isUsableCondition,
-		needsRewrite,
-		type LegacyRule,
-		type ActionRule,
-		type RuleAction,
-		type TabNote
-	} from '$lib/types/rules';
+	import { needsRewrite, type LegacyRule, type Rule, type RuleCondition, type TabNote } from '$lib/types/rules';
 	import { INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
-	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
 
 	let { data }: { data: PageData } = $props();
 
-	// Working copy. Edits here stay local until the user hits Save.
-	let localRules = $state<ActionRule[]>(structuredClone(data.rules ?? []));
+	// The saved rules, in the order they run, as the server last listed them.
+	// Every change is saved at once through /api/rules and the list read back.
+	// svelte-ignore state_referenced_locally
+	let rules = $state<Rule[]>(data.rules ?? []);
+	/** The rule open in the editor, 'new' for one not yet saved, or null. */
+	// svelte-ignore state_referenced_locally
 	let selectedId = $state<string | null>(data.rules[0]?.id ?? null);
-
-	const selectedIdx = $derived(localRules.findIndex((r) => r.id === selectedId));
+	const selected = $derived(rules.find((r) => r.id === selectedId) ?? null);
 
 	// Rules an upgrade had to change, listed apart so they aren't missed.
-	const attentionRules = $derived(localRules.filter((r) => r.attention));
-	const otherRules = $derived(localRules.filter((r) => !r.attention));
+	const attentionRules = $derived(rules.filter((r) => r.attention));
+	const otherRules = $derived(rules.filter((r) => !r.attention));
 
-	// Sort user folders (moveToFolder targets) and labels once.
-	const labelsParentId = $derived(findLabelsParentId(data.mailboxes));
-	const folderOptions = $derived(
-		data.mailboxes
-			.filter((m) => m.role === null && !isLabelMailbox(m, labelsParentId) && !isLabelsParent(m, labelsParentId))
-			.sort((a, b) => a.name.localeCompare(b.name))
-	);
-	const systemFolderOptions = $derived(
-		data.mailboxes.filter((m) => m.role === 'archive' || m.role === 'junk' || m.role === 'trash')
-	);
-	const labelOptions = $derived(data.labels);
-
-	/**
-	 * A saved action can point at a folder/label that was deleted after the
-	 * rule was created — the select then renders blank and applying the rule
-	 * silently does nothing server-side. Flag it loudly instead.
-	 */
-	function isStaleTarget(action: { type: string; value?: string }): boolean {
-		if (!action.value) return false;
-		if (action.type === 'applyLabel') {
-			return !labelOptions.some((l) => l.id === action.value);
-		}
-		if (action.type === 'moveToFolder') {
-			return (
-				!folderOptions.some((m) => m.id === action.value) &&
-				!systemFolderOptions.some((m) => m.id === action.value)
-			);
-		}
-		return false;
-	}
-
-	// --- Save ---
-
-	let saving = $state(false);
+	let busy = $state(false);
 	let saveError = $state('');
 	let savedToast = $state(false);
 
-	async function persistAll(): Promise<boolean> {
-		saving = true;
+	async function refresh() {
+		const res = await fetch('/api/rules').catch(() => null);
+		if (res?.ok) rules = ((await res.json()) as { rules: Rule[] }).rules;
+	}
+
+	/** A change to the saved rules: sent, then the list read back. False when the server said no. */
+	async function send(url: string, init: RequestInit): Promise<boolean> {
+		busy = true;
 		saveError = '';
 		try {
-			const res = await fetch('/api/preferences/rules', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ rules: localRules })
-			});
-			// "Apply now" runs the saved rules, so a save that didn't land must
-			// stop it rather than let it apply what was there before.
-			if (!res.ok) throw new Error(`Save failed (HTTP ${res.status})`);
-			await invalidateAll();
+			const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...init }).catch(() => null);
+			if (!res?.ok) {
+				saveError = (await res?.json().catch(() => null))?.error ?? 'That didn’t save. Try again.';
+				return false;
+			}
+			await refresh();
 			return true;
-		} catch (err) {
-			saveError = err instanceof Error ? err.message : 'Save failed';
-			return false;
 		} finally {
-			saving = false;
+			busy = false;
 		}
 	}
 
-	async function saveOnly() {
-		const ok = await persistAll();
-		if (ok) {
-			savedToast = true;
-			setTimeout(() => { savedToast = false; }, 1600);
-		}
+	const toggleEnabled = (rule: Rule) =>
+		send(`/api/rules/${encodeURIComponent(rule.id)}`, { method: 'PATCH', body: JSON.stringify({ enabled: !rule.enabled }) });
+
+	/** Move a rule one place up or down among the rules listed with it. */
+	async function move(rule: Rule, by: -1 | 1) {
+		const group = rule.attention ? attentionRules : otherRules;
+		const at = group.findIndex((r) => r.id === rule.id);
+		const other = group[at + by];
+		if (!other) return;
+		const ids = rules.map((r) => r.id);
+		const i = ids.indexOf(rule.id);
+		const j = ids.indexOf(other.id);
+		[ids[i], ids[j]] = [ids[j], ids[i]];
+		await send('/api/rules/reorder', { method: 'POST', body: JSON.stringify({ ids }) });
 	}
 
-	// --- Rule CRUD in the list ---
+	const dismiss = (id: string) => send(`/api/rules/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
 
-	function newRuleId(): string {
-		return 'rule_' + Math.random().toString(36).slice(2) + '_' + Date.now();
-	}
+	/** Make the pin a flagged tab rule names, and remove the rule: one call, so a failure leaves the rule where it is. */
+	const pinInstead = (id: string) => send(`/api/rules/${encodeURIComponent(id)}/pin`, { method: 'POST' });
 
-	async function createRule() {
-		const rule: ActionRule = {
-			id: newRuleId(),
-			name: 'New rule',
-			enabled: true,
-			logic: 'allof',
-			conditions: [{ id: 'c_' + Date.now(), field: 'from', op: 'contains', value: '', negate: false }],
-			actions: [{ type: 'applyLabel' }],
-			createdAt: Date.now()
-		};
-		localRules = [...localRules, rule];
+	async function onSaved(rule: Rule, apply: boolean) {
+		await refresh();
 		selectedId = rule.id;
-		await persistAll();
-	}
-
-	async function toggleEnabled(id: string) {
-		localRules = localRules.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r));
-		await persistAll();
-	}
-
-	async function deleteRule(id: string) {
-		const r = localRules.find((x) => x.id === id);
-		if (!r) return;
-		if (!confirm(`Delete rule "${r.name}"? This cannot be undone.`)) return;
-		await removeRule(id);
-	}
-
-	/** Take a rule out of the list and save. Unasked for what is left of a rule that became a pin. */
-	async function removeRule(id: string) {
-		localRules = localRules.filter((x) => x.id !== id);
-		if (selectedId === id) selectedId = localRules[0]?.id ?? null;
-		await persistAll();
-	}
-
-	/**
-	 * Make the pin a flagged tab rule names (its sender, to the rule's tab),
-	 * and remove the rule: the pin does what it did. The pin is saved first,
-	 * so a failure leaves the rule where it is.
-	 */
-	async function pinInstead(id: string) {
-		const pin = localRules.find((r) => r.id === id)?.tabNote?.pin;
-		if (!pin) return;
-		saveError = '';
-		const res = await fetch('/api/jev/pins', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ sender: pin.sender, category: pin.category })
-		}).catch(() => null);
-		if (!res?.ok) {
-			const body = await res?.json().catch(() => null);
-			saveError = body?.error ?? 'Couldn’t save the pin. Try again.';
-			return;
+		if (apply) {
+			await streamApply(rule);
+		} else {
+			savedToast = true;
+			setTimeout(() => (savedToast = false), 1600);
 		}
-		await removeRule(id);
 	}
 
-	// --- Rules that need attention ---
+	async function onDeleted(id: string) {
+		await refresh();
+		if (selectedId === id) selectedId = rules[0]?.id ?? null;
+	}
 
-	const FIELD_LABELS: Record<string, string> = {
-		from: 'From',
-		to: 'To',
-		subject: 'Subject',
-		body: 'Body'
-	};
+	// --- What a rule says, in words ---
+
+	const FIELD_LABELS: Record<string, string> = { from: 'From', to: 'To', subject: 'Subject', body: 'Body' };
 	const OP_LABELS: Record<string, string> = {
 		contains: 'contains',
 		not_contains: 'doesn’t contain',
@@ -173,12 +97,13 @@
 		ends_with: 'ends with'
 	};
 
-	/** One condition of a rule as it was before an upgrade changed it, in words. */
-	function legacyConditionText(c: LegacyRule['conditions'][number]): string {
+	/** One condition in words, as it reads now or as it read before an upgrade changed it. */
+	function conditionText(c: LegacyRule['conditions'][number] | RuleCondition): string {
 		const not = c.negate ? 'NOT ' : '';
 		const value = (c.value ?? '').trim();
 		if (c.field === 'jev') {
-			const how = c.strictness && c.strictness !== 'normal' ? ` (${c.strictness})` : '';
+			const strictness = 'strictness' in c ? c.strictness : undefined;
+			const how = strictness && strictness !== 'normal' ? ` (${strictness})` : '';
 			return `${not}Jev judged: “${value}”${how}`;
 		}
 		if (c.field === 'hasAttachment') return `${not}Has attachment`;
@@ -186,8 +111,30 @@
 		return `${not}${FIELD_LABELS[c.field] ?? c.field} ${OP_LABELS[c.op ?? 'contains'] ?? c.op} “${value}”`;
 	}
 
+	const mailboxById = $derived(new Map(data.mailboxes.map((m) => [m.id, m])));
+	const labelById = $derived(new Map(data.labels.map((l) => [l.id, l])));
+
+	/** Where a rule files mail, in words; "target missing" when the folder or label is gone. */
+	function targetText(rule: Rule): string {
+		const t = rule.target;
+		if (t.kind === 'label') return labelById.get(t.mailboxId)?.name ?? 'target missing';
+		if (t.kind === 'folder') return mailboxById.get(t.mailboxId)?.name ?? 'target missing';
+		if (t.kind === 'none') {
+			const did = [rule.markRead && 'mark read', rule.star && 'star'].filter(Boolean).join(', ');
+			return did || 'nothing';
+		}
+		const name = { trash: 'Trash', archive: 'Archive', junk: 'Junk' }[t.kind];
+		return data.mailboxes.some((m) => m.role === t.kind) ? name : 'target missing';
+	}
+
+	/** "From contains “shop” → Receipts" */
+	function summary(rule: Rule): string {
+		const conds = rule.conditions.map(conditionText).join(rule.logic === 'anyof' ? ' or ' : ' and ');
+		return `${conds || 'No conditions'} → ${targetText(rule)}`;
+	}
+
 	/** The Inbox tab a rule used to put mail in, before rules stopped setting tabs: "the Updates tab", or null. */
-	function legacyTab(rule: ActionRule): string | null {
+	function legacyTab(rule: Rule): string | null {
 		const tab = (rule.legacy?.actions ?? [])
 			.filter((a) => a.type === 'setCategory')
 			.map((a) => a.value)
@@ -239,112 +186,7 @@
 		}
 	}
 
-	/** Enough of a rule to run: something to match on, and something to do. */
-	function canRunAsExact(rule: ActionRule): boolean {
-		return rule.conditions.some(isUsableCondition) && rule.actions.length > 0;
-	}
-
-	/**
-	 * The owner has rewritten a flagged rule with exact conditions: the flag
-	 * and the old copy go, and the rule is switched back on.
-	 */
-	async function saveAsExactRule(id: string) {
-		const idx = localRules.findIndex((r) => r.id === id);
-		if (idx < 0) return;
-		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as ActionRule;
-		localRules[idx] = { ...rule, enabled: true };
-		await saveOnly();
-	}
-
-	/** A note about a rule that still runs: read, so the note and the old copy go. */
-	async function dismissAttention(id: string) {
-		const idx = localRules.findIndex((r) => r.id === id);
-		if (idx < 0) return;
-		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as ActionRule;
-		localRules[idx] = rule;
-		await persistAll();
-	}
-
-	// --- Editor mutations (selected rule) ---
-
-	function addCondition() {
-		if (selectedIdx < 0) return;
-		localRules[selectedIdx].conditions = [
-			...localRules[selectedIdx].conditions,
-			{ id: 'c_' + Date.now(), field: 'from', op: 'contains', value: '', negate: false }
-		];
-	}
-	function removeCondition(cid: string) {
-		if (selectedIdx < 0) return;
-		localRules[selectedIdx].conditions = localRules[selectedIdx].conditions.filter((c) => c.id !== cid);
-	}
-	function addAction() {
-		if (selectedIdx < 0) return;
-		localRules[selectedIdx].actions = [...localRules[selectedIdx].actions, { type: 'markRead' } as RuleAction];
-	}
-	function removeAction(idx: number) {
-		if (selectedIdx < 0) return;
-		localRules[selectedIdx].actions = localRules[selectedIdx].actions.filter((_, i) => i !== idx);
-	}
-
-	// --- Live match preview ---
-
-	// What the scan counted: `matched` of the newest `scanned` Inbox messages,
-	// out of `total` in the Inbox.
-	let preview = $state<{ matched: number; scanned: number; total: number } | null>(null);
-	let previewLoading = $state(false);
-	let previewError = $state('');
-	let previewTimer: ReturnType<typeof setTimeout> | undefined;
-
-	// Serialise the parts of the selected rule that affect the preview.
-	// Changes to this string retrigger a debounced preview fetch.
-	const previewKey = $derived.by(() => {
-		if (selectedIdx < 0) return '';
-		const r = localRules[selectedIdx];
-		return JSON.stringify({ id: r.id, logic: r.logic, conditions: r.conditions });
-	});
-
-	$effect(() => {
-		previewKey; // dependency
-		if (selectedIdx < 0) return;
-
-		if (previewTimer) clearTimeout(previewTimer);
-		previewTimer = setTimeout(runPreview, 400);
-	});
-
-	onDestroy(() => {
-		if (previewTimer) clearTimeout(previewTimer);
-	});
-
-	async function runPreview() {
-		if (selectedIdx < 0) return;
-		// A rule being rewritten is counted as it reads now, without its flag:
-		// the server counts nothing for a rule that is still switched off.
-		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[selectedIdx]) as ActionRule;
-		previewLoading = true;
-		previewError = '';
-		try {
-			const res = await fetch('/api/rules/preview', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ rule })
-			});
-			const data = await res.json();
-			if (data.error) {
-				previewError = data.error;
-				preview = null;
-			} else {
-				preview = { matched: data.matched ?? 0, scanned: data.scanned ?? 0, total: data.total ?? 0 };
-			}
-		} catch (err) {
-			previewError = err instanceof Error ? err.message : 'Preview failed';
-			preview = null;
-		} finally {
-			previewLoading = false;
-		}
-	}
-
-	// --- Save & apply now (SSE stream) ---
+	// --- Save & apply (SSE stream) ---
 
 	interface Progress {
 		status: 'idle' | 'running' | 'done' | 'error';
@@ -356,16 +198,11 @@
 	}
 	let progress = $state<Progress>({ status: 'idle', scanned: 0, matched: 0, applied: 0, total: 0 });
 	let progressVisible = $state(false);
+	let lastApplied: Rule | null = null;
 	let abortCtrl: AbortController | null = null;
 
-	async function saveAndApply() {
-		if (selectedIdx < 0) return;
-		const ok = await persistAll();
-		if (!ok) return;
-		await streamApply(localRules[selectedIdx]);
-	}
-
-	async function streamApply(rule: ActionRule) {
+	async function streamApply(rule: Rule) {
+		lastApplied = rule;
 		progress = { status: 'running', scanned: 0, matched: 0, applied: 0, total: 0 };
 		progressVisible = true;
 		abortCtrl = new AbortController();
@@ -403,9 +240,7 @@
 				}
 			}
 
-			if (progress.status === 'running') {
-				progress = { ...progress, status: 'done' };
-			}
+			if (progress.status === 'running') progress = { ...progress, status: 'done' };
 		} catch (err) {
 			if ((err as Error)?.name === 'AbortError') return;
 			progress = { ...progress, status: 'error', error: err instanceof Error ? err.message : 'Apply failed' };
@@ -445,52 +280,25 @@
 		}
 	}
 
-	function dismissProgress() {
-		// Leave the stream running if still in progress; just hide the modal.
-		progressVisible = false;
-	}
-
 	function closeOrCancel() {
 		if (progress.status === 'running' && abortCtrl) abortCtrl.abort();
 		progressVisible = false;
 		progress = { status: 'idle', scanned: 0, matched: 0, applied: 0, total: 0 };
 	}
 
-	// --- Derived flags ---
-
 	const progressPercent = $derived(
 		progress.total > 0 ? Math.min(100, Math.round((progress.scanned / progress.total) * 100)) : 0
 	);
-
-	const folderOptionsById = $derived(new Map(data.mailboxes.map((m) => [m.id, m])));
-
-	function actionSummary(a: RuleAction): string {
-		switch (a.type) {
-			case 'applyLabel': {
-				const label = labelOptions.find((l) => l.id === a.value);
-				return label ? `Apply label “${label.name}”` : 'Apply label';
-			}
-			case 'moveToFolder': {
-				const mb = folderOptionsById.get(a.value ?? '');
-				return mb ? `Move to “${mb.name}”` : 'Move to folder';
-			}
-			case 'markRead': return 'Mark as read';
-			case 'markImportant': return 'Mark important';
-			case 'delete': return 'Delete';
-			case 'stopProcessing': return 'Stop processing';
-		}
-	}
 </script>
 
 <svelte:head><title>{pageTitle({ page: 'Filters & Rules', subtitle: 'Settings' })}</title></svelte:head>
 
-{#snippet ruleRow(rule: ActionRule)}
+{#snippet ruleRow(rule: Rule, group: Rule[], index: number)}
 	<li
-		class="group relative flex items-center gap-2 pl-3 pr-1 py-2 rounded-lg cursor-pointer transition-all
+		class="group relative flex items-center gap-2 pl-3 pr-1 py-2 rounded-lg transition-all
 			{selectedId === rule.id
 				? 'bg-accent/10 border-l-2 border-accent text-text'
-				: 'border-l-2 border-transparent text-text-secondary hover:bg-surface-hover hover:text-text hover:translate-x-0.5'}"
-		onclick={() => { selectedId = rule.id; }}
+				: 'border-l-2 border-transparent text-text-secondary hover:bg-surface-hover hover:text-text'}"
 	>
 		{#if needsRewrite(rule)}
 			<!-- Switched off until it is rewritten: there is nothing to toggle. -->
@@ -499,21 +307,34 @@
 			</span>
 		{:else}
 			<button
-				onclick={(e) => { e.stopPropagation(); toggleEnabled(rule.id); }}
+				onclick={() => toggleEnabled(rule)}
+				disabled={busy}
 				title={rule.enabled ? 'Disable rule' : 'Enable rule'}
 				class="w-2.5 h-2.5 rounded-full shrink-0 border cursor-pointer transition-colors
 					{rule.enabled ? 'bg-success border-success' : 'bg-transparent border-text-tertiary/50'}"
 				aria-label={rule.enabled ? 'Disable rule' : 'Enable rule'}
 			></button>
 		{/if}
-		<span class="flex-1 truncate text-sm">{rule.name || 'Untitled rule'}</span>
-		<button
-			onclick={(e) => { e.stopPropagation(); deleteRule(rule.id); }}
-			title="Delete rule"
-			class="opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 text-text-tertiary hover:text-danger p-1 rounded-md cursor-pointer transition-opacity"
-		>
-			<Icon name="close" size={14} />
+		<button class="flex-1 min-w-0 text-left cursor-pointer" onclick={() => (selectedId = rule.id)}>
+			<span class="block truncate text-sm">{rule.name || 'Untitled rule'}</span>
+			<span class="block truncate text-2xs text-text-tertiary">{summary(rule)}</span>
 		</button>
+		<div class="flex flex-col shrink-0">
+			<button
+				onclick={() => move(rule, -1)}
+				disabled={busy || index === 0}
+				aria-label="Move up"
+				title="Move up"
+				class="text-text-tertiary hover:text-text disabled:opacity-30 cursor-pointer px-1 text-2xs leading-none"
+			>▲</button>
+			<button
+				onclick={() => move(rule, 1)}
+				disabled={busy || index === group.length - 1}
+				aria-label="Move down"
+				title="Move down"
+				class="text-text-tertiary hover:text-text disabled:opacity-30 cursor-pointer px-1 text-2xs leading-none"
+			>▼</button>
+		</div>
 	</li>
 {/snippet}
 
@@ -522,24 +343,19 @@
 	     page; the way back to mail is in the settings menu. -->
 	<header class="pb-4 border-b border-border flex items-center gap-3 shrink-0">
 		<h1 class="text-xl font-semibold text-text">Rules</h1>
-		<p class="text-xs text-text-tertiary">{localRules.length} {localRules.length === 1 ? 'rule' : 'rules'}</p>
+		<p class="text-xs text-text-tertiary">{rules.length} {rules.length === 1 ? 'rule' : 'rules'}</p>
 		<div class="flex-1"></div>
-		<button
-			onclick={createRule}
-			class="btn btn-primary"
-		>
-			+ New rule
-		</button>
+		<button onclick={() => (selectedId = 'new')} class="btn btn-primary">+ New rule</button>
 	</header>
 
 	{#if saveError}
-		<div class="mx-6 mt-3 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs">{saveError}</div>
+		<div class="mx-6 mt-3 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs" role="alert">{saveError}</div>
 	{/if}
 
 	<div class="flex-1 flex min-h-0 overflow-hidden">
-		<!-- Rule list -->
-		<aside class="w-[280px] shrink-0 border-r border-border overflow-y-auto py-3 px-2">
-			{#if localRules.length === 0}
+		<!-- Rule list, in the order the rules run -->
+		<aside class="w-[300px] shrink-0 border-r border-border overflow-y-auto py-3 px-2">
+			{#if rules.length === 0}
 				<p class="text-xs text-text-tertiary text-center py-8 px-3">
 					No rules yet. Click “New rule” to get started.
 				</p>
@@ -547,8 +363,8 @@
 				{#if attentionRules.length > 0}
 					<h2 class="px-3 pb-1.5 text-2xs font-semibold text-warning uppercase tracking-wide">Needs your attention</h2>
 					<ul class="flex flex-col gap-0.5 mb-3">
-						{#each attentionRules as rule (rule.id)}
-							{@render ruleRow(rule)}
+						{#each attentionRules as rule, i (rule.id)}
+							{@render ruleRow(rule, attentionRules, i)}
 						{/each}
 					</ul>
 					{#if otherRules.length > 0}
@@ -556,8 +372,8 @@
 					{/if}
 				{/if}
 				<ul class="flex flex-col gap-0.5">
-					{#each otherRules as rule (rule.id)}
-						{@render ruleRow(rule)}
+					{#each otherRules as rule, i (rule.id)}
+						{@render ruleRow(rule, otherRules, i)}
 					{/each}
 				</ul>
 			{/if}
@@ -565,14 +381,13 @@
 
 		<!-- Editor -->
 		<section class="flex-1 overflow-y-auto min-w-0">
-			{#if selectedIdx < 0}
+			{#if selectedId === null || (selectedId !== 'new' && !selected)}
 				<div class="h-full flex items-center justify-center text-text-tertiary text-sm px-6">
 					Select a rule from the list, or click “New rule” to create one.
 				</div>
 			{:else}
-				{@const rule = localRules[selectedIdx]}
 				<div class="px-6 py-5 flex flex-col gap-5 max-w-[720px]">
-					{#if rule.attention === 'jev_condition'}
+					{#if selected?.attention === 'jev_condition'}
 						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
 							<p class="text-sm font-medium text-text">This rule is switched off</p>
 							<p class="text-xs text-text-secondary">
@@ -580,19 +395,19 @@
 								subject, body, size or attachment. Without that condition it would act on more mail
 								than you wrote it for, so it no longer runs. This is what it said:
 							</p>
-							{#if rule.legacy}
+							{#if selected.legacy}
 								<ul class="text-xs text-text list-disc pl-5 flex flex-col gap-0.5">
-									{#each rule.legacy.conditions as c}
-										<li>{legacyConditionText(c)}</li>
+									{#each selected.legacy.conditions as c, i (i)}
+										<li>{conditionText(c)}</li>
 									{/each}
 								</ul>
 								<p class="text-2xs text-text-tertiary">
-									It matched {rule.legacy.logic === 'anyof' ? 'ANY' : 'ALL'} of these{rule.legacy.enabled ? '' : ', and was already switched off'}.
+									It matched {selected.legacy.logic === 'anyof' ? 'ANY' : 'ALL'} of these{selected.legacy.enabled ? '' : ', and was already switched off'}.
 								</p>
 							{/if}
-							{#if legacyTab(rule)}
+							{#if legacyTab(selected)}
 								<p class="text-xs text-text-secondary">
-									It also moved that mail to {legacyTab(rule)}, which a rule can no longer do.
+									It also moved that mail to {legacyTab(selected)}, which a rule can no longer do.
 								</p>
 							{/if}
 							<p class="text-xs text-text-secondary">
@@ -600,35 +415,36 @@
 								<span class="text-text">Save as exact rule</span> to switch it back on, or delete it.
 							</p>
 						</div>
-					{:else if rule.attention === 'tab_rule'}
+					{:else if selected?.attention === 'tab_rule'}
+						{@const note = selected.note?.tab}
 						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
 							<p class="text-sm font-medium text-text">This rule is switched off</p>
-							<p class="text-xs text-text">{whyNotPinned(rule.tabNote)}</p>
+							<p class="text-xs text-text">{whyNotPinned(note)}</p>
 							<p class="text-xs text-text-secondary">
-								All it did was move mail to {legacyTab(rule) ?? 'an Inbox tab'}, and rules no longer
+								All it did was move mail to {legacyTab(selected) ?? 'an Inbox tab'}, and rules no longer
 								put mail in a tab: sender pins do that now, whether Jev is on or off. It matched mail
 								like this:
 							</p>
-							{#if rule.legacy}
+							{#if selected.legacy}
 								<ul class="text-xs text-text list-disc pl-5 flex flex-col gap-0.5">
-									{#each rule.legacy.conditions as c}
-										<li>{legacyConditionText(c)}</li>
+									{#each selected.legacy.conditions as c, i (i)}
+										<li>{conditionText(c)}</li>
 									{/each}
 								</ul>
-								{#if rule.legacy.conditions.length > 1}
+								{#if selected.legacy.conditions.length > 1}
 									<p class="text-2xs text-text-tertiary">
-										It matched {rule.legacy.logic === 'anyof' ? 'ANY' : 'ALL'} of these.
+										It matched {selected.legacy.logic === 'anyof' ? 'ANY' : 'ALL'} of these.
 									</p>
 								{/if}
 							{/if}
-							{#if rule.tabNote?.pin}
-								{@const pin = rule.tabNote.pin}
+							{#if note?.pin}
+								{@const pin = note.pin}
 								<p class="text-xs text-text-secondary">
 									A pin can do this instead. It would act on new mail from {pinReach(pin.sender)}.
-									{pinDifference(rule.tabNote)}
+									{pinDifference(note)}
 								</p>
-								<button onclick={() => pinInstead(rule.id)} disabled={saving} class="btn btn-primary self-start">
-									{rule.tabNote.kept?.sender === pin.sender
+								<button onclick={() => pinInstead(selected.id)} disabled={busy} class="btn btn-primary self-start">
+									{note.kept?.sender === pin.sender
 										? `Pin to ${tabName(pin.category)} instead`
 										: `Pin ${pin.sender} to ${tabName(pin.category)}`}
 								</button>
@@ -645,21 +461,22 @@
 								</p>
 							{/if}
 						</div>
-					{:else if rule.attention === 'tab_pinned'}
+					{:else if selected?.attention === 'tab_pinned'}
+						{@const note = selected.note?.tab}
 						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
-							{#if rule.tabNote?.pin}
-								{@const pin = rule.tabNote.pin}
+							{#if note?.pin}
+								{@const pin = note.pin}
 								<p class="text-sm font-medium text-text">
-									{rule.tabNote.existing
+									{note.existing
 										? `${pin.sender} was already pinned to ${tabName(pin.category)}.`
 										: `This rule became a sender pin: ${pin.sender} → ${tabName(pin.category)}.`}
 								</p>
 								<p class="text-xs text-text-secondary">
-									{rule.tabNote.existing
+									{note.existing
 										? 'All it did was move mail to that tab, and you had already pinned this sender there, so your pin does its work now.'
 										: 'All it did was move mail to that tab. Rules no longer do that; a pin does, whether Jev is on or off.'}
 									The pin acts on new mail from {pinReach(pin.sender)}.
-									{pinDifference(rule.tabNote)}
+									{pinDifference(note)}
 								</p>
 							{:else}
 								<p class="text-sm font-medium text-text">This rule became a sender pin</p>
@@ -669,224 +486,54 @@
 								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a>. The rule is
 								switched off and has nothing left to do; it stays here only until you have seen this.
 							</p>
-							<button onclick={() => removeRule(rule.id)} disabled={saving} class="btn btn-secondary self-start">
+							<button onclick={() => dismiss(selected.id)} disabled={busy} class="btn btn-secondary self-start">
 								Got it
 							</button>
 						</div>
-					{:else if rule.attention === 'tab_removed'}
+					{:else if selected?.attention === 'tab_removed'}
 						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
 							<p class="text-sm font-medium text-text">
-								This rule no longer puts mail in {legacyTab(rule) ?? 'an Inbox tab'}.
+								This rule no longer puts mail in {legacyTab(selected) ?? 'an Inbox tab'}.
 							</p>
 							<p class="text-xs text-text-secondary">
-								It used to move mail to {legacyTab(rule) ?? 'an Inbox tab'} as well. Rules no longer
+								It used to move mail to {legacyTab(selected) ?? 'an Inbox tab'} as well. Rules no longer
 								put mail in a tab, so that part was removed; the rest of the rule runs as before. To
 								keep a sender’s mail in that tab, pin the sender under
 								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a>.
 							</p>
-							<button onclick={() => dismissAttention(rule.id)} disabled={saving} class="btn btn-secondary self-start">
+							<button onclick={() => dismiss(selected.id)} disabled={busy} class="btn btn-secondary self-start">
+								Got it
+							</button>
+						</div>
+					{/if}
+					{#if selected?.note?.splitInto}
+						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
+							<p class="text-sm font-medium text-text">
+								This rule filed mail in several places, so it is now {selected.note.splitInto} rules.
+							</p>
+							<p class="text-xs text-text-secondary">
+								A rule files into one place now. The rules it became sit side by side in the list and
+								together do what it did, except that where it moved mail to two folders, the first one
+								decides.
+							</p>
+							<button onclick={() => dismiss(selected.id)} disabled={busy} class="btn btn-secondary self-start">
 								Got it
 							</button>
 						</div>
 					{/if}
 
 					<!-- What is left of a rule that became a pin is only its note: there is nothing to edit. -->
-					{#if rule.attention !== 'tab_pinned'}
-					<!-- Name -->
-					<div class="flex flex-col gap-1.5">
-						<label for="rule-name" class="text-xs font-semibold text-text-tertiary uppercase tracking-wide">Name</label>
-						<input
-							id="rule-name"
-							bind:value={rule.name}
-							maxlength={80}
-							placeholder="Describe what this rule does"
-							class="bg-surface-hover border border-border rounded-lg px-3 py-2 text-sm text-text outline-none focus:border-accent transition-colors"
-						/>
-					</div>
-
-					<!-- Match logic -->
-					<div class="flex items-center gap-2 text-sm text-text-secondary">
-						<span>Match</span>
-						<div class="flex rounded-lg border border-border overflow-hidden">
-							<button
-								onclick={() => { rule.logic = 'allof'; }}
-								class="px-2.5 py-1 text-xs transition-colors cursor-pointer {rule.logic === 'allof' ? 'bg-accent text-white' : 'text-text-tertiary hover:bg-surface-hover'}"
-							>ALL</button>
-							<button
-								onclick={() => { rule.logic = 'anyof'; }}
-								class="px-2.5 py-1 text-xs border-l border-border transition-colors cursor-pointer {rule.logic === 'anyof' ? 'bg-accent text-white' : 'text-text-tertiary hover:bg-surface-hover'}"
-							>ANY</button>
-						</div>
-						<span>of the following:</span>
-					</div>
-
-					<!-- Conditions -->
-					<div class="flex flex-col gap-2">
-						{#each rule.conditions as condition (condition.id)}
-							<div class="flex items-center gap-1.5 flex-wrap" transition:slide={{ duration: 150 }}>
-								<select bind:value={condition.field} class="bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
-									<option value="from">From</option>
-									<option value="to">To</option>
-									<option value="subject">Subject</option>
-									<option value="body">Body</option>
-									<option value="size">Size (KB)</option>
-									<option value="hasAttachment">Has attachment</option>
-								</select>
-								{#if condition.field !== 'hasAttachment'}
-									<select bind:value={condition.op} class="bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
-										<option value="contains">contains</option>
-										<option value="not_contains">doesn't contain</option>
-										<option value="is">is exactly</option>
-										<option value="starts_with">starts with</option>
-										<option value="ends_with">ends with</option>
-									</select>
-									<input
-										bind:value={condition.value}
-										type={condition.field === 'size' ? 'number' : 'text'}
-										placeholder={condition.field === 'size' ? 'KB' : 'value…'}
-										class="flex-1 min-w-[120px] bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent"
-									/>
-								{/if}
-								<button
-									onclick={() => { condition.negate = !condition.negate; }}
-									class="text-3xs px-1.5 py-0.5 rounded-md border cursor-pointer transition-colors
-										{condition.negate ? 'border-danger/50 text-danger bg-danger/10' : 'border-border text-text-tertiary hover:border-text-tertiary'}"
-								>NOT</button>
-								<button
-									onclick={() => removeCondition(condition.id)}
-									title="Remove condition"
-									class="text-text-tertiary hover:text-danger cursor-pointer p-1 rounded-md"
-									aria-label="Remove condition"
-								>
-									<Icon name="close" size={14} />
-								</button>
-							</div>
-						{/each}
-						<button
-							onclick={addCondition}
-							class="text-xs text-accent-fg hover:text-accent-fg-hover cursor-pointer self-start"
-						>+ Add condition</button>
-					</div>
-
-					<!-- Actions -->
-					<div class="flex flex-col gap-2 pt-2 border-t border-border">
-						<p class="text-xs font-semibold text-text-tertiary uppercase tracking-wide">Then</p>
-						{#each rule.actions as action, idx}
-							<div class="flex items-center gap-1.5 flex-wrap" transition:slide={{ duration: 150 }}>
-								<select bind:value={action.type} class="bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
-									<option value="applyLabel">Apply label</option>
-									<option value="moveToFolder">Move to folder</option>
-									<option value="markRead">Mark as read</option>
-									<option value="markImportant">Mark important</option>
-									<option value="delete">Move to trash</option>
-									<option value="stopProcessing">Stop processing</option>
-								</select>
-								{#if action.type === 'applyLabel'}
-									<select bind:value={action.value} class="flex-1 min-w-[140px] bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
-										<option value="">Select a label…</option>
-										{#each labelOptions as lb}
-											<option value={lb.id}>{lb.name}</option>
-										{/each}
-									</select>
-								{:else if action.type === 'moveToFolder'}
-									<select bind:value={action.value} class="flex-1 min-w-[140px] bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
-										<option value="">Select a folder…</option>
-										{#if folderOptions.length > 0}
-											<optgroup label="User folders">
-												{#each folderOptions as mb}
-													<option value={mb.id}>{mb.name}</option>
-												{/each}
-											</optgroup>
-										{/if}
-										{#if systemFolderOptions.length > 0}
-											<optgroup label="System">
-												{#each systemFolderOptions as mb}
-													<option value={mb.id}>{mb.name}</option>
-												{/each}
-											</optgroup>
-										{/if}
-									</select>
-								{/if}
-								{#if isStaleTarget(action)}
-									<span class="w-full text-2xs text-warning">
-										⚠ The {action.type === 'moveToFolder' ? 'folder' : 'label'} this rule pointed at no longer exists — pick a new one and save, or the rule will do nothing.
-									</span>
-								{/if}
-								<button
-									onclick={() => removeAction(idx)}
-									title="Remove action"
-									class="text-text-tertiary hover:text-danger cursor-pointer p-1 rounded-md"
-									aria-label="Remove action"
-								>
-									<Icon name="close" size={14} />
-								</button>
-							</div>
-						{/each}
-						<button
-							onclick={addAction}
-							class="text-xs text-accent-fg hover:text-accent-fg-hover cursor-pointer self-start"
-						>+ Add action</button>
-					</div>
-
-					<!-- Summary line -->
-					<p class="text-2xs text-text-tertiary italic">
-						{rule.actions.map(actionSummary).join(' · ') || 'No actions'}
-					</p>
-
-					<!-- Match preview + save bar -->
-					<div class="rounded-xl border border-border bg-surface-hover/40 p-4 flex items-center gap-3 flex-wrap">
-						<div class="flex items-center gap-2">
-							{#if previewLoading}
-								<span class="w-3 h-3 rounded-full border-2 border-accent/40 border-t-accent animate-spin"></span>
-								<span class="text-xs text-text-tertiary">Counting…</span>
-							{:else if previewError}
-								<span class="text-xs text-danger">{previewError}</span>
-							{:else if preview !== null}
-								<span class="text-sm font-semibold text-text">{preview.matched.toLocaleString()}</span>
-								<span class="text-xs text-text-tertiary">
-									{#if preview.scanned < preview.total}
-										of your newest {preview.scanned.toLocaleString()} Inbox messages {preview.matched === 1 ? 'matches' : 'match'}
-									{:else}
-										Inbox {preview.matched === 1 ? 'message matches' : 'messages match'}
-									{/if}
-									this rule{needsRewrite(rule) ? ' as it reads now' : ''}
-								</span>
-							{:else}
-								<span class="text-xs text-text-tertiary">No preview</span>
-							{/if}
-						</div>
-						<div class="flex-1"></div>
-						{#if needsRewrite(rule)}
-							<button onclick={() => deleteRule(rule.id)} disabled={saving} class="btn btn-secondary">
-								Delete rule
-							</button>
-							<button
-								onclick={() => saveAsExactRule(rule.id)}
-								disabled={saving || !canRunAsExact(rule)}
-								title={canRunAsExact(rule)
-									? 'Switch the rule back on, matching only the conditions above'
-									: 'Give the rule at least one condition and one action first'}
-								class="btn btn-primary"
-							>
-								{saving ? 'Saving…' : 'Save as exact rule'}
-							</button>
-						{:else}
-							<button
-								onclick={saveOnly}
-								disabled={saving}
-								class="btn btn-secondary"
-							>
-								{saving ? 'Saving…' : 'Save'}
-							</button>
-							<button
-								onclick={saveAndApply}
-								disabled={saving}
-								class="btn btn-primary"
-							>
-								Save &amp; apply now
-							</button>
-						{/if}
-					</div>
+					{#if selected?.attention !== 'tab_pinned'}
+						{#key selectedId}
+							<RuleEditor
+								rule={selected}
+								mailboxes={data.mailboxes}
+								labels={data.labels}
+								{onSaved}
+								{onDeleted}
+								onCancel={() => (selectedId = selectedId === 'new' ? (rules[0]?.id ?? null) : null)}
+							/>
+						{/key}
 					{/if}
 				</div>
 			{/if}
@@ -904,10 +551,7 @@
 {/if}
 
 {#if progressVisible}
-	<div
-		class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-		transition:fade={{ duration: 150 }}
-	>
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" transition:fade={{ duration: 150 }}>
 		<div
 			class="w-[420px] bg-surface border border-border rounded-2xl p-5 shadow-[0_16px_64px_rgba(0,0,0,0.5)]"
 			transition:fly={{ y: 16, duration: 200 }}
@@ -952,17 +596,12 @@
 			<div class="flex items-center gap-2 justify-end">
 				{#if progress.status === 'running'}
 					<button
-						onclick={dismissProgress}
+						onclick={() => (progressVisible = false)}
 						class="text-xs text-text-tertiary hover:text-text px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
 					>
 						Run in background
 					</button>
-					<button
-						onclick={closeOrCancel}
-						class="btn btn-danger btn-sm"
-					>
-						Cancel
-					</button>
+					<button onclick={closeOrCancel} class="btn btn-danger btn-sm">Cancel</button>
 				{:else if progress.status === 'error'}
 					<button
 						onclick={closeOrCancel}
@@ -970,19 +609,9 @@
 					>
 						Close
 					</button>
-					<button
-						onclick={saveAndApply}
-						class="btn btn-primary btn-sm"
-					>
-						Retry
-					</button>
+					<button onclick={() => lastApplied && streamApply(lastApplied)} class="btn btn-primary btn-sm">Retry</button>
 				{:else}
-					<button
-						onclick={closeOrCancel}
-						class="btn btn-primary btn-sm"
-					>
-						Done
-					</button>
+					<button onclick={closeOrCancel} class="btn btn-primary btn-sm">Done</button>
 				{/if}
 			</div>
 		</div>

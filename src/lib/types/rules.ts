@@ -183,6 +183,14 @@ export interface RuleDraft {
 	stop: boolean;
 }
 
+/** One thing wrong with a rule a client sent, for the part of the editor it is about. */
+export interface RuleProblem {
+	field: 'name' | 'logic' | 'conditions' | 'target' | 'actions';
+	/** For a condition: which one, counted from 0. */
+	index?: number;
+	message: string;
+}
+
 /**
  * A stored rule. `attention`, `note` and `legacy` are the server's: an
  * upgrade sets them and the owner's dealing with the rule clears them. No
