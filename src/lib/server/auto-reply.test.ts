@@ -9,6 +9,7 @@ import { getDb } from './db/index';
 import { runMigrations } from './db/migrate';
 import { patchPrefs } from './db/queries/app-prefs';
 import {
+	AUTO_REPLY_PROPERTIES,
 	answerNewMail,
 	autoReplyActiveAt,
 	autoReplyStatus,
@@ -21,7 +22,7 @@ import {
 	type OutOfOffice,
 	type ReplyContext
 } from './auto-reply';
-import type { JMAPClient } from '$lib/jmap/client';
+import { JMAPMethodError, type JMAPClient } from '$lib/jmap/client';
 import type { Email, Mailbox } from '$lib/jmap/types';
 
 const NOW = new Date('2026-11-20T12:00:00Z');
@@ -76,10 +77,24 @@ describe('shouldAutoReply', () => {
 		expect(decide()).toEqual({ to: { name: 'Bob', email: 'Bob@Outside.test' }, sender: 'bob@outside.test' });
 	});
 
-	it('answers the Reply-To address when there is one', () => {
-		expect(decide({ replyTo: [{ name: 'Desk', email: 'desk@outside.test' }] })).toMatchObject({
-			to: { email: 'desk@outside.test' }
+	it('answers the From address even when there is a Reply-To (A1)', () => {
+		expect(decide({ replyTo: [{ name: 'Desk', email: 'desk@outside.test' }] })).toEqual({
+			to: { name: 'Bob', email: 'Bob@Outside.test' },
+			sender: 'bob@outside.test'
 		});
+		// A team list as Reply-To changes nothing either.
+		expect(decide({ replyTo: [{ name: null, email: 'all-staff@outside.test' }] })).toMatchObject({ to: { email: 'Bob@Outside.test' } });
+	});
+
+	it('reads the headers it needs to decide', () => {
+		expect(AUTO_REPLY_PROPERTIES).toEqual(
+			expect.arrayContaining([
+				'header:authentication-results:asText:all',
+				'header:return-path:asText',
+				'header:content-type:asText',
+				'header:from:asGroupedAddresses'
+			])
+		);
 	});
 
 	describe('1. only while on, for mail since it was switched on, from the last day', () => {
@@ -130,12 +145,40 @@ describe('shouldAutoReply', () => {
 			for (const v of ['All', 'OOF', 'DR, AutoReply', 'oof']) expect(replies({ 'header:x-auto-response-suppress:asText': v })).toBe(false);
 			expect(replies({ 'header:x-auto-response-suppress:asText': 'DR, RN' })).toBe(true);
 		});
+		it('delivery reports: an empty Return-Path', () => {
+			expect(replies({ 'header:return-path:asText': '<>' })).toBe(false);
+			expect(replies({ 'header:return-path:asText': ' < > ' })).toBe(false);
+			expect(replies({ 'header:return-path:asText': '' })).toBe(false);
+			expect(replies({ 'header:return-path:asText': '<bob@x.test>' })).toBe(true);
+		});
+		it('delivery reports and read receipts: multipart/report', () => {
+			expect(replies({ 'header:content-type:asText': 'multipart/report; report-type=disposition-notification; boundary="b"' })).toBe(false);
+			expect(replies({ 'header:content-type:asText': 'Multipart/Report; report-type=delivery-status' })).toBe(false);
+			expect(replies({ 'header:content-type:asText': 'multipart/alternative; boundary="b"' })).toBe(true);
+		});
 	});
 
 	describe('3. never to a missing or robot address', () => {
-		it('no sender address', () => {
+		const desk = [{ name: null, email: 'desk@outside.test' }];
+		it('no sender address, even with a Reply-To (A3)', () => {
 			expect(replies({ from: null })).toBe(false);
+			expect(replies({ from: null, replyTo: desk })).toBe(false);
+			expect(replies({ from: [], replyTo: desk })).toBe(false);
 			expect(replies({ from: [{ name: 'Nobody', email: '' }] })).toBe(false);
+			expect(replies({ from: [{ name: 'Nobody', email: 'nobody' }], replyTo: desk })).toBe(false);
+		});
+		it('two sender addresses, even with a Reply-To (A3)', () => {
+			const two = [
+				{ name: 'Bob', email: 'bob@outside.test' },
+				{ name: 'Ann', email: 'ann@outside.test' }
+			];
+			expect(replies({ from: two })).toBe(false);
+			expect(replies({ from: two, replyTo: desk })).toBe(false);
+		});
+		it('a group as sender', () => {
+			const bob = { name: 'Bob', email: 'bob@outside.test' };
+			expect(replies({ from: [bob], 'header:from:asGroupedAddresses': [{ name: 'Team', addresses: [bob] }] })).toBe(false);
+			expect(replies({ from: [bob], 'header:from:asGroupedAddresses': [{ name: null, addresses: [bob] }] })).toBe(true);
 		});
 		it('robot senders', () => {
 			for (const local of ['noreply', 'no-reply', 'donotreply', 'do-not-reply', 'mailer-daemon', 'postmaster', 'bounce', 'bounces', 'notifications']) {
@@ -144,15 +187,28 @@ describe('shouldAutoReply', () => {
 			expect(replies({ from: [{ name: null, email: 'NoReply+x@shop.test' }] })).toBe(false);
 			expect(replies({ from: [{ name: null, email: 'notify-me@shop.test' }] })).toBe(true);
 		});
-		it('a robot Reply-To', () => {
-			expect(replies({ replyTo: [{ name: null, email: 'no-reply@shop.test' }] })).toBe(false);
+		for (const address of ['no_reply@x.test', 'noreply-billing@x.test', 'bounce-12345@x.test', 'notification@x.test', 'alerts@x.test', 'do_not_reply@x.test', 'postmaster+x@x.test']) {
+			it(`robot sender ${address}`, () => {
+				expect(replies({ from: [{ name: null, email: address }] })).toBe(false);
+			});
+		}
+		it('a sender that failed authentication (A4)', () => {
+			const auth = (v: string) => ({ 'header:authentication-results:asText:all': [v] });
+			expect(replies(auth('mx.example.test; spf=pass smtp.mailfrom=outside.test; dmarc=fail header.from=outside.test'))).toBe(false);
+			expect(replies(auth('mx.example.test; spf=pass; dkim=pass; dmarc=pass header.from=outside.test'))).toBe(true);
+			expect(replies({ 'header:authentication-results:asText:all': null })).toBe(true);
+		});
+		it('never a robot Reply-To instead, nor a person one for a robot From', () => {
+			expect(decide({ replyTo: [{ name: null, email: 'no-reply@shop.test' }] })).toMatchObject({ to: { email: 'Bob@Outside.test' } });
+			expect(replies({ from: [{ name: null, email: 'noreply@shop.test' }], replyTo: desk })).toBe(false);
 		});
 	});
 
 	it('4. never to the owner’s own addresses, any account or identity', () => {
 		expect(replies({ from: [{ name: null, email: 'Other@Mine.test' }] })).toBe(false);
 		expect(replies({ from: [{ name: null, email: 'alias@example.test' }] })).toBe(false);
-		expect(replies({ replyTo: [{ name: null, email: 'other@mine.test' }] })).toBe(false);
+		// An own address as Reply-To is not where the reply goes, so it doesn't matter.
+		expect(replies({ replyTo: [{ name: null, email: 'other@mine.test' }] })).toBe(true);
 	});
 
 	it('5. only to mail addressed to the account or one of its identities', () => {
@@ -254,29 +310,53 @@ interface Call {
 	logRows: number;
 }
 let calls: Call[] = [];
-let refuseSubmission = false;
+/** How the fake server treats the copy and the submission. */
+let copyMode: 'ok' | 'notCreated' | 'methodError' = 'ok';
+let submitMode: 'ok' | 'notCreated' | 'methodError' | 'lostBeforeSend' | 'lostAfterSend' = 'ok';
+/** Copies in Drafts, and the addresses mail was actually sent to. */
+let copies = new Set<string>();
+let delivered: string[] = [];
+let nextCopy = 0;
 
 const logRows = () => (getDb().prepare('SELECT COUNT(*) AS n FROM auto_reply_log').get() as { n: number }).n;
 
 const client = {
 	request: async (methodCalls: [string, Record<string, unknown>, string][]) => {
 		const responses: [string, unknown, string][] = [];
+		let lost = false;
 		for (const [name, args, tag] of methodCalls) {
 			calls.push({ name, args, logRows: logRows() });
 			if (name === 'Identity/get') {
 				responses.push([name, { list: [{ id: 'id-me', email: 'me@example.test', name: 'Me' }] }, tag]);
 			} else if (name === 'Email/set' && args.create) {
-				responses.push([name, { created: { reply: { id: `copy${calls.length}` } } }, tag]);
+				// As JMAPClient.request does on a method-level error.
+				if (copyMode === 'methodError') throw new JMAPMethodError('forbidden', 'no');
+				if (copyMode === 'notCreated') {
+					responses.push([name, { notCreated: { reply: { type: 'overQuota' } } }, tag]);
+					continue;
+				}
+				const id = `copy${++nextCopy}`;
+				copies.add(id);
+				responses.push([name, { created: { reply: { id } } }, tag]);
 			} else if (name === 'Email/set') {
+				for (const id of args.destroy as string[]) copies.delete(id);
 				responses.push([name, { destroyed: args.destroy }, tag]);
 			} else if (name === 'EmailSubmission/set') {
-				responses.push([
-					name,
-					refuseSubmission ? { notCreated: { sub: { type: 'forbiddenToSend' } } } : { created: { sub: { id: 's1' } } },
-					tag
-				]);
+				if (submitMode === 'methodError') throw new JMAPMethodError('forbidden', 'no');
+				if (submitMode === 'lostBeforeSend') throw new Error('fetch failed: connect ECONNRESET');
+				if (submitMode === 'notCreated') {
+					responses.push([name, { notCreated: { sub: { type: 'forbiddenToSend' } } }, tag]);
+					continue;
+				}
+				const sub = (args.create as { sub: { emailId: string; envelope: { rcptTo: { email: string }[] } } }).sub;
+				delivered.push(...sub.envelope.rcptTo.map((r) => r.email));
+				copies.delete(sub.emailId); // onSuccessDestroyEmail
+				responses.push([name, { created: { sub: { id: 's1' } } }, tag]);
+				// The server sent it, then the answer is lost on the way back.
+				if (submitMode === 'lostAfterSend') lost = true;
 			} else throw new Error(`unexpected ${name}`);
 		}
+		if (lost) throw new Error('fetch failed: socket hang up');
 		return { methodResponses: responses, sessionState: '' };
 	}
 } as unknown as JMAPClient;
@@ -301,28 +381,37 @@ beforeAll(() => {
 	runMigrations();
 	const db = getDb();
 	db.prepare(`INSERT INTO app_user (id, email, password_hash) VALUES ('user-1', 'login@example.test', 'x')`).run();
-	db.prepare(
+	db.prepare(`INSERT INTO app_user (id, email, password_hash) VALUES ('user-2', 'someone@example.test', 'x')`).run();
+	const account = db.prepare(
 		`INSERT INTO mail_accounts (id, user_id, email, server_url, jmap_account_id, secret_enc)
-		 VALUES ('acct-1', 'user-1', 'me@example.test', 'https://mail.example', 'jmap', 'x')`
-	).run();
+		 VALUES (?, ?, ?, 'https://mail.example', 'jmap', 'x')`
+	);
+	account.run('acct-1', 'user-1', 'me@example.test');
+	// A second address of the same login, and an account of another login.
+	account.run('acct-2', 'user-1', 'me@second.test');
+	account.run('acct-3', 'user-2', 'them@example.test');
 });
 
 beforeEach(() => {
 	calls = [];
-	refuseSubmission = false;
+	copyMode = 'ok';
+	submitMode = 'ok';
+	copies = new Set();
+	delivered = [];
+	nextCopy = 0;
 	getDb().prepare('DELETE FROM auto_reply_log').run();
 });
 
 describe('sending a reply', () => {
-	it('goes to the right address, with the subject, headers and thread references, and its copy is destroyed', async () => {
-		const e = email({ references: ['m0@outside.test'], replyTo: [{ name: 'Desk', email: 'desk@outside.test' }] });
+	it('goes to the sender, with the subject, headers and thread references, and its copy is destroyed', async () => {
+		const e = email({ references: ['m0@outside.test'], replyTo: [{ name: 'Desk', email: 'victim@third.test' }] });
 		await answerNewMail(client, 'jmap', ooo(), [e], mailboxes, NOW);
 
 		const create = calls.find((c) => c.name === 'Email/set')!.args.create as Record<string, Record<string, unknown>>;
 		expect(create.reply).toMatchObject({
 			mailboxIds: { DR: true },
 			from: [{ name: 'Me', email: 'me@example.test' }],
-			to: [{ name: 'Desk', email: 'desk@outside.test' }],
+			to: [{ name: 'Bob', email: 'Bob@Outside.test' }],
 			subject: 'Automatic reply: Lunch?',
 			bodyValues: { text: { value: 'I am away until Monday.' } },
 			textBody: [{ partId: 'text', type: 'text/plain' }],
@@ -332,10 +421,16 @@ describe('sending a reply', () => {
 			references: ['m0@outside.test', 'm1@outside.test']
 		});
 		expect(create.reply).not.toHaveProperty('htmlBody');
+		// The copy is made in a request of its own, so its id is known for the submission.
+		expect(calls.map((c) => c.name)).toEqual(['Identity/get', 'Email/set', 'EmailSubmission/set']);
 		expect(sends()[0].args).toMatchObject({
-			create: { sub: { emailId: '#reply', identityId: 'id-me', envelope: { mailFrom: { email: 'me@example.test' }, rcptTo: [{ email: 'desk@outside.test' }] } } },
+			create: { sub: { emailId: 'copy1', identityId: 'id-me', envelope: { mailFrom: { email: 'me@example.test' }, rcptTo: [{ email: 'Bob@Outside.test' }] } } },
 			onSuccessDestroyEmail: ['#sub']
 		});
+		// A1: nothing ever goes to the Reply-To.
+		expect(delivered).toEqual(['Bob@Outside.test']);
+		expect(copies.size).toBe(0);
+		expect(getDb().prepare('SELECT sender FROM auto_reply_log').all()).toEqual([{ sender: 'bob@outside.test' }]);
 	});
 
 	it('uses the saved subject when there is one', async () => {
@@ -350,11 +445,73 @@ describe('sending a reply', () => {
 		expect(logRows()).toBe(1);
 	});
 
-	it('removes the log row when the send fails, and destroys the unsent copy', async () => {
-		refuseSubmission = true;
+	it('A2: forty senders sharing one Reply-To send nothing to it', async () => {
+		const flood = Array.from({ length: 40 }, (_, i) =>
+			email({ id: `f${i}`, from: [{ name: null, email: `spoof${i}@evil.test` }], replyTo: [{ name: null, email: 'victim@third.test' }] })
+		);
+		await answerNewMail(client, 'jmap', ooo(), flood, mailboxes, NOW);
+		expect(delivered).toHaveLength(30);
+		expect(delivered).not.toContain('victim@third.test');
+		expect(calls.some((c) => JSON.stringify(c.args).includes('victim@third.test'))).toBe(false);
+	});
+});
+
+describe('when the server refuses or doesn’t answer', () => {
+	const later = new Date(NOW.getTime() + 60_000);
+	const second = () => email({ id: 'e2', receivedAt: '2026-11-20T11:30:00Z' });
+
+	it('B1: a lost answer after sending keeps the log row, so the sender gets no second reply that day', async () => {
+		submitMode = 'lostAfterSend';
+		await answerNewMail(client, 'jmap', ooo(), [email()], mailboxes, NOW);
+		expect(logRows()).toBe(1);
+		submitMode = 'ok';
+		await answerNewMail(client, 'jmap', ooo(), [second()], mailboxes, later);
+		expect(delivered).toEqual(['Bob@Outside.test']);
+	});
+
+	it('B1: a reset connection keeps the log row too', async () => {
+		submitMode = 'lostBeforeSend';
+		await answerNewMail(client, 'jmap', ooo(), [email()], mailboxes, NOW);
+		expect(logRows()).toBe(1);
+		submitMode = 'ok';
+		await answerNewMail(client, 'jmap', ooo(), [second()], mailboxes, later);
+		expect(delivered).toEqual([]);
+	});
+
+	it('B2/C1: a refused submission removes the log row and the copy, and a later message is answered', async () => {
+		submitMode = 'notCreated';
 		await answerNewMail(client, 'jmap', ooo(), [email()], mailboxes, NOW);
 		expect(logRows()).toBe(0);
-		expect(calls.at(-1)).toMatchObject({ name: 'Email/set', args: { destroy: ['copy2'] } });
+		expect(calls.at(-1)).toMatchObject({ name: 'Email/set', args: { destroy: ['copy1'] } });
+		expect(copies.size).toBe(0);
+		submitMode = 'ok';
+		await answerNewMail(client, 'jmap', ooo(), [second()], mailboxes, later);
+		expect(delivered).toEqual(['Bob@Outside.test']);
+	});
+
+	it('B3/C1: a method-level error on the submission removes the log row and the copy', async () => {
+		submitMode = 'methodError';
+		await answerNewMail(client, 'jmap', ooo(), [email()], mailboxes, NOW);
+		await answerNewMail(client, 'jmap', ooo(), [second()], mailboxes, later);
+		expect(logRows()).toBe(0);
+		expect(copies.size).toBe(0);
+	});
+
+	it('C2: a submission that throws still has its copy destroyed', async () => {
+		submitMode = 'lostBeforeSend';
+		await answerNewMail(client, 'jmap', ooo(), [email()], mailboxes, NOW);
+		expect(calls.at(-1)).toMatchObject({ name: 'Email/set', args: { destroy: ['copy1'] } });
+		expect(copies.size).toBe(0);
+	});
+
+	it('C3: a refused copy means no submission, no copy, no log row', async () => {
+		for (const mode of ['notCreated', 'methodError'] as const) {
+			copyMode = mode;
+			await answerNewMail(client, 'jmap', ooo(), [email()], mailboxes, NOW);
+			expect(sends()).toEqual([]);
+			expect(copies.size).toBe(0);
+			expect(logRows()).toBe(0);
+		}
 	});
 });
 
@@ -376,6 +533,37 @@ describe('one reply per sender per day', () => {
 		await answerNewMail(client, 'jmap', ooo(), [email({ id: 'a' }), email({ id: 'b' })], mailboxes, NOW);
 		expect(sends()).toHaveLength(1);
 	});
+
+	it('A5: whatever the case of the address', async () => {
+		await answerNewMail(client, 'jmap', ooo(), [email({ id: 'a', from: [{ name: null, email: 'Bob@Example.com' }] })], mailboxes, NOW);
+		await answerNewMail(client, 'jmap', ooo(), [email({ id: 'b', from: [{ name: null, email: 'bob@example.com' }] })], mailboxes, hoursAfter(0.1));
+		expect(delivered).toEqual(['Bob@Example.com']);
+	});
+
+	const second: OutOfOffice = { ...ooo(), accountRowId: 'acct-2', accountEmail: 'me@second.test' };
+	const toBoth = email({ to: [{ name: null, email: 'me@example.test' }, { name: null, email: 'me@second.test' }] });
+
+	it('E1: across the login’s accounts, so mail to two of its addresses gets one reply', async () => {
+		await answerNewMail(client, 'jmap', ooo(), [toBoth], mailboxes, NOW);
+		await answerNewMail(client, 'jmap', second, [toBoth], mailboxes, NOW);
+		expect(delivered).toHaveLength(1);
+	});
+
+	it('E1: even when both accounts decided before either logged its reply', async () => {
+		// Both runs read the log before either writes: the claim itself refuses the second.
+		await Promise.all([
+			answerNewMail(client, 'jmap', ooo(), [toBoth], mailboxes, NOW),
+			answerNewMail(client, 'jmap', second, [toBoth], mailboxes, NOW)
+		]);
+		expect(delivered).toHaveLength(1);
+	});
+
+	it('E3: another login answers the same sender as usual', async () => {
+		const theirs: OutOfOffice = { ...ooo(), accountRowId: 'acct-3', accountEmail: 'them@example.test', userId: 'user-2' };
+		await answerNewMail(client, 'jmap', ooo(), [email()], mailboxes, NOW);
+		await answerNewMail(client, 'jmap', theirs, [email({ to: [{ name: null, email: 'them@example.test' }] })], mailboxes, NOW);
+		expect(delivered).toHaveLength(2);
+	});
 });
 
 describe('the hourly cap', () => {
@@ -390,6 +578,20 @@ describe('the hourly cap', () => {
 		// An hour after the first ones, there is room again.
 		await answerNewMail(client, 'jmap', ooo(), fromMany(1, 40).map((e) => ({ ...e, receivedAt: iso(hoursAfter(1)) })), mailboxes, hoursAfter(1.01));
 		expect(sends()).toHaveLength(31);
+	});
+
+	it('E2: is the login’s, so another of its accounts sends none once one has sent 30', async () => {
+		await answerNewMail(client, 'jmap', ooo(), fromMany(30), mailboxes, NOW);
+		const second: OutOfOffice = { ...ooo(), accountRowId: 'acct-2', accountEmail: 'me@second.test' };
+		const toSecond = fromMany(5, 30).map((e) => ({ ...e, to: [{ name: null, email: 'me@second.test' }] }));
+		await answerNewMail(client, 'jmap', second, toSecond, mailboxes, hoursAfter(0.5));
+		expect(sends()).toHaveLength(30);
+
+		// E3: another login's account is not held back by it.
+		const theirs: OutOfOffice = { ...ooo(), accountRowId: 'acct-3', accountEmail: 'them@example.test', userId: 'user-2' };
+		const toThem = fromMany(5, 40).map((e) => ({ ...e, to: [{ name: null, email: 'them@example.test' }] }));
+		await answerNewMail(client, 'jmap', theirs, toThem, mailboxes, hoursAfter(0.5));
+		expect(sends()).toHaveLength(35);
 	});
 });
 

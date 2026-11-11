@@ -98,7 +98,7 @@ Stage 3 took 028 (`account_tasks`, one-time jobs per account such as retiring th
   - **Rules with a Jev condition** are disabled and listed under "Needs your attention", never silently dropped.
   - **Rules that only set a tab** become sender pins when they are a simple sender match, and stay listed as a note saying which pin they became until the owner dismisses it; otherwise they are listed for attention, with the reason and, where they name a sender, a one-click pin. No conversion is silent.
   - Deleting a folder or label deletes its rules (the confirmation says how many).
-- **029 `auto_reply_log`** (stage 4): account, sender address, time, message. One row per reply, written before it is sent; a sender gets at most one a day and an account at most 30 an hour; pruned after 30 days.
+- **029 `auto_reply_log`** (stage 4): account, sender address, time, message. One row per reply, written before it is sent; a sender gets at most one a day and a login at most 30 an hour, across all its accounts; pruned after 30 days.
 - **031 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).
 - **032**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows).
 - **033**: drop `user_rules`, `rules_cursor`, `label_meta`, `folder_meta`, `jev_rule_feedback` and the unused Jev columns.
@@ -185,14 +185,14 @@ Deleted: `src/lib/server/rules.ts` and the tests for `buildJmapFilter`.
 - Deleted: `src/lib/server/sieve.ts`, `/api/rules/deploy` and its test, the Sieve tests in `rules-engine.test.ts`, the deploy call and both Sieve banners on the rules page, Sieve mentions in comments and the README.
 - **The script already on the server is retired once per account.** New migration `028_account_tasks.sql`: `account_tasks(account_id, name, done_at)`, cascading from `mail_accounts`. On an account's next rules run (it has the credentials), task `retire_sieve_script`:
   - `SieveScript/get`; if a script named `mailrules` exists, deactivate it if it is the active one (`onSuccessDeactivateScript`) and destroy it. A script with any other name is never touched.
-  - Mark done on success, and also when the server has no Sieve capability. Any other failure is retried on the next run and never blocks rules.
+  - Mark done on success, and also when the server has no Sieve capability. Any other failure never blocks rules and is retried an hour later (kept in memory, so a restart may retry once); the warning is logged on the first failure and then at most once a day.
 - **Auto-reply settings page**: removed from the settings navigation and redirected to `/settings` in this commit (it has never worked); stage 4 brings it back.
 
 #### Stage 3 tests
 - Preview and apply report the same matches for the same rule on the same Inbox (the test the plan asked for), including for "is", "starts with", NOT, and a body condition.
 - Preview never writes; preview of a rule flagged for attention reports 0 without scanning.
 - Apply ignores rules in the request body; unknown rule ids are refused; Cancel stops at the next page.
-- `retire_sieve_script`: deactivates and destroys `mailrules`; leaves another active script alone; no Sieve capability marks it done; a failure retries; runs once.
+- `retire_sieve_script`: deactivates and destroys `mailrules`; leaves another active script alone; no Sieve capability marks it done; a failure retries an hour later, not on the next minute's run, and is logged at most once a day; runs once.
 - The form-action and route tests still pass with `/api/rules/deploy` gone.
 
 ### Stage 4 design: out-of-office sent by the app
@@ -223,30 +223,31 @@ In the rules scheduler's per-account run (`runApply` in `src/lib/server/rules-sc
 #### New `src/lib/server/auto-reply.ts`
 `shouldAutoReply(email, ctx)`: pure, returns the address to reply to, or a reason not to. No reply when any of these holds:
 1. Out-of-office is not active, or the message arrived before `auto_reply_since`, or more than 24 hours ago (so a restart after downtime doesn't answer old mail).
-2. `Auto-Submitted` is present and not `no`; `Precedence` is `bulk`, `list` or `junk`; any `List-Id` or `List-Unsubscribe`; `X-Auto-Response-Suppress` contains `All`, `OOF` or `AutoReply`. (Reuse the header reading in `src/lib/server/jev/facts.ts`.)
-3. The sender has no address, or its local part is a robot: `noreply`, `no-reply`, `donotreply`, `do-not-reply`, `mailer-daemon`, `postmaster`, `bounce`, `bounces`, `notifications`.
+2. `Auto-Submitted` is present and not `no`; `Precedence` is `bulk`, `list` or `junk`; any `List-Id` or `List-Unsubscribe`; `X-Auto-Response-Suppress` contains `All`, `OOF` or `AutoReply`. (Reuse the header reading in `src/lib/server/jev/facts.ts`.) A delivery report or read receipt: `Return-Path` empty or `<>`, or a `multipart/report` Content-Type.
+3. From is not exactly one address with an `@` (none, several, or a group), or its local part is a robot: the no-reply pattern Jev's facts use (`sender_looks_automated`: `no_reply`, `noreply-billing`, `bounce-12345`, `notification`, `alerts`, `do_not_reply` and the like), plus `mailer-daemon` and `postmaster`. Or the message failed sender authentication (`dmarc=fail` in its `Authentication-Results`, read as Jev's spam facts do); a message with no such header is judged on the rest.
 4. The sender is one of the owner's own addresses (any linked account or identity).
 5. The account's address (or one of its identities) is not in To or Cc.
 6. The message is marked as spam (`$junk` keyword, or `X-Spam-Status: Yes`).
-7. That sender was already answered from this account in the last 24 hours.
-8. The account has sent 30 automatic replies in the last hour (a cap, in case of a loop).
+7. That sender was already answered in the last 24 hours from **any** of the login's accounts (so mail to two of the owner's addresses gets one reply).
+8. The login has sent 30 automatic replies in the last hour, across its accounts (a cap, in case of a loop).
 
 `sendAutoReply(...)`:
-- To: the message's Reply-To if present, otherwise From.
+- To: the message's From address, always. Reply-To is never used: anyone can set it, so it would let a stranger aim the reply at a third party or a list, and dodge the once-a-day limit by changing From. The daily check, the log row and the "Replies sent" list all use that address, lower-cased.
 - Subject: the saved subject if set, otherwise `Automatic reply: <original subject>`.
 - Body: the saved message, as plain text.
 - Headers: `Auto-Submitted: auto-replied`, `X-Auto-Response-Suppress: All`, `In-Reply-To` and `References` from the original. (`buildEmailCreate` in `src/lib/jmap/email.ts` already sets custom headers this way.)
-- Sent from the account's primary identity with the JMAP submission that `sendEmail` uses; the copy is deleted after sending (`onSuccessDestroyEmail`) so Sent doesn't fill with automatic replies.
-- The log row is written **before** sending, so a crash can't cause a second reply; if sending fails the row is removed and the failure is logged.
+- Sent from the account's primary identity. The copy is created in one request and submitted in a second, so its id is always known; it is deleted after sending (`onSuccessDestroyEmail`) so Sent doesn't fill with automatic replies, and when the submission did not surely succeed it is destroyed (one attempt, a failure only logged).
+- The log row is written **before** sending, so a crash can't cause a second reply, in one transaction with a fresh check of the login's daily and hourly limits, so two accounts' runs can't both answer one sender. It is removed only when the server **definitely refused**: the copy wasn't created, or the submission came back `notCreated` or with a method-level error. On anything uncertain (timeout, dropped connection, a 5xx) the row stays and the event is logged as uncertain: the mail may have gone, so the sender gets no more replies that day.
 
 #### Data
-Migration `029_auto_reply.sql`: `auto_reply_log(account_id, sender, sent_at, email_id)`, cascading from `mail_accounts`, indexed by `(account_id, sender, sent_at)`. Rows older than 30 days are pruned on the daily pass.
+Migration `029_auto_reply.sql`: `auto_reply_log(account_id, sender, sent_at, email_id)`, cascading from `mail_accounts`, indexed by `(account_id, sender, sent_at)`. Rows older than 30 days are pruned on the daily pass. Rows are per account, but the daily check and the hourly cap read them per login, joined to `mail_accounts` on `user_id`.
 
 #### Stage 4 tests
 - `shouldAutoReply`: one test per rule above, each failing without its rule; the active-window logic across time zones and at both date boundaries; empty dates.
 - One reply per sender per day; a second message the same day gets none; the next day gets one.
 - The hourly cap.
-- The reply's recipient, subject, headers and thread references; the copy is destroyed; a failed send removes the log row.
+- The reply's recipient (From, never Reply-To), subject, headers and thread references; the copy is destroyed; a refused send removes the log row, an uncertain one keeps it; a refused copy is never submitted.
+- One reply per person across the login's accounts; the hourly cap is the login's.
 - The scheduler runs with out-of-office active and no rules; no reply to mail from before it was switched on, or on first sight of an account.
 - Page: nothing saved until Save; status line for each state; dates validated (until not before from).
 

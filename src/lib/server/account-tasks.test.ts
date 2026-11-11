@@ -11,13 +11,16 @@ const state = vi.hoisted(() => ({
 	scripts: [] as { id: string; name: string; isActive: boolean }[],
 	calls: [] as [string, Record<string, unknown>][],
 	fail: false,
-	refuse: false
+	refuse: false,
+	/** Requests made: each attempt starts with one. */
+	attempts: 0
 }));
 
 vi.mock('$lib/jmap/auth', () => ({
 	fetchSession: async () => ({ capabilities: state.capabilities, accounts: {} }),
 	createClient: () => ({
 		request: async (calls: [string, Record<string, unknown>, string][]) => {
+			if (calls[0][0] === 'SieveScript/get') state.attempts++;
 			if (state.fail) throw new Error('server unreachable');
 			const responses: [string, unknown, string][] = [];
 			for (const [name, args, tag] of calls) {
@@ -48,6 +51,8 @@ import { runAccountTasks } from './account-tasks';
 import type { AuthState } from '$lib/jmap/types';
 
 const auth = { accountId: 'jmap' } as AuthState;
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const SIEVE = { 'urn:ietf:params:jmap:sieve': {} };
 let n = 0;
 let address = '';
@@ -76,6 +81,7 @@ beforeEach(() => {
 	state.calls = [];
 	state.fail = false;
 	state.refuse = false;
+	state.attempts = 0;
 });
 
 describe('retire_sieve_script', () => {
@@ -118,17 +124,39 @@ describe('retire_sieve_script', () => {
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(true);
 	});
 
-	it('tries again on the next run after a failure, without throwing', async () => {
+	it('tries again an hour after a failure, not on the next minute’s run, without throwing', async () => {
 		const id = newAccount();
+		const t0 = Date.parse('2026-11-20T12:00:00Z');
 		state.scripts = [{ id: 's1', name: 'mailrules', isActive: true }];
 		state.fail = true;
-		await expect(runAccountTasks(auth, address)).resolves.toBeUndefined();
+		await expect(runAccountTasks(auth, address, t0)).resolves.toBeUndefined();
+		expect(state.attempts).toBe(1);
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(false);
 
 		state.fail = false;
-		await runAccountTasks(auth, address);
+		await runAccountTasks(auth, address, t0 + MINUTE);
+		expect(state.attempts).toBe(1);
+		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(false);
+
+		await runAccountTasks(auth, address, t0 + HOUR);
+		expect(state.attempts).toBe(2);
 		expect(state.scripts).toEqual([]);
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(true);
+	});
+
+	it('logs a failure that keeps happening once, and then at most once a day', async () => {
+		newAccount();
+		const t0 = Date.parse('2026-11-20T12:00:00Z');
+		state.fail = true;
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			for (let h = 0; h < 30; h++) await runAccountTasks(auth, address, t0 + h * HOUR);
+			expect(state.attempts).toBe(30);
+			// The first failure, and the one a day later.
+			expect(warn).toHaveBeenCalledTimes(2);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	it('is not done while the server refuses to delete the script', async () => {

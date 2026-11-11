@@ -135,8 +135,9 @@
 	<h2 class="text-sm font-semibold text-text">How replies are sent</h2>
 	<ul class="list-disc pl-5 space-y-1">
 		<li>Zajel sends them itself, while it is running. Mail that arrives while it is stopped gets no reply.</li>
-		<li>At most one reply per sender per day.</li>
-		<li>Never to newsletters, mailing lists or automatic mail, and never to mail sent before you switched it on.</li>
+		<li>To the sender’s own address, never to a different reply-to address the message asks for.</li>
+		<li>At most one reply per person per day, across all your accounts.</li>
+		<li>Never to newsletters, mailing lists, automatic mail or delivery reports, and never to mail sent before you switched it on.</li>
 	</ul>
 </section>
 

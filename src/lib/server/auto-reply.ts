@@ -1,11 +1,11 @@
-import type { JMAPClient } from '$lib/jmap/client';
+import { JMAPMethodError, type JMAPClient } from '$lib/jmap/client';
 import { getIdentities } from '$lib/jmap/identities';
 import type { Email, EmailAddress, Mailbox } from '$lib/jmap/types';
 import { getAccount, listAccounts } from './auth/accounts';
 import { accountIdForEmail } from './db/queries/account-tasks';
 import { getPrefs } from './db/queries/app-prefs';
 import {
-	insertAutoReplyLog,
+	claimAutoReply,
 	pruneAutoReplyLog,
 	removeAutoReplyLog,
 	repliesSentSince,
@@ -13,6 +13,7 @@ import {
 } from './db/queries/auto-reply-log';
 import { listIdentities } from './db/queries/identities';
 import { headerFacts } from './jev/facts';
+import { parseAuthResults } from './jev/spam';
 import { errorFields, logEvent } from './log';
 import { normalizeAddress } from './trust-sender';
 
@@ -28,27 +29,22 @@ import { normalizeAddress } from './trust-sender';
  * Sending mail nobody asked for is the risk here, so whether to answer is
  * one pure function, `shouldAutoReply`, that says no to anything automatic,
  * bulk, old, from the owner, not addressed to the account, or already
- * answered; and every reply is logged before it is sent.
+ * answered; and every reply is logged before it is sent. A reply only ever
+ * goes to the message's From address, and at most once a day per person
+ * across all of the login's accounts.
  */
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-/** Automatic replies one account may send in an hour, in case two responders get into a loop. */
+/** Automatic replies one login may send in an hour, in case two responders get into a loop. */
 export const HOURLY_CAP = 30;
 const KEEP_LOG_DAYS = 30;
 
-/** Local parts that are never a person. */
-const ROBOTS = new Set([
-	'noreply',
-	'no-reply',
-	'donotreply',
-	'do-not-reply',
-	'mailer-daemon',
-	'postmaster',
-	'bounce',
-	'bounces',
-	'notifications'
-]);
+/**
+ * Local parts that are never a person, beside the no-reply pattern Jev's
+ * facts already use (`sender_looks_automated`), which doesn't know these.
+ */
+const ROBOTS = /^(?:mailer-daemon|postmaster)(?:[-+_.].*)?$/i;
 
 /** What a reply decision reads off each new message, beside what rules read. */
 export const AUTO_REPLY_PROPERTIES = [
@@ -66,7 +62,11 @@ export const AUTO_REPLY_PROPERTIES = [
 	'header:list-id:asText',
 	'header:list-unsubscribe',
 	'header:x-auto-response-suppress:asText',
-	'header:x-spam-status:asText'
+	'header:x-spam-status:asText',
+	'header:authentication-results:asText:all',
+	'header:return-path:asText',
+	'header:content-type:asText',
+	'header:from:asGroupedAddresses'
 ];
 
 export interface AutoReplySettings {
@@ -186,17 +186,23 @@ export interface ReplyContext {
 	accountAddresses: Set<string>;
 	/** Every address of the owner's: each linked account and its identities. */
 	ownAddresses: Set<string>;
-	/** Senders this account answered in the last 24 hours. */
+	/** Senders the login answered in the last 24 hours, from any of its accounts. */
 	answered: Set<string>;
-	/** Replies this account sent in the last hour. */
+	/** Replies the login sent in the last hour, from any of its accounts. */
 	sentLastHour: number;
 }
 
 export type ReplyDecision = { to: EmailAddress; sender: string } | { skip: string };
 
 function isRobot(address: string): boolean {
-	const local = address.split('@')[0]?.split('+')[0] ?? '';
-	return ROBOTS.has(local);
+	return ROBOTS.test(address.split('@')[0] ?? '');
+}
+
+/** A delivery report or read receipt: a null Return-Path, or a `multipart/report` body. */
+function isDeliveryReport(email: Email): boolean {
+	const returnPath = email['header:return-path:asText'];
+	if (returnPath != null && /^\s*(?:<\s*>)?\s*$/.test(returnPath)) return true;
+	return /^\s*multipart\/report\b/i.test(email['header:content-type:asText'] ?? '');
 }
 
 /** Outlook's X-Auto-Response-Suppress, when it asks for no out-of-office reply. */
@@ -208,8 +214,11 @@ function suppressesReplies(value: string | null | undefined): boolean {
 }
 
 /**
- * Whether to answer `email`, and where to: its Reply-To if it has one,
- * otherwise its From. Pure: everything it needs is in `ctx`.
+ * Whether to answer `email`. The answer always goes to its From address,
+ * never its Reply-To: anyone can set Reply-To, so it would let a stranger
+ * aim the reply at a third party, or at a whole list, and step round the
+ * once-a-day limit by changing From each time. Pure: everything it needs
+ * is in `ctx`.
  */
 export function shouldAutoReply(email: Email, ctx: ReplyContext): ReplyDecision {
 	const s = ctx.settings;
@@ -227,16 +236,25 @@ export function shouldAutoReply(email: Email, ctx: ReplyContext): ReplyDecision 
 	if (facts.bulk_precedence) return { skip: 'bulk mail' };
 	if (facts.list_id || facts.has_list_unsubscribe) return { skip: 'mailing list' };
 	if (suppressesReplies(email['header:x-auto-response-suppress:asText'])) return { skip: 'asks for no automatic reply' };
+	if (isDeliveryReport(email)) return { skip: 'delivery report or read receipt' };
 
-	// 3. Never to a missing or robot address.
-	const sender = normalizeAddress(email.from?.[0]?.email ?? '');
-	const target = email.replyTo?.find((a) => a.email?.includes('@')) ?? email.from?.[0];
-	const targetAddress = normalizeAddress(target?.email ?? '');
-	if (!sender.includes('@') || !targetAddress.includes('@')) return { skip: 'no sender address' };
-	if (isRobot(sender) || isRobot(targetAddress)) return { skip: 'sender is not a person' };
+	// 3. Only to one real sender: From must be exactly one address, not a
+	// group, not a robot, and not one that failed the server's sender
+	// authentication (DMARC), since a forged From would aim the reply at
+	// whoever was forged. Mail with no Authentication-Results is judged on
+	// the rest, as before.
+	const from = email.from ?? [];
+	const grouped = email['header:from:asGroupedAddresses'];
+	if (from.length !== 1 || grouped?.some((g) => g.name !== null)) return { skip: 'not one sender address' };
+	const sender = normalizeAddress(from[0].email ?? '');
+	if (!sender.includes('@')) return { skip: 'no sender address' };
+	if (facts.sender_looks_automated || isRobot(sender)) return { skip: 'sender is not a person' };
+	if (parseAuthResults(email['header:authentication-results:asText:all']).dmarc === 'fail') {
+		return { skip: 'sender failed authentication' };
+	}
 
 	// 4. Never to the owner.
-	if (ctx.ownAddresses.has(sender) || ctx.ownAddresses.has(targetAddress)) return { skip: 'from one of your own addresses' };
+	if (ctx.ownAddresses.has(sender)) return { skip: 'from one of your own addresses' };
 
 	// 5. Only to mail sent to the account itself, not via a list or Bcc.
 	const recipients = [...(email.to ?? []), ...(email.cc ?? [])];
@@ -253,7 +271,7 @@ export function shouldAutoReply(email: Email, ctx: ReplyContext): ReplyDecision 
 	// 8. The hourly cap.
 	if (ctx.sentLastHour >= HOURLY_CAP) return { skip: 'hourly limit reached' };
 
-	return { to: { name: target?.name ?? null, email: target!.email.trim() }, sender };
+	return { to: { name: from[0].name ?? null, email: from[0].email.trim() }, sender };
 }
 
 export interface ReplyIdentity {
@@ -262,11 +280,36 @@ export interface ReplyIdentity {
 	name: string | null;
 }
 
+/** How a send ended: sent, surely not sent, maybe sent, or skipped (answered today, or the hourly cap, by another run). */
+export type SendOutcome = 'sent' | 'refused' | 'uncertain' | 'skipped';
+
+type SetResult = {
+	created?: Record<string, { id?: string }> | null;
+	notCreated?: Record<string, { type?: string; description?: string }> | null;
+};
+
+/** A JMAP `/set` response, or undefined when the server didn't answer that method. */
+function setResult(response: { methodResponses: [string, unknown, string][] }, method: string): SetResult | undefined {
+	return response.methodResponses.find(([name]) => name === method)?.[1] as SetResult | undefined;
+}
+
+const reasonOf = (err: { type?: string; description?: string } | undefined, fallback: string) =>
+	err?.description ?? err?.type ?? fallback;
+
 /**
  * Send one reply. The log row is written first, so a crash between sending
- * and recording can't lead to a second reply; it is removed again when the
- * send fails. The sent copy is destroyed once submitted, so Sent doesn't
- * fill up with automatic replies. Returns whether it was sent.
+ * and recording can't lead to a second reply, and it is written only if
+ * the login hasn't answered this sender today (checked again here, in the
+ * same transaction, in case another account's run just did).
+ *
+ * The copy is created in one request and submitted in a second, so its id
+ * is known whatever happens to the submission. The log row is removed only
+ * when the server definitely refused (notCreated, or a method-level error):
+ * a timeout or a dropped connection may come after the server sent the
+ * mail, so then the row stays and the sender gets no more replies today.
+ * When the submission didn't surely succeed, the copy is destroyed (it is
+ * destroyed with the submission when that succeeds), so Drafts doesn't
+ * fill up with unsent replies.
  */
 export async function sendAutoReply(
 	client: JMAPClient,
@@ -275,6 +318,8 @@ export async function sendAutoReply(
 		accountId: string;
 		/** The mail account's row, for the log. */
 		logAccountId: string;
+		/** The login the account belongs to: the once-a-day check and the hourly cap are the login's. */
+		userId: string;
 		to: EmailAddress;
 		sender: string;
 		settings: AutoReplySettings;
@@ -283,9 +328,21 @@ export async function sendAutoReply(
 		mailboxId: string;
 		now: Date;
 	}
-): Promise<boolean> {
+): Promise<SendOutcome> {
 	const { accountId, identity } = opts;
-	const logId = insertAutoReplyLog(opts.logAccountId, opts.sender, opts.now.toISOString(), email.id);
+	const fields = { account: opts.logAccountId, email_id: email.id };
+	const logId = claimAutoReply({
+		accountId: opts.logAccountId,
+		userId: opts.userId,
+		sender: opts.sender,
+		sentAt: opts.now.toISOString(),
+		emailId: email.id,
+		answeredAfter: new Date(opts.now.getTime() - DAY).toISOString(),
+		countAfter: new Date(opts.now.getTime() - HOUR).toISOString(),
+		cap: HOURLY_CAP
+	});
+	if (logId === null) return 'skipped';
+
 	const messageIds = email.messageId ?? [];
 	const reply: Record<string, unknown> = {
 		mailboxIds: { [opts.mailboxId]: true },
@@ -302,50 +359,84 @@ export async function sendAutoReply(
 		...(messageIds.length > 0 && { inReplyTo: messageIds, references: [...(email.references ?? []), ...messageIds] })
 	};
 
+	// 1. The copy. Nothing can have been sent if this fails, however it fails.
+	let copyId: string | undefined;
+	let copyError: unknown;
 	try {
-		const response = await client.request([
-			['Email/set', { accountId, create: { reply } }, '0'],
-			[
-				'EmailSubmission/set',
-				{
-					accountId,
-					create: {
-						sub: {
-							emailId: '#reply',
-							identityId: identity.id,
-							envelope: { mailFrom: { email: identity.email }, rcptTo: [{ email: opts.to.email }] }
-						}
-					},
-					onSuccessDestroyEmail: ['#sub']
-				},
-				'1'
-			]
-		]);
-		const created = response.methodResponses.find(([name]) => name === 'Email/set')?.[1] as
-			| { created?: Record<string, { id: string }>; notCreated?: Record<string, { type?: string; description?: string }> }
-			| undefined;
-		const submitted = response.methodResponses.find(([name]) => name === 'EmailSubmission/set')?.[1] as
-			| { created?: Record<string, unknown>; notCreated?: Record<string, { type?: string; description?: string }> }
-			| undefined;
-		const copyId = created?.created?.reply?.id;
-		if (!copyId) {
-			const err = created?.notCreated?.reply;
-			throw new Error(err?.description ?? err?.type ?? 'the reply was not created');
-		}
-		if (!submitted?.created?.sub) {
-			// Not sent, so the copy wasn't destroyed with the submission.
-			await client.request([['Email/set', { accountId, destroy: [copyId] }, '0']]).catch(() => {});
-			const err = submitted?.notCreated ? Object.values(submitted.notCreated)[0] : undefined;
-			throw new Error(err?.description ?? err?.type ?? 'the reply was not sent');
-		}
-		logEvent('info', 'auto_reply', 'sent', { account: opts.logAccountId, email_id: email.id });
-		return true;
+		const created = setResult(await client.request([['Email/set', { accountId, create: { reply } }, '0']]), 'Email/set');
+		copyId = created?.created?.reply?.id;
+		if (!copyId) copyError = new Error(reasonOf(created?.notCreated?.reply, 'the reply was not created'));
 	} catch (err) {
-		removeAutoReplyLog(logId);
-		console.warn('[auto-reply] send failed', err);
-		logEvent('warn', 'auto_reply', 'send_failed', { account: opts.logAccountId, email_id: email.id, ...errorFields(err) });
-		return false;
+		copyError = err;
 	}
+	if (!copyId) {
+		removeAutoReplyLog(logId);
+		console.warn('[auto-reply] could not create the reply', copyError);
+		logEvent('warn', 'auto_reply', 'send_failed', { ...fields, ...errorFields(copyError) });
+		return 'refused';
+	}
+
+	// 2. The submission.
+	let outcome: SendOutcome;
+	let failure: unknown;
+	try {
+		const submitted = setResult(
+			await client.request([
+				[
+					'EmailSubmission/set',
+					{
+						accountId,
+						create: {
+							sub: {
+								emailId: copyId,
+								identityId: identity.id,
+								envelope: { mailFrom: { email: identity.email }, rcptTo: [{ email: opts.to.email }] }
+							}
+						},
+						onSuccessDestroyEmail: ['#sub']
+					},
+					'0'
+				]
+			]),
+			'EmailSubmission/set'
+		);
+		if (submitted?.created?.sub) outcome = 'sent';
+		else if (submitted?.notCreated?.sub) {
+			outcome = 'refused';
+			failure = new Error(reasonOf(submitted.notCreated.sub, 'the reply was not sent'));
+		} else {
+			// An answer that says neither: it may have gone.
+			outcome = 'uncertain';
+			failure = new Error('the server did not say whether the reply was sent');
+		}
+	} catch (err) {
+		// A method-level error is the server refusing the call; anything
+		// else (timeout, dropped connection, a 5xx) may have come after it
+		// sent the mail.
+		outcome = err instanceof JMAPMethodError ? 'refused' : 'uncertain';
+		failure = err;
+	}
+
+	if (outcome === 'sent') {
+		logEvent('info', 'auto_reply', 'sent', fields);
+		return outcome;
+	}
+	if (outcome === 'refused') {
+		removeAutoReplyLog(logId);
+		console.warn('[auto-reply] send refused', failure);
+		logEvent('warn', 'auto_reply', 'send_failed', { ...fields, ...errorFields(failure) });
+	} else {
+		console.warn('[auto-reply] send may or may not have gone; not trying again today', failure);
+		logEvent('warn', 'auto_reply', 'send_uncertain', { ...fields, ...errorFields(failure) });
+	}
+	// Not surely sent, so the copy may still be in Drafts. One attempt; its
+	// failure changes nothing above.
+	try {
+		await client.request([['Email/set', { accountId, destroy: [copyId] }, '0']]);
+	} catch (err) {
+		logEvent('warn', 'auto_reply', 'copy_not_destroyed', { ...fields, ...errorFields(err) });
+	}
+	return outcome;
 }
 
 /** Out-of-office for one mail account's run, when it is on for that account's login. */
@@ -399,8 +490,8 @@ export async function answerNewMail(
 		accountEmail: ooo.accountEmail,
 		accountAddresses,
 		ownAddresses,
-		answered: sendersAnsweredSince(ooo.accountRowId, new Date(now.getTime() - DAY).toISOString()),
-		sentLastHour: repliesSentSince(ooo.accountRowId, new Date(now.getTime() - HOUR).toISOString())
+		answered: sendersAnsweredSince(ooo.userId, new Date(now.getTime() - DAY).toISOString()),
+		sentLastHour: repliesSentSince(ooo.userId, new Date(now.getTime() - HOUR).toISOString())
 	};
 	const mailboxId = (mailboxes.find((m) => m.role === 'drafts') ?? mailboxes.find((m) => m.role === 'sent'))?.id;
 	let identity: ReplyIdentity | null | undefined;
@@ -416,6 +507,7 @@ export async function answerNewMail(
 		await sendAutoReply(client, email, {
 			accountId,
 			logAccountId: ooo.accountRowId,
+			userId: ooo.userId,
 			to: decision.to,
 			sender: decision.sender,
 			settings: ooo.settings,

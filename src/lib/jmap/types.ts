@@ -163,6 +163,11 @@ export interface Email {
 	'header:auto-submitted:asText'?: string | null;
 	/** Outlook's request not to be sent automatic replies, read before sending one. */
 	'header:x-auto-response-suppress:asText'?: string | null;
+	/** Read before an automatic reply: `<>` marks a delivery report, as does a `multipart/report` type. */
+	'header:return-path:asText'?: string | null;
+	'header:content-type:asText'?: string | null;
+	/** From with its groups kept, so a group sender can be told from a single address. */
+	'header:from:asGroupedAddresses'?: { name: string | null; addresses: EmailAddress[] }[] | null;
 }
 
 export interface EmailQueryResult {

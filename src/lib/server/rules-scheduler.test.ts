@@ -201,6 +201,17 @@ describe('out-of-office', () => {
 		expect(state.sets).toEqual([]);
 	});
 
+	it('is given only the mail a run before hasn’t already seen', async () => {
+		const user = 'seen@example.test';
+		state.outOfOffice = { accountRowId: 'acct' };
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		await applyRulesForUser(auth, user);
+		// The next run reads that second again, with one more message in it.
+		state.emails = page(3, () => '2026-10-20T07:00:00Z');
+		await applyRulesForUser(auth, user);
+		expect(state.answered).toEqual([['m0', 'm1'], ['m2']]);
+	});
+
 	it('does nothing with no rules when it is off', async () => {
 		state.rules = [];
 		state.emails = page(2, () => '2026-10-20T07:00:00Z');
