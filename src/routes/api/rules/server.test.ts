@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Rule, RuleAction, RuleCondition } from '$lib/types/rules';
+import type { ActionRule, RuleAction, RuleCondition } from '$lib/types/rules';
 
 // A small Inbox: Email/query pages it by position, newest first as stored,
 // and an Email/set that takes a message out of the Inbox removes it from
@@ -101,7 +101,7 @@ const email = (id: string, subject: string, body = '') => ({
 	bodyValues: { '1': { value: body } }
 });
 
-const rule = (conditions: RuleCondition[], actions: RuleAction[], id = 'r1'): Rule => ({
+const rule = (conditions: RuleCondition[], actions: RuleAction[], id = 'r1'): ActionRule => ({
 	id,
 	name: 'Hello',
 	enabled: true,

@@ -41,6 +41,9 @@ beforeAll(() => {
 			('j1', 'u1', 'a1', 'Digest', '{}', '{}', 'UTC', 1),
 			('j2', 'u1', 'a1', 'Old tidy-up', '{}', '{}', 'UTC', 0);
 		INSERT INTO search_index (account_id, enabled, updated_at) VALUES ('a1', 1, 0);
+		INSERT INTO rules (account_id, id, position, name, created_at, updated_at) VALUES
+			('a1', 'r1', 0, 'Receipts', 0, 0),
+			('a1', 'r2', 1, 'Newsletters', 0, 0);
 		INSERT INTO label_meta (user_email, mailbox_id, display_name, color) VALUES ('me@example.test', 'm1', 'Clients', '#ff0000');
 	`);
 });
@@ -49,10 +52,10 @@ describe('unlinking an account', () => {
 	it('says beforehand what goes with the link', async () => {
 		const body = await (await call(GET, 'a1')).json();
 		expect(body.account).toMatchObject({ id: 'a1', email: 'me@example.test' });
-		expect(body.unlink).toEqual({ pendingSends: 2, enabledJobs: 1, searchIndexed: true });
+		expect(body.unlink).toEqual({ pendingSends: 2, enabledJobs: 1, searchIndexed: true, rules: 2 });
 
 		const quiet = await (await call(GET, 'a2')).json();
-		expect(quiet.unlink).toEqual({ pendingSends: 1, enabledJobs: 0, searchIndexed: false });
+		expect(quiet.unlink).toEqual({ pendingSends: 1, enabledJobs: 0, searchIndexed: false, rules: 0 });
 	});
 
 	it("keeps another login's accounts to itself", async () => {
@@ -65,6 +68,7 @@ describe('unlinking an account', () => {
 		expect(sends('a1')).toBe(0);
 		expect(jobs('a1')).toBe(0);
 		expect(count('SELECT COUNT(*) AS n FROM search_index WHERE account_id = ?', 'a1')).toBe(0);
+		expect(count('SELECT COUNT(*) AS n FROM rules WHERE account_id = ?', 'a1')).toBe(0);
 		// The other account's rows, and the address-keyed label colour, are untouched.
 		expect(sends('a2')).toBe(1);
 		expect(labels('me@example.test')).toBe(1);

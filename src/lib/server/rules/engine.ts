@@ -1,5 +1,5 @@
 import type { Email } from '$lib/jmap/types';
-import { isRunnable, isUsableCondition, ruleHolds, type Rule, type RuleCondition } from '$lib/types/rules';
+import { isRunnable, isUsableCondition, ruleHolds, type ActionRule, type RuleCondition } from '$lib/types/rules';
 
 export interface RuleActionCtx {
 	inboxId?: string;
@@ -17,7 +17,7 @@ function targetExists(ctx: RuleActionCtx, id: string): boolean {
 }
 
 /** True if any enabled rule needs the message body to evaluate. */
-export function rulesNeedBody(rules: Rule[]): boolean {
+export function rulesNeedBody(rules: ActionRule[]): boolean {
 	return rules.some((r) => r.conditions.some((c) => c.field === 'body' && isUsableCondition(c)));
 }
 
@@ -77,7 +77,7 @@ function conditionMatches(email: Email, c: RuleCondition, bodyText: string): boo
 	return res;
 }
 
-function matchesRule(email: Email, rule: Rule, bodyText: string): boolean {
+function matchesRule(email: Email, rule: ActionRule, bodyText: string): boolean {
 	return ruleHolds(rule, (c) => conditionMatches(email, c, bodyText));
 }
 
@@ -106,7 +106,7 @@ export function emptyOutcome(): RuleOutcome {
  */
 function applyActionsToOutcome(
 	email: Email,
-	actions: Rule['actions'],
+	actions: ActionRule['actions'],
 	ctx: RuleActionCtx,
 	outcome: RuleOutcome
 ): { stop: boolean } {
@@ -157,7 +157,7 @@ function applyActionsToOutcome(
  */
 export function evaluateRulesForEmail(
 	email: Email,
-	enabledRules: Rule[],
+	enabledRules: ActionRule[],
 	ctx: RuleActionCtx,
 	bodyText: string
 ): RuleOutcome {
@@ -174,7 +174,7 @@ export function evaluateRulesForEmail(
  * What the matcher reads from each message, with the body only when a rule
  * looks at it. `fetchTextBodyValues` goes on the Email/get call.
  */
-export function matcherProperties(rules: Rule[]): { properties: string[]; fetchTextBodyValues: boolean } {
+export function matcherProperties(rules: ActionRule[]): { properties: string[]; fetchTextBodyValues: boolean } {
 	const needBody = rulesNeedBody(rules);
 	return {
 		properties: [
@@ -194,7 +194,7 @@ export function matcherProperties(rules: Rule[]): { properties: string[]; fetchT
  */
 export function updatesForEmails(
 	emails: Email[],
-	enabledRules: Rule[],
+	enabledRules: ActionRule[],
 	ctx: RuleActionCtx
 ): { matched: number; update: Record<string, Record<string, unknown>> } {
 	const needBody = rulesNeedBody(enabledRules);

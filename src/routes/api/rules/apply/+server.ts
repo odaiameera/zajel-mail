@@ -3,7 +3,7 @@ import { json } from '@sveltejs/kit';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import { getRules } from '$lib/server/db/queries/rules';
-import { scanInbox } from '$lib/server/rules-scan';
+import { scanInbox } from '$lib/server/rules/scan';
 import { userEmailFromAuth } from '$lib/server/user';
 import { isRunnable } from '$lib/types/rules';
 

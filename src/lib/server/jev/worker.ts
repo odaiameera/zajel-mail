@@ -24,7 +24,7 @@ import {
 	recordDecision,
 	recordFailure
 } from '$lib/server/db/queries/jev-decisions';
-import { emptyOutcome, outcomeToUpdate, type RuleOutcome } from '$lib/server/rules-engine';
+import { emptyOutcome, outcomeToUpdate, type RuleOutcome } from '$lib/server/rules/engine';
 import { askJev, JevError, jevMode } from './client';
 import {
 	CATEGORY_QUESTION,

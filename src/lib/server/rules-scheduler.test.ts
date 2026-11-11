@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Rule } from '$lib/types/rules';
+import type { ActionRule } from '$lib/types/rules';
 
 const state = vi.hoisted(() => ({
 	emails: [] as Record<string, unknown>[],
@@ -77,7 +77,7 @@ import { applyRulesForUser, applyRulesNow } from './rules-scheduler';
 
 const auth = { accountId: 'jmap' } as AuthState;
 
-const markRead: Rule = {
+const markRead: ActionRule = {
 	id: 'r1',
 	name: 'Read',
 	enabled: true,

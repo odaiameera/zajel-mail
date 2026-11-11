@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Email } from '$lib/jmap/types';
-import type { Rule, RuleCondition } from '$lib/types/rules';
-import { evaluateRulesForEmail, outcomeToUpdate, updatesForEmails, type RuleActionCtx } from './rules-engine';
+import type { ActionRule, RuleCondition } from '$lib/types/rules';
+import { evaluateRulesForEmail, outcomeToUpdate, updatesForEmails, type RuleActionCtx } from './engine';
 import type { RuleAction } from '$lib/types/rules';
 
 function email(overrides: Partial<Email> = {}): Email {
@@ -29,7 +29,7 @@ const jev = (id: string, value = 'it is an invoice'): RuleCondition =>
 const subjectInvoice: RuleCondition = { id: 's', field: 'subject', op: 'contains', value: 'invoice', negate: false };
 const fromShop: RuleCondition = { id: 'f', field: 'from', op: 'contains', value: 'shop.example', negate: false };
 
-function rule(id: string, overrides: Partial<Rule>): Rule {
+function rule(id: string, overrides: Partial<ActionRule>): ActionRule {
 	return { id, name: id, enabled: true, logic: 'allof', conditions: [], actions: [], createdAt: 0, ...overrides };
 }
 

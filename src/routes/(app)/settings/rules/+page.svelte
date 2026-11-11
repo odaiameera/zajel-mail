@@ -9,7 +9,7 @@
 		isUsableCondition,
 		needsRewrite,
 		type LegacyRule,
-		type Rule,
+		type ActionRule,
 		type RuleAction,
 		type TabNote
 	} from '$lib/types/rules';
@@ -19,7 +19,7 @@
 	let { data }: { data: PageData } = $props();
 
 	// Working copy. Edits here stay local until the user hits Save.
-	let localRules = $state<Rule[]>(structuredClone(data.rules ?? []));
+	let localRules = $state<ActionRule[]>(structuredClone(data.rules ?? []));
 	let selectedId = $state<string | null>(data.rules[0]?.id ?? null);
 
 	const selectedIdx = $derived(localRules.findIndex((r) => r.id === selectedId));
@@ -102,7 +102,7 @@
 	}
 
 	async function createRule() {
-		const rule: Rule = {
+		const rule: ActionRule = {
 			id: newRuleId(),
 			name: 'New rule',
 			enabled: true,
@@ -187,7 +187,7 @@
 	}
 
 	/** The Inbox tab a rule used to put mail in, before rules stopped setting tabs: "the Updates tab", or null. */
-	function legacyTab(rule: Rule): string | null {
+	function legacyTab(rule: ActionRule): string | null {
 		const tab = (rule.legacy?.actions ?? [])
 			.filter((a) => a.type === 'setCategory')
 			.map((a) => a.value)
@@ -240,7 +240,7 @@
 	}
 
 	/** Enough of a rule to run: something to match on, and something to do. */
-	function canRunAsExact(rule: Rule): boolean {
+	function canRunAsExact(rule: ActionRule): boolean {
 		return rule.conditions.some(isUsableCondition) && rule.actions.length > 0;
 	}
 
@@ -251,7 +251,7 @@
 	async function saveAsExactRule(id: string) {
 		const idx = localRules.findIndex((r) => r.id === id);
 		if (idx < 0) return;
-		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as Rule;
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as ActionRule;
 		localRules[idx] = { ...rule, enabled: true };
 		await saveOnly();
 	}
@@ -260,7 +260,7 @@
 	async function dismissAttention(id: string) {
 		const idx = localRules.findIndex((r) => r.id === id);
 		if (idx < 0) return;
-		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as Rule;
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[idx]) as ActionRule;
 		localRules[idx] = rule;
 		await persistAll();
 	}
@@ -320,7 +320,7 @@
 		if (selectedIdx < 0) return;
 		// A rule being rewritten is counted as it reads now, without its flag:
 		// the server counts nothing for a rule that is still switched off.
-		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[selectedIdx]) as Rule;
+		const { attention: _attention, legacy: _legacy, tabNote: _tabNote, ...rule } = $state.snapshot(localRules[selectedIdx]) as ActionRule;
 		previewLoading = true;
 		previewError = '';
 		try {
@@ -365,7 +365,7 @@
 		await streamApply(localRules[selectedIdx]);
 	}
 
-	async function streamApply(rule: Rule) {
+	async function streamApply(rule: ActionRule) {
 		progress = { status: 'running', scanned: 0, matched: 0, applied: 0, total: 0 };
 		progressVisible = true;
 		abortCtrl = new AbortController();
@@ -484,7 +484,7 @@
 
 <svelte:head><title>{pageTitle({ page: 'Filters & Rules', subtitle: 'Settings' })}</title></svelte:head>
 
-{#snippet ruleRow(rule: Rule)}
+{#snippet ruleRow(rule: ActionRule)}
 	<li
 		class="group relative flex items-center gap-2 pl-3 pr-1 py-2 rounded-lg cursor-pointer transition-all
 			{selectedId === rule.id

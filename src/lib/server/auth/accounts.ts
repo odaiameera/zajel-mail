@@ -70,6 +70,7 @@ function prepareStmts() {
 		pendingSends: db.prepare(`SELECT COUNT(*) AS n FROM scheduled_sends WHERE mail_account_id = ?`),
 		enabledJobs: db.prepare(`SELECT COUNT(*) AS n FROM agent_jobs WHERE account_id = ? AND enabled = 1`),
 		searchIndexed: db.prepare(`SELECT enabled FROM search_index WHERE account_id = ?`),
+		rules: db.prepare(`SELECT COUNT(*) AS n FROM rules WHERE account_id = ?`),
 		updateSecret: db.prepare(
 			`UPDATE mail_accounts
 			 SET secret_enc = ?, jmap_account_id = ?, needs_reauth = 0, last_verified_at = datetime('now')
@@ -184,10 +185,10 @@ export function getAccount(id: string): MailAccountRow | undefined {
 /**
  * What unlinking takes with it. Tables keyed by the account row cascade
  * away with it: scheduled sends, the agent's jobs and pending actions,
- * Telegram alerts, Jev's settings and learning, the search index. Tables
- * keyed by the address (label and folder colours and icons, signatures,
- * rules, reminders, calendar colours) stay and re-attach when the same
- * address is linked again.
+ * Telegram alerts, Jev's settings and learning, the search index, the
+ * rules. Tables keyed by the address (label and folder colours and icons,
+ * signatures, reminders, calendar colours) stay and re-attach when the
+ * same address is linked again.
  */
 export interface UnlinkLosses {
 	/** Emails waiting in Scheduled that would never be sent. */
@@ -196,6 +197,8 @@ export interface UnlinkLosses {
 	enabledJobs: number;
 	/** Whether a semantic search index would be deleted. */
 	searchIndexed: boolean;
+	/** Rules that would be deleted. */
+	rules: number;
 }
 
 export function unlinkLosses(id: string): UnlinkLosses {
@@ -203,7 +206,8 @@ export function unlinkLosses(id: string): UnlinkLosses {
 	return {
 		pendingSends: (s.pendingSends.get(id) as { n: number }).n,
 		enabledJobs: (s.enabledJobs.get(id) as { n: number }).n,
-		searchIndexed: (s.searchIndexed.get(id) as { enabled: number } | undefined)?.enabled === 1
+		searchIndexed: (s.searchIndexed.get(id) as { enabled: number } | undefined)?.enabled === 1,
+		rules: (s.rules.get(id) as { n: number }).n
 	};
 }
 

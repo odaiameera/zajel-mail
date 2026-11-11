@@ -6,7 +6,7 @@ import { getMailboxes } from '$lib/jmap/mailbox';
 import type { AuthState, Email } from '$lib/jmap/types';
 import { isRunnable } from '$lib/types/rules';
 import { getRules, getRulesCursor, setRulesCursor } from './db/queries/rules';
-import { matcherProperties, updatesForEmails, type RuleActionCtx } from './rules-engine';
+import { matcherProperties, updatesForEmails, type RuleActionCtx } from './rules/engine';
 import { runAccountTasks } from './account-tasks';
 import { AUTO_REPLY_PROPERTIES, answerNewMail, outOfOfficeFor, pruneOldAutoReplies } from './auto-reply';
 

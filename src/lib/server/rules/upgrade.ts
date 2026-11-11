@@ -1,7 +1,19 @@
-import { getDb } from './db/index';
-import { normalizePinSender } from './db/queries/jev-learning';
+import { getDb } from '../db/index';
+import { normalizePinSender } from '../db/queries/jev-learning';
 import { isInboxCategory, type InboxCategory } from '$lib/types/categories';
-import type { LegacyRule, Rule, RulePin, TabNote, TabRuleReason } from '$lib/types/rules';
+import { randomUUID } from 'node:crypto';
+import type {
+	ActionRule,
+	LegacyRule,
+	Rule,
+	RuleAttention,
+	RuleCondition,
+	RulePin,
+	RuleTarget,
+	TabNote,
+	TabRuleReason
+} from '$lib/types/rules';
+import { importRules } from './store';
 
 /**
  * Bringing stored rules up to what a rule is now.
@@ -246,7 +258,7 @@ function stopsProcessing(rule: StoredRule): boolean {
  * One account's rules as this version stores them, in their order. Anything
  * that isn't a rule is left as it is.
  */
-export function upgradeRules(rules: unknown[], pins: PinBook | null): Rule[] {
+export function upgradeRules(rules: unknown[], pins: PinBook | null): ActionRule[] {
 	let afterStop = false;
 	// The rules of this run that each pin made here speaks for, by their place in the list.
 	const pinnedBy = new Map<string, number[]>();
@@ -269,7 +281,7 @@ export function upgradeRules(rules: unknown[], pins: PinBook | null): Rule[] {
 		}
 		out.push(next);
 	});
-	return out as Rule[];
+	return out as ActionRule[];
 }
 
 /** A rule of this run whose sender's pin is now `pin`: a pin it became, or one it lost to a later rule. */
@@ -382,4 +394,115 @@ export function retireStoredJevConditions(now = Date.now()): void {
  */
 export function retireStoredTabActions(): void {
 	rewriteStoredRules((rules, userEmail) => upgradeRules(rules, pinBookFor(userEmail)));
+}
+
+/** Where one old filing action put mail, as a target; null for an action that files nowhere. */
+function filingTarget(action: unknown): RuleTarget | null {
+	if (!isObject(action)) return null;
+	const id = typeof action.value === 'string' && action.value !== '' ? action.value : null;
+	if (action.type === 'moveToFolder' && id) return { kind: 'folder', mailboxId: id };
+	if (action.type === 'applyLabel' && id) return { kind: 'label', mailboxId: id };
+	if (action.type === 'delete') return { kind: 'trash' };
+	// A move or a label with nothing picked never did anything.
+	return null;
+}
+
+/**
+ * One account's stored rules (as `upgradeRules` leaves them) as rows of
+ * the rules table, in their order.
+ *
+ * A rule now files into one place. One that filed into several becomes
+ * that many rules side by side, in the order of its actions, each with the
+ * same name and conditions: mark read and star go on the first, stop on the
+ * last, and every one after the first says why it is there. Run in order,
+ * they do what the one rule did, but for two moves: a message lives in one
+ * folder, and the first move now decides it.
+ *
+ * Nothing else changes. A flag, its note and the old copy are kept on every
+ * row a flagged rule becomes (no row of a rule waiting to be rewritten may
+ * run either). A target that no longer exists is kept as it is: the engine
+ * skips it and the rules page says so. "Delete" is Trash, and "mark
+ * important" is star. Anything that is not a rule is left out: it never ran.
+ */
+export function toTableRules(stored: unknown[], now = Date.now()): Rule[] {
+	const out: Rule[] = [];
+	const ids = new Set<string>();
+	// The rules' own ids, made unique within the account where they aren't.
+	const uniqueId = (want: string): string => {
+		let id = want;
+		for (let n = 2; ids.has(id); n++) id = `${want}~${n}`;
+		ids.add(id);
+		return id;
+	};
+	for (const rule of stored) {
+		if (!isObject(rule)) continue;
+		const actions = list(rule.actions);
+		const has = (type: string) => actions.some((a) => isObject(a) && a.type === type);
+		const targets = actions.map(filingTarget).filter((t): t is RuleTarget => t !== null);
+		const rows: RuleTarget[] = targets.length > 0 ? targets : [{ kind: 'none' }];
+		const base = typeof rule.id === 'string' && rule.id !== '' ? rule.id : `rule_${randomUUID()}`;
+		const tab = isObject(rule.tabNote) ? (rule.tabNote as unknown as TabNote) : undefined;
+		const flag = typeof rule.attention === 'string' ? (rule.attention as RuleAttention) : undefined;
+		rows.forEach((target, i) => {
+			const splitInto = i > 0 ? rows.length : undefined;
+			const note = tab || splitInto ? { ...(tab ? { tab } : {}), ...(splitInto ? { splitInto } : {}) } : undefined;
+			const attention = flag ?? (splitInto ? 'split' : undefined);
+			out.push({
+				id: uniqueId(i === 0 ? base : `${base}~${i + 1}`),
+				position: out.length,
+				name: typeof rule.name === 'string' ? rule.name : '',
+				enabled: rule.enabled === true,
+				logic: rule.logic === 'anyof' ? 'anyof' : 'allof',
+				conditions: structuredClone(list(rule.conditions)) as RuleCondition[],
+				target,
+				markRead: i === 0 && has('markRead'),
+				star: i === 0 && has('markImportant'),
+				stop: i === rows.length - 1 && has('stopProcessing'),
+				createdAt: typeof rule.createdAt === 'number' ? rule.createdAt : now,
+				updatedAt: now,
+				...(attention ? { attention } : {}),
+				...(note ? { note } : {}),
+				...(isObject(rule.legacy) ? { legacy: structuredClone(rule.legacy) as unknown as LegacyRule } : {})
+			});
+		});
+	}
+	return out;
+}
+
+/**
+ * Data step: every address's stored rules move into the rules table, under
+ * the mail account with that address (the exact address, else one that
+ * differs only in case). An account with rules in the table already is
+ * left alone, so running this again changes nothing. Addresses with no
+ * account are left where they are, and `user_rules` is only read; the
+ * runner's transaction means a failure part way writes nothing at all.
+ */
+export function moveStoredRulesToTable(now = Date.now()): void {
+	const db = getDb();
+	const rows = db.prepare('SELECT user_email, rules_json FROM user_rules ORDER BY user_email').all() as {
+		user_email: string;
+		rules_json: string;
+	}[];
+	const exact = db.prepare('SELECT id FROM mail_accounts WHERE email = ?');
+	const anyCase = db.prepare('SELECT id FROM mail_accounts WHERE email = ? COLLATE NOCASE ORDER BY email');
+	const hasRules = db.prepare('SELECT 1 FROM rules WHERE account_id = ? LIMIT 1');
+	const move = (row: (typeof rows)[number], account: { id: string } | undefined) => {
+		if (!account || hasRules.get(account.id)) return;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(row.rules_json);
+		} catch {
+			return; // read as "no rules" everywhere else, too
+		}
+		if (Array.isArray(parsed)) importRules(account.id, toTableRules(parsed, now));
+	};
+	// Exact addresses first: where two stored addresses differ only in case,
+	// the one spelled as the account is the list it was using.
+	const later: typeof rows = [];
+	for (const row of rows) {
+		const account = exact.get(row.user_email) as { id: string } | undefined;
+		if (account) move(row, account);
+		else later.push(row);
+	}
+	for (const row of later) move(row, anyCase.get(row.user_email) as { id: string } | undefined);
 }

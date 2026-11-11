@@ -29,8 +29,13 @@ function rule(overrides: Partial<Rule> = {}): Rule {
 		enabled: true,
 		logic: 'allof',
 		conditions: [from()],
-		actions: [{ type: 'applyLabel', value: 'lbl' }],
+		target: { kind: 'label', mailboxId: 'lbl' },
+		markRead: false,
+		star: false,
+		stop: false,
+		position: 0,
 		createdAt: 0,
+		updatedAt: 0,
 		...overrides
 	};
 }

@@ -1,10 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
-import { rulesNeedBody } from '$lib/server/rules-engine';
-import { scanInbox } from '$lib/server/rules-scan';
-import { upgradeRules } from '$lib/server/rules-upgrade';
-import { isRunnable, needsRewrite, type Rule } from '$lib/types/rules';
+import { rulesNeedBody } from '$lib/server/rules/engine';
+import { scanInbox } from '$lib/server/rules/scan';
+import { upgradeRules } from '$lib/server/rules/upgrade';
+import { isRunnable, needsRewrite, type ActionRule } from '$lib/types/rules';
 
 /** How far back a preview looks: the newest Inbox messages, fewer when bodies are fetched. */
 const LIMIT = 500;
@@ -21,7 +21,7 @@ const LIMIT_WITH_BODY = 200;
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.auth) return json({ error: 'Not authenticated' }, { status: 401 });
 
-	const { rule } = (await request.json()) as { rule: Rule };
+	const { rule } = (await request.json()) as { rule: ActionRule };
 	if (!rule || typeof rule !== 'object') return json({ error: 'rule required' }, { status: 400 });
 
 	const [upgraded] = upgradeRules([rule], null);

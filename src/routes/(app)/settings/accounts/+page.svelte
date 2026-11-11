@@ -29,7 +29,7 @@
 	// --- Per-row state ---
 	let confirmRemoveId = $state<string | null>(null);
 	// What unlinking the account under confirm would take with it (GET /api/accounts/[id]).
-	type UnlinkLosses = { pendingSends: number; enabledJobs: number; searchIndexed: boolean };
+	type UnlinkLosses = { pendingSends: number; enabledJobs: number; searchIndexed: boolean; rules: number };
 	let removeLosses = $state<UnlinkLosses | null>(null);
 	let colorPickerId = $state<string | null>(null);
 	let rowBusy = $state(false);
@@ -180,13 +180,14 @@
 		}
 	}
 
-	/** "2 scheduled emails won’t be sent, 1 job stops, the search index goes", or '' when nothing would. */
+	/** "2 scheduled emails won’t be sent, 1 job stops, 3 rules are deleted, the search index goes", or '' when nothing would. */
 	function lossSummary(losses: UnlinkLosses): string {
 		const parts: string[] = [];
 		if (losses.pendingSends > 0) {
 			parts.push(`${losses.pendingSends} scheduled ${losses.pendingSends === 1 ? 'email' : 'emails'} won’t be sent`);
 		}
 		if (losses.enabledJobs > 0) parts.push(`${losses.enabledJobs} ${losses.enabledJobs === 1 ? 'job stops' : 'jobs stop'}`);
+		if (losses.rules > 0) parts.push(`${losses.rules} ${losses.rules === 1 ? 'rule is' : 'rules are'} deleted`);
 		if (losses.searchIndexed) parts.push('the search index goes');
 		return parts.join(', ');
 	}

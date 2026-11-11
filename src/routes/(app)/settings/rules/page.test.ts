@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 
 vi.mock('$app/navigation', () => ({ invalidateAll: vi.fn() }));
 
-import type { Rule } from '$lib/types/rules';
+import type { ActionRule } from '$lib/types/rules';
 import Page from './+page.svelte';
 
 beforeEach(() => {
@@ -23,7 +23,7 @@ afterEach(() => {
 	delete (HTMLElement.prototype as unknown as { animate?: unknown }).animate;
 });
 
-const exact: Rule = {
+const exact: ActionRule = {
 	id: 'exact',
 	name: 'Receipts',
 	enabled: true,
@@ -34,7 +34,7 @@ const exact: Rule = {
 };
 
 // As the upgrade leaves a rule that had a condition Jev judged.
-const flagged: Rule = {
+const flagged: ActionRule = {
 	id: 'flagged',
 	name: 'Invoices',
 	enabled: false,
@@ -55,7 +55,7 @@ const flagged: Rule = {
 };
 
 // A rule that only put mail in a tab, and wasn't a plain match on one sender.
-const tabOnly: Rule = {
+const tabOnly: ActionRule = {
 	id: 'tab-only',
 	name: 'Digests to Updates',
 	enabled: false,
@@ -74,7 +74,7 @@ const tabOnly: Rule = {
 };
 
 // A rule that only put one sender's mail in a tab: it became that sender's pin.
-const becamePin: Rule = {
+const becamePin: ActionRule = {
 	id: 'became-pin',
 	name: 'Amazon to Promotions',
 	enabled: false,
@@ -93,7 +93,7 @@ const becamePin: Rule = {
 };
 
 // A tab rule for a sender that was already pinned to another tab: the pin was kept.
-const pinnedElsewhere: Rule = {
+const pinnedElsewhere: ActionRule = {
 	id: 'pinned-elsewhere',
 	name: 'Shop news to Updates',
 	enabled: false,
@@ -119,7 +119,7 @@ const pinnedElsewhere: Rule = {
 };
 
 // A rule that labelled mail and put it in a tab: the label part still runs.
-const tabRemoved: Rule = {
+const tabRemoved: ActionRule = {
 	id: 'tab-removed',
 	name: 'Work mail',
 	enabled: true,
@@ -146,8 +146,8 @@ let previewAnswer: Record<string, number> = { matched: 3, scanned: 3, total: 3 }
 let applied: { body: unknown; savesBefore: number }[] = [];
 
 /** The page's requests, answered; returns the rules it saved, newest last. */
-function stubFetch(): Rule[][] {
-	const saved: Rule[][] = [];
+function stubFetch(): ActionRule[][] {
+	const saved: ActionRule[][] = [];
 	pinned = [];
 	pinsWork = true;
 	previewAnswer = { matched: 3, scanned: 3, total: 3 };
@@ -167,7 +167,7 @@ function stubFetch(): Rule[][] {
 	return saved;
 }
 
-const page = (rules: Rule[]) => render(Page, { props: { data: { rules, labels: [], mailboxes: [] } } as never });
+const page = (rules: ActionRule[]) => render(Page, { props: { data: { rules, labels: [], mailboxes: [] } } as never });
 
 describe('Settings → Rules', () => {
 	it('lists a rule that had a Jev condition under "Needs your attention", with what it said', async () => {
@@ -327,7 +327,7 @@ describe('Settings → Rules', () => {
 
 	// Each reason a tab rule was left a rule, as its owner reads it, and the one-click pin it offers.
 	const sender = { id: 'c7', field: 'from', op: 'contains', value: 'news@shop.example', negate: false } as const;
-	const leftAsRule = (why: string, over: Record<string, unknown> = {}): Rule => ({
+	const leftAsRule = (why: string, over: Record<string, unknown> = {}): ActionRule => ({
 		...pinnedElsewhere,
 		id: `why-${why}`,
 		name: `Why ${why}`,

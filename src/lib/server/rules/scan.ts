@@ -1,8 +1,8 @@
 import type { JMAPClient } from '$lib/jmap/client';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import type { Email, Mailbox } from '$lib/jmap/types';
-import type { Rule } from '$lib/types/rules';
-import { matcherProperties, updatesForEmails, type RuleActionCtx } from './rules-engine';
+import type { ActionRule } from '$lib/types/rules';
+import { matcherProperties, updatesForEmails, type RuleActionCtx } from './engine';
 
 /**
  * Running rules over the mail already in the Inbox, for the rule editor.
@@ -49,7 +49,7 @@ interface SetResult {
 export async function scanInbox(
 	client: JMAPClient,
 	accountId: string,
-	rules: Rule[],
+	rules: ActionRule[],
 	opts: ScanOptions
 ): Promise<ScanResult> {
 	const result: ScanResult = { scanned: 0, matched: 0, applied: 0, failed: 0, failedReason: '', total: 0 };
