@@ -12,12 +12,15 @@ import type { Email } from '$lib/jmap/types';
 import type { Rule } from '$lib/types/rules';
 import { getDb } from './db/index';
 import { runMigrations } from './db/migrate';
+import { getPinCategory, listPins, setPin } from './db/queries/jev-learning';
 import { getRules } from './db/queries/rules';
 import { evaluateRulesForEmail } from './rules-engine';
 import { saveRules } from './rules-store';
-import { retireStoredJevConditions, upgradeRules } from './rules-upgrade';
+import { retireStoredJevConditions, retireStoredTabActions, upgradeRules } from './rules-upgrade';
 
 const ME = 'me@example.test';
+/** The linked-account row whose address is ME: pins are kept under it. */
+const ACCT = 'acct-me';
 
 /** Rules as an earlier version stored them, written straight to the table. */
 function store(email: string, rules: unknown): void {
@@ -67,10 +70,20 @@ const ctx = { inboxId: 'inbox', trashId: 'trash', validMailboxIds: new Set(['inb
 
 beforeAll(() => {
 	runMigrations();
+	getDb()
+		.prepare(`INSERT INTO app_user (id, email, password_hash) VALUES ('user-1', 'u@example.test', 'x')`)
+		.run();
+	getDb()
+		.prepare(
+			`INSERT INTO mail_accounts (id, user_id, email, server_url, jmap_account_id, secret_enc)
+			 VALUES (?, 'user-1', ?, 'https://mail.example', 'jmap-acc', 'x')`
+		)
+		.run(ACCT, ME);
 });
 
 beforeEach(() => {
 	getDb().prepare('DELETE FROM user_rules').run();
+	getDb().prepare('DELETE FROM jev_sender_pins').run();
 });
 
 describe('rules with a condition Jev judged', () => {
@@ -194,7 +207,7 @@ describe('saving rules', () => {
 	});
 
 	it('keeps a rewritten rule as its owner saved it: no flag, switched on', () => {
-		const [flagged] = upgradeRules([rule('mixed', { conditions: [fromShop, jevInvoice] })]);
+		const [flagged] = upgradeRules([rule('mixed', { conditions: [fromShop, jevInvoice] })], null);
 		const { attention: _attention, legacy: _legacy, ...rest } = flagged;
 		const rewritten = { ...rest, enabled: true, conditions: [{ ...fromShop, id: 's1', field: 'subject', value: 'invoice' }] } as Rule;
 		saveRules(ME, [rewritten], cookies);
@@ -205,9 +218,241 @@ describe('saving rules', () => {
 	});
 
 	it('keeps a flagged rule flagged, with its first original, however often it is saved', () => {
-		const flagged = upgradeRules([rule('mixed', { conditions: [fromShop, jevInvoice] })]);
+		const flagged = upgradeRules([rule('mixed', { conditions: [fromShop, jevInvoice] })], null);
 		saveRules(ME, flagged, cookies);
 		saveRules(ME, getRules(ME), cookies);
 		expect(getRules(ME)).toEqual(flagged);
+	});
+});
+
+describe('rules that put mail in an Inbox tab', () => {
+	const toTab = (tab: string) => ({ type: 'setCategory', value: tab });
+	const from = (value: string, over: Record<string, unknown> = {}) => ({ id: 'f1', field: 'from', op: 'contains', value, negate: false, ...over });
+	const label = { type: 'applyLabel', value: 'lbl-work' };
+	const move = { type: 'moveToFolder', value: 'receipts' };
+	/** A rule whose only action is a tab. */
+	const tabRule = (id: string, condition: unknown, tab = 'updates', over: Record<string, unknown> = {}) =>
+		rule(id, { conditions: [condition], actions: [toTab(tab)], ...over });
+	const pins = () => listPins(ACCT).map((p) => [p.sender, p.category]);
+	const step = () => rerunStep('data/rule_tabs_to_pins');
+
+	it('become a sender pin, and are deleted, when all they did was put one sender in a tab', () => {
+		store(ME, [
+			rule('keep'),
+			tabRule('address', from('News@Shop.example')),
+			tabRule('domain', from('@github.com'), 'newsletters'),
+			tabRule('ends', from('@bank.example', { op: 'ends_with' }), 'important'),
+			tabRule('exactly', from('billing@shop.example', { op: 'is' }), 'promotions')
+		]);
+
+		step();
+
+		// Only the rule that wasn't a tab rule is left, untouched.
+		expect(getRules(ME)).toEqual([rule('keep')]);
+		expect(pins()).toEqual([
+			['@bank.example', 'important'],
+			['@github.com', 'newsletters'],
+			['billing@shop.example', 'promotions'],
+			['news@shop.example', 'updates']
+		]);
+	});
+
+	it('leave a pin you already have for that sender as it is, and are still deleted', () => {
+		setPin(ACCT, 'news@shop.example', 'promotions', 5);
+		store(ME, [tabRule('address', from('news@shop.example'), 'updates')]);
+
+		step();
+
+		expect(getRules(ME)).toEqual([]);
+		expect(listPins(ACCT)).toEqual([{ sender: 'news@shop.example', category: 'promotions', createdAt: 5 }]);
+	});
+
+	it('pin an address beside its domain’s pin, as the rule won over the domain before', () => {
+		setPin(ACCT, '@shop.example', 'promotions');
+		store(ME, [tabRule('address', from('news@shop.example'), 'updates')]);
+		step();
+		expect(pins()).toEqual([
+			['@shop.example', 'promotions'],
+			['news@shop.example', 'updates']
+		]);
+	});
+
+	it('let the later of two rules for one sender decide, as it did when both ran', () => {
+		store(ME, [tabRule('first', from('news@shop.example'), 'updates'), tabRule('second', from('news@shop.example'), 'promotions')]);
+		step();
+		expect(getRules(ME)).toEqual([]);
+		expect(pins()).toEqual([['news@shop.example', 'promotions']]);
+	});
+
+	it('only lose the tab when they also move the mail out of the Inbox', () => {
+		store(ME, [
+			rule('moves', { actions: [toTab('updates'), move, { type: 'markRead' }] }),
+			rule('trashes', { actions: [{ type: 'delete' }, toTab('updates')] })
+		]);
+
+		step();
+
+		// No flag: the move takes the mail out of the Inbox, where tabs mean nothing.
+		expect(getRules(ME)).toEqual([
+			rule('moves', { actions: [move, { type: 'markRead' }] }),
+			rule('trashes', { actions: [{ type: 'delete' }] })
+		]);
+		expect(pins()).toEqual([]);
+	});
+
+	it('keep running without the tab, with a note, when they also label the mail', () => {
+		const labelled = rule('labelled', { actions: [label, toTab('newsletters')] });
+		store(ME, [labelled]);
+
+		step();
+
+		const [after] = getRules(ME);
+		expect(after).toMatchObject({ enabled: true, attention: 'tab_removed', actions: [label], conditions: [fromShop] });
+		// The tab it used to set is kept, in the rule as it was.
+		expect(after.legacy).toEqual({ enabled: true, logic: 'allof', conditions: [fromShop], actions: [label, toTab('newsletters')] });
+		// Still an ordinary running rule, and not a pin: a pin wouldn't add the label.
+		expect(evaluateRulesForEmail(shopNewsletter, [after], { ...ctx, validMailboxIds: undefined }, '').firedRuleIds).toEqual(['labelled']);
+		expect(pins()).toEqual([]);
+	});
+
+	it('get the same note when what is left only marks the mail', () => {
+		store(ME, [rule('reads', { actions: [toTab('updates'), { type: 'markRead' }] })]);
+		step();
+		expect(getRules(ME)[0]).toMatchObject({ enabled: true, attention: 'tab_removed', actions: [{ type: 'markRead' }] });
+	});
+
+	it('are switched off and flagged when a pin can’t stand in for them', () => {
+		const subject = { id: 's1', field: 'subject', op: 'contains', value: 'digest', negate: false };
+		const cases: [string, Record<string, unknown>][] = [
+			['two conditions', { conditions: [from('news@shop.example'), subject] }],
+			['not the sender', { conditions: [subject] }],
+			['a bare word', { conditions: [from('shop')] }],
+			['a domain without its @', { conditions: [from('shop.example')] }],
+			['negated', { conditions: [from('news@shop.example', { negate: true })] }],
+			['does not contain', { conditions: [from('news@shop.example', { op: 'not_contains' })] }],
+			['starts with', { conditions: [from('news@shop.example', { op: 'starts_with' })] }],
+			// "From is exactly @domain" never matched any mail: not a pin either.
+			['is a domain', { conditions: [from('@shop.example', { op: 'is' })] }],
+			['a name and address', { conditions: [from('Shop <news@shop.example>')] }]
+		];
+		store(ME, cases.map(([id, over]) => rule(id, { actions: [toTab('updates')], ...over })));
+
+		step();
+
+		const after = getRules(ME);
+		expect(after.map((r) => r.id)).toEqual(cases.map(([id]) => id));
+		for (const r of after) {
+			expect(r).toMatchObject({ enabled: false, attention: 'tab_rule', actions: [] });
+			expect(r.legacy).toMatchObject({ enabled: true, actions: [toTab('updates')] });
+		}
+		// The original conditions are still there to read, and nothing was pinned.
+		expect(after[0].legacy?.conditions).toEqual([from('news@shop.example'), subject]);
+		expect(pins()).toEqual([]);
+	});
+
+	it('are flagged, not pinned, when they were switched off: a pin would start what the rule wasn’t doing', () => {
+		store(ME, [tabRule('off', from('news@shop.example'), 'updates', { enabled: false })]);
+		step();
+		expect(getRules(ME)[0]).toMatchObject({ enabled: false, attention: 'tab_rule' });
+		expect(getRules(ME)[0].legacy).toMatchObject({ enabled: false });
+		expect(pins()).toEqual([]);
+	});
+
+	it('are flagged, not lost, when their account can’t be found', () => {
+		const orphan = tabRule('orphan', from('news@shop.example'));
+		store('gone@example.test', [orphan, rule('moves', { actions: [toTab('updates'), move] })]);
+
+		step();
+
+		const after = getRules('gone@example.test');
+		expect(after[0]).toMatchObject({ id: 'orphan', enabled: false, attention: 'tab_rule', actions: [] });
+		expect(after[0].legacy).toMatchObject({ conditions: orphan.conditions, actions: orphan.actions });
+		// What needs no pin is converted all the same.
+		expect(after[1]).toEqual(rule('moves', { actions: [move] }));
+		expect(getDb().prepare('SELECT COUNT(*) AS n FROM jev_sender_pins').get()).toEqual({ n: 0 });
+	});
+
+	it('find the account whatever the case of its address', () => {
+		store('ME@Example.Test', [tabRule('address', from('news@shop.example'))]);
+		step();
+		expect(getRules('ME@Example.Test')).toEqual([]);
+		expect(getPinCategory(ACCT, 'news@shop.example')).toBe('updates');
+	});
+
+	it('only lose a tab action with no tab picked, which never did anything', () => {
+		store(ME, [rule('half', { actions: [{ type: 'setCategory', value: '' }, label] }), rule('empty', { actions: [{ type: 'setCategory' }] })]);
+		step();
+		expect(getRules(ME)).toEqual([rule('half', { actions: [label] }), rule('empty', { actions: [] })]);
+		expect(pins()).toEqual([]);
+	});
+
+	it('are never pinned when they had a Jev condition: the sender alone is more than the rule matched', () => {
+		// "From the shop AND Jev says it's a receipt -> Updates".
+		const mixed = rule('mixed', { conditions: [from('news@shop.example'), jevInvoice], actions: [toTab('updates')] });
+		store(ME, [mixed]);
+
+		// As on a database upgraded straight past both steps, and one step at a time.
+		rerunStep('data/rules_exact_only');
+		step();
+
+		const [after] = getRules(ME);
+		expect(after).toMatchObject({ enabled: false, attention: 'jev_condition', actions: [], conditions: [from('news@shop.example')] });
+		// The first original, tab and Jev statement included.
+		expect(after.legacy).toEqual({ enabled: true, logic: 'allof', conditions: mixed.conditions, actions: mixed.actions });
+		expect(pins()).toEqual([]);
+
+		// The tab step alone, on a rule the first step never saw.
+		store(ME, [mixed]);
+		step();
+		expect(getRules(ME)[0]).toMatchObject({ enabled: false, attention: 'jev_condition', actions: [] });
+		expect(pins()).toEqual([]);
+	});
+
+	it('change nothing when the step runs again', () => {
+		setPin(ACCT, 'old@pin.example', 'promotions', 5);
+		store(ME, [
+			rule('keep'),
+			tabRule('address', from('news@shop.example')),
+			tabRule('word', from('shop')),
+			rule('labelled', { actions: [label, toTab('newsletters')] }),
+			rule('moves', { actions: [toTab('updates'), move] })
+		]);
+		store('gone@example.test', [tabRule('orphan', from('news@shop.example'))]);
+		step();
+		const once = [stored(ME), stored('gone@example.test'), JSON.stringify(listPins(ACCT))];
+
+		retireStoredTabActions();
+		step();
+		runMigrations();
+		expect([stored(ME), stored('gone@example.test'), JSON.stringify(listPins(ACCT))]).toEqual(once);
+		expect(getRules(ME).map((r) => [r.id, r.attention ?? null])).toEqual([
+			['keep', null],
+			['word', 'tab_rule'],
+			['labelled', 'tab_removed'],
+			['moves', null]
+		]);
+	});
+
+	it('runs once: a later start of the app doesn’t redo it', () => {
+		runMigrations();
+		const late = [tabRule('late', from('news@shop.example'))];
+		store(ME, late);
+		runMigrations();
+		expect(stored(ME)).toBe(JSON.stringify(late));
+		expect(pins()).toEqual([]);
+	});
+
+	it('are converted on save too, when an old browser tab sends one', () => {
+		const cookies = { get: () => undefined, delete: () => {} } as unknown as Cookies;
+		saveRules(
+			ME,
+			[tabRule('address', from('news@shop.example')), tabRule('word', from('shop')), rule('keep')] as unknown as Rule[],
+			cookies
+		);
+		expect(getRules(ME).map((r) => [r.id, r.attention ?? null])).toEqual([
+			['word', 'tab_rule'],
+			['keep', null]
+		]);
+		expect(pins()).toEqual([['news@shop.example', 'updates']]);
 	});
 });

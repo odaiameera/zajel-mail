@@ -54,6 +54,42 @@ const flagged: Rule = {
 	}
 };
 
+// A rule that only put mail in a tab, and wasn't a plain match on one sender.
+const tabOnly: Rule = {
+	id: 'tab-only',
+	name: 'Digests to Updates',
+	enabled: false,
+	logic: 'allof',
+	conditions: [{ id: 'c3', field: 'subject', op: 'contains', value: 'digest', negate: false }],
+	actions: [],
+	createdAt: 3,
+	attention: 'tab_rule',
+	legacy: {
+		enabled: true,
+		logic: 'allof',
+		conditions: [{ id: 'c3', field: 'subject', op: 'contains', value: 'digest', negate: false }] as never,
+		actions: [{ type: 'setCategory', value: 'updates' }]
+	}
+};
+
+// A rule that labelled mail and put it in a tab: the label part still runs.
+const tabRemoved: Rule = {
+	id: 'tab-removed',
+	name: 'Work mail',
+	enabled: true,
+	logic: 'allof',
+	conditions: [{ id: 'c4', field: 'from', op: 'contains', value: '@work.example', negate: false }],
+	actions: [{ type: 'markRead' }],
+	createdAt: 4,
+	attention: 'tab_removed',
+	legacy: {
+		enabled: true,
+		logic: 'allof',
+		conditions: [{ id: 'c4', field: 'from', op: 'contains', value: '@work.example', negate: false }] as never,
+		actions: [{ type: 'markRead' }, { type: 'setCategory', value: 'newsletters' }]
+	}
+};
+
 /** The page's requests, answered; returns the rules it saved, newest last. */
 function stubFetch(): Rule[][] {
 	const saved: Rule[][] = [];
@@ -123,5 +159,46 @@ describe('Settings → Rules', () => {
 		await fireEvent.click(screen.getByText('Delete rule'));
 		await waitFor(() => expect(saved).toHaveLength(1));
 		expect(saved[0].map((r) => r.id)).toEqual(['exact']);
+	});
+
+	it('offers no "move to an Inbox tab" action: tabs are not a rule’s to set', () => {
+		stubFetch();
+		page([exact]);
+		const options = [...document.querySelectorAll('option')].map((o) => o.textContent?.trim());
+		expect(options).toContain('Apply label');
+		expect(options.some((o) => /tab/i.test(o ?? ''))).toBe(false);
+	});
+
+	it('lists a rule that only set a tab, switched off, with the tab and what it matched', async () => {
+		stubFetch();
+		page([exact, tabOnly]);
+
+		const list = screen.getByRole('heading', { name: 'Needs your attention' }).nextElementSibling as HTMLElement;
+		await fireEvent.click(within(list).getByText('Digests to Updates'));
+
+		expect(screen.getByText('This rule is switched off')).toBeTruthy();
+		expect(screen.getByText(/All it did was move mail to the Updates tab/)).toBeTruthy();
+		expect(screen.getByText('Subject contains “digest”')).toBeTruthy();
+		// Nothing left for it to do: it can't be saved as a rule until it is given an action.
+		expect((screen.getByRole('button', { name: 'Save as exact rule' }) as HTMLButtonElement).disabled).toBe(true);
+	});
+
+	it('notes a rule that lost only its tab, leaves it running, and drops the note when told', async () => {
+		const saved = stubFetch();
+		page([tabRemoved]);
+
+		const list = screen.getByRole('heading', { name: 'Needs your attention' }).nextElementSibling as HTMLElement;
+		// Still an ordinary rule, with its switch.
+		expect(within(list).getByRole('button', { name: 'Disable rule' })).toBeTruthy();
+		expect(screen.getByText('This rule no longer sets a tab')).toBeTruthy();
+		expect(screen.getByText(/It used to move mail to the Newsletters tab as well/)).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
+		await waitFor(() => expect(saved).toHaveLength(1));
+
+		expect(saved[0][0]).toMatchObject({ id: 'tab-removed', enabled: true, actions: [{ type: 'markRead' }] });
+		expect(saved[0][0]).not.toHaveProperty('attention');
+		expect(saved[0][0]).not.toHaveProperty('legacy');
+		await waitFor(() => expect(screen.queryByRole('heading', { name: 'Needs your attention' })).toBeNull());
 	});
 });

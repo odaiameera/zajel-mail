@@ -1,6 +1,6 @@
 import { getDb } from './index';
 import { repairAiSettingsColumns } from '$lib/server/ai/settings';
-import { retireStoredJevConditions } from '$lib/server/rules-upgrade';
+import { retireStoredJevConditions, retireStoredTabActions } from '$lib/server/rules-upgrade';
 import { errorFields, logEvent } from '$lib/server/log';
 
 /**
@@ -27,7 +27,14 @@ const MIGRATION_SOURCES = import.meta.glob('./migrations/*.sql', {
 const DATA_STEPS: { name: string; needs: string[]; run: () => void }[] = [
 	// Rules are exact-match only: rules with a condition Jev judged are
 	// switched off and flagged for their owner (see rules-upgrade.ts).
-	{ name: 'data/rules_exact_only', needs: ['004_rules.sql'], run: retireStoredJevConditions }
+	{ name: 'data/rules_exact_only', needs: ['004_rules.sql'], run: retireStoredJevConditions },
+	// Tabs belong to Jev and to sender pins: no rule sets one any more. A
+	// rule that only did that for one sender becomes that account's pin.
+	{
+		name: 'data/rule_tabs_to_pins',
+		needs: ['004_rules.sql', '006_auth.sql', '014_jev_learning.sql'],
+		run: retireStoredTabActions
+	}
 ];
 
 /** A migration that did not apply. The server refuses requests until it does. */

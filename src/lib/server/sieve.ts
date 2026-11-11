@@ -6,7 +6,6 @@ import {
 	type RuleAction,
 	type RuleConditionOp
 } from '$lib/types/rules';
-import { CATEGORY_KEYWORDS, categoryKeywordPatch, isInboxCategory } from '$lib/types/categories';
 import type { Mailbox } from '$lib/jmap/types';
 import { findLabelsParentId, isLabelMailbox } from '$lib/types/labels';
 
@@ -186,13 +185,6 @@ function compileAction(a: RuleAction, ctx: SieveContext): string {
 		}
 		case 'markRead':       return `addflag "\\\\Seen";`;
 		case 'markImportant':  return `addflag "\\\\Flagged";`;
-		case 'setCategory': {
-			// Inbox tabs are keywords: clear the other tabs, set this one.
-			if (!isInboxCategory(a.value)) return '';
-			const on = Object.entries(categoryKeywordPatch(a.value)).filter(([, v]) => v).map(([k]) => k);
-			const all = Object.values(CATEGORY_KEYWORDS).map((k) => `"${k}"`).join(', ');
-			return `removeflag [${all}];${on.length ? ` addflag "${on[0]}";` : ''}`;
-		}
 		case 'delete':
 			// Never `discard`: that destroys the message at delivery. Filing it
 			// into Trash matches the app's own engine, which doesn't stop either.

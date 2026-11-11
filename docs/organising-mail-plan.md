@@ -117,7 +117,7 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 |---|---|---|
 | 0 | **Done.** Tested on the real server: Stalwart does not run the Sieve script at delivery | — |
 | 1 | **Done.** Rules become exact-match only; Jev rule conditions and their endpoints removed | Accounts with Jev rules switch runner |
-| 2 | Tabs belong to Jev: "set tab" removed from rules, tab rules become pins | Pins now act with Jev off |
+| 2 | **Done.** Tabs belong to Jev: "set tab" removed from rules, tab rules become pins | Pins now act with Jev off |
 | 3 | One engine: preview and apply share it; Sieve removed; the old script deactivated on the server | Low: the script wasn't running |
 | 4 | Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
 | 5 | Rules table (028) and validated saves | Splitting multi-target rules |
@@ -150,4 +150,4 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 
 ## Status
 
-Stages 0 and 1 are done. Stage 2 is next; later stages follow one PR at a time.
+Stages 0, 1 and 2 are done. Later stages follow one PR at a time.

@@ -1,13 +1,5 @@
 import type { Email } from '$lib/jmap/types';
-import {
-	effectiveActions,
-	isRunnable,
-	isUsableCondition,
-	ruleHolds,
-	type Rule,
-	type RuleCondition
-} from '$lib/types/rules';
-import { categoryKeywordPatch, isInboxCategory, type InboxCategory } from '$lib/types/categories';
+import { isRunnable, isUsableCondition, ruleHolds, type Rule, type RuleCondition } from '$lib/types/rules';
 
 export interface RuleActionCtx {
 	inboxId?: string;
@@ -99,8 +91,6 @@ export interface RuleOutcome {
 	addMailboxIds: Set<string>;
 	removeMailboxIds: Set<string>;
 	keywords: Record<string, boolean>;
-	/** The Inbox tab a rule chose. */
-	category?: InboxCategory;
 	/** Ids of the rules that matched, in order. */
 	firedRuleIds: string[];
 }
@@ -109,7 +99,11 @@ export function emptyOutcome(): RuleOutcome {
 	return { addMailboxIds: new Set(), removeMailboxIds: new Set(), keywords: {}, firedRuleIds: [] };
 }
 
-/** Fold one rule's actions into an outcome. */
+/**
+ * Fold one rule's actions into an outcome. An action of a kind rules no
+ * longer have (an old "move to an Inbox tab") does nothing: tabs are never
+ * a rule's to set.
+ */
 function applyActionsToOutcome(
 	email: Email,
 	actions: Rule['actions'],
@@ -129,12 +123,6 @@ function applyActionsToOutcome(
 				break;
 			case 'markImportant':
 				outcome.keywords['$flagged'] = true;
-				break;
-			case 'setCategory':
-				if (isInboxCategory(action.value)) {
-					Object.assign(outcome.keywords, categoryKeywordPatch(action.value));
-					outcome.category = action.value;
-				}
 				break;
 			case 'moveToFolder':
 				if (action.value && targetExists(ctx, action.value)) {
@@ -177,7 +165,7 @@ export function evaluateRulesForEmail(
 	for (const rule of enabledRules) {
 		if (!isRunnable(rule) || !matchesRule(email, rule, bodyText)) continue;
 		outcome.firedRuleIds.push(rule.id);
-		if (applyActionsToOutcome(email, effectiveActions(rule), ctx, outcome).stop) break;
+		if (applyActionsToOutcome(email, rule.actions, ctx, outcome).stop) break;
 	}
 	return outcome;
 }

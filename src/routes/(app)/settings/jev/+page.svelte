@@ -324,16 +324,17 @@
 		<p class="text-xs text-text-tertiary mb-3">
 			Mail from a pinned sender always goes to its tab — Jev isn’t asked. Pin one from the message
 			that appears after you move an email, or add it here; <span class="font-mono">@domain</span> pins
-			everyone at a domain, and an address pin wins over its domain’s. Pins are applied by the same
-			pass that sorts new mail, so they act while Inbox tabs and “Let Jev read new mail” are both on.
+			everyone at a domain, and an address pin wins over its domain’s. Pins are yours, not Jev’s: they
+			act on new mail whenever Inbox tabs are on for the account, with “Let Jev read new mail” on or
+			off, and nothing is sent anywhere for them.
 		</p>
 		{#each data.jevAccounts as account (account.id)}
 			{#if data.jevAccounts.length > 1}
 				<p class="text-xs font-medium text-text-secondary mt-3 mb-1.5">{account.email}</p>
 			{/if}
-			{#if account.pins.length > 0 && !(current(account, 'inboxTabs') && current(account, 'jevEnabled'))}
+			{#if account.pins.length > 0 && !current(account, 'inboxTabs')}
 				<p class="text-xs text-warning mb-1.5">
-					These pins do nothing until Inbox tabs and “Let Jev read new mail” are on for {account.email}.
+					These pins do nothing until Inbox tabs are on for {account.email}.
 				</p>
 			{/if}
 			{#if account.pins.length > 0}

@@ -4,6 +4,8 @@ const accounts = vi.hoisted(() => ({
 	list: [] as { account: { id: string; email: string }; auth: { apiUrl: string; authHeader: string } }[],
 	reauth: vi.fn(),
 	jevOn: new Set<string>(),
+	/** Accounts whose Inbox holds new mail for their sender pins. */
+	holding: new Set<string>(),
 	mode: 'live' as 'live' | 'off'
 }));
 vi.mock('$lib/server/auth/accounts', () => ({
@@ -14,6 +16,7 @@ vi.mock('$lib/server/db/queries/jev-settings', () => ({
 	getJevSettings: (id: string) => ({ jevEnabled: accounts.jevOn.has(id) })
 }));
 vi.mock('./client', () => ({ jevMode: () => accounts.mode }));
+vi.mock('./hold', () => ({ inboxHoldOn: (id: string) => accounts.holding.has(id) }));
 
 import { refreshJevWatchers, startJevWatchers, stopJevWatchers } from './stream';
 
@@ -36,6 +39,7 @@ const account = (id: string) => ({
 beforeEach(() => {
 	accounts.list = [account('a'), account('b')];
 	accounts.jevOn = new Set(['a']);
+	accounts.holding = new Set();
 	accounts.mode = 'live';
 	accounts.reauth.mockReset();
 });
@@ -75,6 +79,24 @@ describe('Jev’s event streams', () => {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('opens a stream for an account whose Inbox waits on sender pins, though Jev can’t answer', async () => {
+		accounts.mode = 'off';
+		accounts.holding = new Set(['b']);
+		const stream = openStream();
+		const fetchMock = vi.fn().mockResolvedValue(stream.response);
+		vi.stubGlobal('fetch', fetchMock);
+		const runPass = vi.fn(async () => {});
+
+		startJevWatchers(runPass);
+
+		// Without it every new message in that Inbox would wait for the minute's run.
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+		expect(fetchMock.mock.calls[0][0]).toBe('https://mail.example/jmap/b/eventsource/?types=Email&closeafter=no&ping=60');
+		await vi.waitFor(() => expect(runPass).toHaveBeenCalledWith('b', 'b@example.test', accounts.list[1].auth, { fromStream: true }), {
+			timeout: 3000
+		});
 	});
 
 	it('stops and flags the account when the mail server refuses its password', async () => {

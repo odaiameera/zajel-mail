@@ -37,23 +37,28 @@ import { decideSpam, SPAM_QUESTIONS, spamAnswers, type SpamAction } from './spam
 import { isUrgent, URGENT_QUESTION, URGENT_QUESTION_ID } from '$lib/server/telegram/urgent';
 import { flushAlerts, queueUrgent, urgentAlertsWanted } from '$lib/server/telegram/notifier';
 import { errorFields, logEvent } from '$lib/server/log';
-import { isHeld, JEV_SORTED_KEYWORD } from '$lib/inbox-hold';
+import { INBOX_HOLD_MS, isHeld, JEV_SORTED_KEYWORD } from '$lib/inbox-hold';
 import type { JevQuestion, JevResponse } from './types';
 import { startJevWatchers } from './stream';
 import { applyRulesNow } from '$lib/server/rules-scheduler';
 
 /**
- * Jev triaging new Inbox mail a beat after it lands: within seconds, from
- * each account's push stream (see stream.ts), and as a fallback the same
- * shape as the rules scheduler — every minute, plus a catch-up for whoever
- * is using the app. Only accounts that let Jev read their mail are touched,
- * and only mail that arrived after that was switched on.
+ * Sorting new Inbox mail into its tab a beat after it lands: within seconds,
+ * from each account's push stream (see stream.ts), and as a fallback the
+ * same shape as the rules scheduler — every minute, plus a catch-up for
+ * whoever is using the app.
  *
- * Each email gets one Jev call holding everything there is to ask: the
- * Inbox tab (when tabs are on), and the spam and urgency questions when
- * those are on. Rules are not Jev's: the rules scheduler runs them, and a
- * pass asks it for a run before it sorts, so a rule's move or label is in
- * place first and never waits on TypeSafe.
+ * Two things put new mail in a tab. Your sender pins do whenever the Inbox
+ * has tabs, with Jev on, off or unreachable: a pin is your decision, and
+ * nothing is asked of anyone. Jev does for the accounts that let it read
+ * their mail, and only mail that arrived after that was switched on is ever
+ * sent to it.
+ *
+ * Each email Jev reads gets one call holding everything there is to ask:
+ * the Inbox tab (when tabs are on and no pin decides it), and the spam and
+ * urgency questions when those are on. Rules are not Jev's: the rules
+ * scheduler runs them, and a pass asks it for a run before it sorts, so a
+ * rule's move or label is in place first and never waits on TypeSafe.
  *
  * Arrivals are queued in jev_decisions and judged from the queue: an email
  * whose call fails is retried on the next run, and given up on after
@@ -285,13 +290,18 @@ function spamActionLabel(action: SpamAction | null, mode: SpamMode): string | nu
 
 /**
  * The tab for one email still in Important: your pin for the sender wins,
- * then Jev's own pick. Neither overrules a tab the message already has,
- * whether you put it there or a rule did.
+ * then Jev's own pick. Neither overrules a tab the message already has.
+ * `wantsTabs` is false for mail you put in a tab yourself.
+ *
+ * A message already sitting in its pin's tab was put there by the pin, on
+ * an earlier pass that couldn't reach Jev for the rest: the pin is still
+ * what decided it, and the record says so.
  */
 function planFor(judged: JudgedEmail, wantsTabs: boolean, pin: SenderPin | null): Plan {
 	const outcome = emptyOutcome();
-	const open = wantsTabs && categoryOf(judged.email.keywords) === 'important';
-	const pinned = open && pin ? pin : null;
+	const current = categoryOf(judged.email.keywords);
+	const open = wantsTabs && current === 'important';
+	const pinned = pin && wantsTabs && (open || current === pin.category) ? pin : null;
 	const tab = pinned ? pinned.category : open ? tabToApply(judged) : null;
 	if (tab && tab !== 'important') Object.assign(outcome.keywords, categoryKeywordPatch(tab));
 	return { outcome, tab, pin: pinned };
@@ -391,23 +401,40 @@ export async function sortNewMail(
 	opts: PassOptions = {}
 ): Promise<void> {
 	const settings = getJevSettings(accountRowId);
-	if (!settings.jevEnabled || jevMode() === 'off') return;
-	if (opts.fromStream && typesafeFailing.has(accountRowId)) return;
+	const wantsTabs = settings.inboxTabs;
+	// Whether Jev may be asked about this account's mail at all.
+	const jevOn = settings.jevEnabled && jevMode() !== 'off';
+	// Sender pins are yours, not Jev's: with tabs on they put a sender's new
+	// mail in its tab whether Jev is on, off or can't be reached. (The Inbox
+	// holds new mail for exactly these passes: see inboxHoldOn.)
+	const pins = wantsTabs ? listPins(accountRowId) : [];
+	if (!jevOn && pins.length === 0) return;
+	if (jevOn && opts.fromStream && typesafeFailing.has(accountRowId)) return;
 	// A scheduled pass tries TypeSafe again; if it still fails, it says so.
 	if (!opts.fromStream) typesafeFailing.delete(accountRowId);
-	if (!settings.sortCursor) {
-		updateJevSettings(accountRowId, { sortCursor: now.toISOString() }, now);
-		return;
+
+	let cursor = settings.sortCursor;
+	if (!cursor) {
+		if (jevOn) {
+			// Jev reads only what arrives from here on.
+			updateJevSettings(accountRowId, { sortCursor: now.toISOString() }, now);
+			return;
+		}
+		// Pins only, so nothing leaves the server: start with the mail the
+		// Inbox may be holding back for this very pass (see inbox-hold), and
+		// none of it waits out the hold for nothing.
+		cursor = new Date(now.getTime() - INBOX_HOLD_MS).toISOString();
+		updateJevSettings(accountRowId, { sortCursor: cursor }, now);
 	}
 
-	const wantsTabs = settings.inboxTabs;
-	const spamMode = settings.spamMode;
+	// With Jev off there is nothing to ask, about spam or anything else.
+	const spamMode: SpamMode = jevOn ? settings.spamMode : 'off';
 	// Telegram alerts for urgent mail: one more question for Jev, new mail only.
-	const alertUrgent = urgentAlertsWanted(accountRowId);
+	const alertUrgent = jevOn && urgentAlertsWanted(accountRowId);
 	if (!wantsTabs && spamMode === 'off' && !alertUrgent) {
 		// Nothing to ask: keep the cursor current, so switching tabs on later
 		// doesn't reach back into mail from before.
-		advanceSortCursor(accountRowId, settings.sortCursor, now.toISOString(), now);
+		advanceSortCursor(accountRowId, cursor, now.toISOString(), now);
 		return;
 	}
 
@@ -444,7 +471,7 @@ export async function sortNewMail(
 				'Email/query',
 				{
 					accountId,
-					filter: { operator: 'AND', conditions: [{ inMailbox: mailboxId }, { after: settings.sortCursor }] },
+					filter: { operator: 'AND', conditions: [{ inMailbox: mailboxId }, { after: cursor }] },
 					sort: [{ property: 'receivedAt', isAscending: true }],
 					limit: QUEUE_PAGE
 				},
@@ -478,15 +505,17 @@ export async function sortNewMail(
 	// page is that one second: then stepping back would never move it on.
 	const lastSeen = resumeAt.sort()[0];
 	const nextCursor = lastSeen
-		? Date.parse(lastSeen) - 1000 > Date.parse(settings.sortCursor)
+		? Date.parse(lastSeen) - 1000 > Date.parse(cursor)
 			? new Date(Date.parse(lastSeen) - 1000).toISOString()
 			: lastSeen
-		: new Date(Math.max(Date.parse(settings.sortCursor), now.getTime() - CURSOR_LOOKBACK_MS)).toISOString();
-	advanceSortCursor(accountRowId, settings.sortCursor, nextCursor, now);
+		: new Date(Math.max(Date.parse(cursor), now.getTime() - CURSOR_LOOKBACK_MS)).toISOString();
+	advanceSortCursor(accountRowId, cursor, nextCursor, now);
 
 	// TypeSafe rate-limited every call of a recent pass: it asked for a pause,
 	// so the queue waits (what arrives meanwhile is queued above all the same).
-	if ((rateLimitedUntil.get(accountRowId) ?? 0) > now.getTime()) return;
+	// A pinned sender's mail doesn't wait with it: its tab needs no answer.
+	const paused = jevOn && (rateLimitedUntil.get(accountRowId) ?? 0) > now.getTime();
+	if (paused && pins.length === 0) return;
 
 	// Fetched only once there is mail to judge (contacts need the session).
 	let judgeCtx: JudgeContext | null = null;
@@ -497,6 +526,7 @@ export async function sortNewMail(
 		inboxId: inbox.id,
 		junkId: junk?.id ?? null,
 		spamMode,
+		jev: !jevOn ? 'off' : paused ? 'wait' : 'ask',
 		judge: async () =>
 			(judgeCtx ??= {
 				accountRowId,
@@ -505,14 +535,15 @@ export async function sortNewMail(
 				session: await fetchSession(auth).catch(() => null)
 			}),
 		// A pinned sender's tab is already decided: Jev isn't asked for it.
-		pins: wantsTabs ? listPins(accountRowId) : [],
+		pins,
 		now,
 		writes: { attempted: 0, refused: 0, refusal: null, unreachable: null }
 	};
 
 	// Jev can be switched off while a pass runs. Look again before each
-	// batch, so nothing more is sent once it is.
-	const stillOn = () => getJevSettings(accountRowId).jevEnabled;
+	// batch, so nothing more is sent once it is. (A pass that asks Jev
+	// nothing has nothing to stop.)
+	const stillOn = () => !jevOn || getJevSettings(accountRowId).jevEnabled;
 
 	// 2. New arrivals, and earlier failures among them: spam, urgency and tab.
 	if (!stillOn()) return;
@@ -520,7 +551,7 @@ export async function sortNewMail(
 
 	// 3. Then mail that was already in the Inbox when you asked Jev to sort
 	// it: its tab only — spam checks and alerts apply to new mail only.
-	if (wantsTabs && !opts.fromStream && stillOn()) {
+	if (batch.jev === 'ask' && wantsTabs && !opts.fromStream && stillOn()) {
 		await judgeAndApply(batch, listPendingEmailIds(accountRowId, BACKFILL_BATCH, true), true, false, false);
 	}
 	noteWrites(accountRowId, batch.writes);
@@ -534,6 +565,12 @@ interface Batch {
 	/** Watched while spam checking is on. */
 	junkId: string | null;
 	spamMode: SpamMode;
+	/**
+	 * What may be asked of Jev in this pass. `ask`: everything. `wait`:
+	 * nothing for now (TypeSafe asked for a pause); the mail stays queued.
+	 * `off`: nothing, as Jev doesn't read this account; only pins act.
+	 */
+	jev: 'ask' | 'wait' | 'off';
 	judge: () => Promise<JudgeContext>;
 	pins: SenderPin[];
 	now: Date;
@@ -567,53 +604,66 @@ async function judgeAndApply(
 	const chosen = correctedEmailIds(b.accountRowId, judgeable.map((e) => e.id));
 	const tabOpen = (email: Email) => wantsTabs && !chosen.has(email.id) && categoryOf(email.keywords) === 'important';
 	// Origin evidence goes along only while this batch's spam is checked.
-	const judged = await judgeEmails(b.client, b.accountId, judgeable, { ...(await b.judge()), security: checkSpam }, (email) =>
-		// Junk mail is only checked for spam: no tab.
-		inJunk(email)
-			? SPAM_QUESTIONS
-			: {
-					...(checkSpam ? SPAM_QUESTIONS : {}),
-					...(alertUrgent ? { [URGENT_QUESTION_ID]: URGENT_QUESTION } : {}),
-					// No point asking for a tab the message already has: Jev won't overrule it.
-					...(tabOpen(email) && !pinOf(email) ? tabQuestion() : {})
-				}
-	);
+	// When Jev isn't to be asked, nothing is: no facts are gathered either.
+	const judged: JudgedEmail[] =
+		b.jev === 'ask'
+			? await judgeEmails(b.client, b.accountId, judgeable, { ...(await b.judge()), security: checkSpam }, (email) =>
+					// Junk mail is only checked for spam: no tab.
+					inJunk(email)
+						? SPAM_QUESTIONS
+						: {
+								...(checkSpam ? SPAM_QUESTIONS : {}),
+								...(alertUrgent ? { [URGENT_QUESTION_ID]: URGENT_QUESTION } : {}),
+								// No point asking for a tab the message already has: Jev won't overrule it.
+								...(tabOpen(email) && !pinOf(email) ? tabQuestion() : {})
+							}
+				)
+			: judgeable.map((email) => ({ email, facts: null, response: null, decision: null, error: null }));
 
 	const asked = judged.filter((j) => j.facts);
-	// TypeSafe rate-limited every call: it asked for a pause, so this account's
-	// queue waits a few minutes instead of knocking again every pass.
+	// TypeSafe failed this whole pass, so no email is charged for it.
+	let outage = false;
 	if (asked.length && asked.every((j) => j.errorStatus === 429)) {
+		// TypeSafe rate-limited every call: it asked for a pause, so this
+		// account's queue waits a few minutes instead of knocking again every pass.
 		rateLimitedUntil.set(b.accountRowId, now + RATE_LIMIT_PAUSE_MS);
 		typesafeFailing.add(b.accountRowId);
 		noteFailure('typesafe', b.accountRowId, 'typesafe_rate_limited', { count: asked.length, error: asked[0].error });
-		return;
-	}
-	// Every email that was asked failed: TypeSafe is down, not these emails.
-	// Charging each an attempt would let a few minutes' outage fail them for
-	// good, urgent ones included, so they wait for the next pass instead.
-	// A refusal is not an outage, though: TypeSafe answered, and said no to
-	// these requests (a 4xx about them, not the key, the model or its load).
-	// Every request refused is charged to its email and recorded, or the
-	// same mail would be sent again every pass for ever, none of it ever
-	// getting its tab, with nothing to say why.
-	if (asked.length && asked.every((j) => j.error) && !asked.every((j) => j.refused)) {
+		outage = true;
+	} else if (asked.length && asked.every((j) => j.error) && !asked.every((j) => j.refused)) {
+		// Every email that was asked failed: TypeSafe is down, not these emails.
+		// Charging each an attempt would let a few minutes' outage fail them for
+		// good, urgent ones included, so they wait for the next pass instead.
+		// A refusal is not an outage, though: TypeSafe answered, and said no to
+		// these requests (a 4xx about them, not the key, the model or its load).
+		// Every request refused is charged to its email and recorded, or the
+		// same mail would be sent again every pass for ever, none of it ever
+		// getting its tab, with nothing to say why.
 		typesafeFailing.add(b.accountRowId);
 		noteFailure('typesafe', b.accountRowId, 'typesafe_unavailable', { count: asked.length, error: asked[0].error });
-		return;
+		outage = true;
+	} else {
+		if (asked.length) noteRecovered('typesafe', b.accountRowId, 'typesafe_recovered');
+		const failed = judged.filter((j) => j.error);
+		if (failed.length) noteFailure('judge', b.accountRowId, 'judge_failed', { failed: failed.length, error: failed[0].error });
+		else if (b.jev === 'ask') noteRecovered('judge', b.accountRowId, 'judge_recovered');
 	}
-	if (asked.length) noteRecovered('typesafe', b.accountRowId, 'typesafe_recovered');
-	const failed = judged.filter((j) => j.error);
-	if (failed.length) noteFailure('judge', b.accountRowId, 'judge_failed', { failed: failed.length, error: failed[0].error });
-	else noteRecovered('judge', b.accountRowId, 'judge_recovered');
 
 	// Plan each email. A failed call is retried next run, until it has failed
 	// for good. Spam goes first: mail that goes to Junk gets no tab.
 	const plans = new Map<string, Plan>();
 	const toJunk = new Set<string>();
 	for (const j of judged) {
-		if (j.error) {
-			// Rate limited: TypeSafe is busy, so it isn't charged to the email.
-			if (j.errorStatus !== 429) recordFailure(b.accountRowId, j.email.id, j.error, now);
+		if (j.error || b.jev === 'wait') {
+			// No answer from Jev, for now: the email stays queued. One that failed
+			// on its own is charged an attempt; an outage or a rate limit is
+			// TypeSafe's doing, not the email's.
+			if (j.error && !outage && j.errorStatus !== 429) recordFailure(b.accountRowId, j.email.id, j.error, now);
+			// A pinned sender's tab was never Jev's to decide, so it doesn't wait
+			// for Jev either: the message goes to its tab now, and shows there.
+			// Whatever else was to be asked about it is asked on a later pass.
+			const pin = !inJunk(j.email) && tabOpen(j.email) ? pinOf(j.email) : null;
+			if (pin) plans.set(j.email.id, planFor({ ...j, decision: null }, true, pin));
 			continue;
 		}
 		const verdict = checkSpam ? spamAnswers(j.response?.answers) : null;
@@ -693,10 +743,18 @@ async function judgeAndApply(
 	// Record.
 	for (const j of judged) {
 		const plan = plans.get(j.email.id);
-		if (!plan || j.error) continue; // failures were recorded above
+		// Failures were recorded above; mail Jev hasn't answered for stays queued.
+		if (!plan || j.error || b.jev === 'wait') continue;
 		const writeError = notWritten.get(j.email.id);
 		if (writeError !== undefined) {
 			recordFailure(b.accountRowId, j.email.id, writeError, now);
+			continue;
+		}
+		// With Jev off, a pin's doing is the only decision there is to record.
+		// The rest was let through as it came: it counts as never sorted, so
+		// "sort the mail already in your Inbox" offers it if Jev is switched on.
+		if (b.jev === 'off' && !plan.pin) {
+			markSkipped(b.accountRowId, j.email.id, now);
 			continue;
 		}
 		const applied = !moved.has(j.email.id);
@@ -722,7 +780,7 @@ async function judgeAndApply(
 	// on its way there.
 	// Every alert is queued before any is sent: the emails are already marked
 	// done, so one not queued before a crash would never be alerted.
-	if (alertUrgent) {
+	if (alertUrgent && b.jev === 'ask') {
 		const flushFor = new Set<string>();
 		for (const j of judged) {
 			if (j.error || inJunk(j.email) || toJunk.has(j.email.id) || !isUrgent(j.response)) continue;

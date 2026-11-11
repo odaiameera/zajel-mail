@@ -1,10 +1,10 @@
-import { isInboxCategory } from './categories';
-
 /**
  * A rule matches mail exactly: by sender, recipient, subject, body, size or
- * attachment. Rules once also took a plain-English condition that Jev
- * judged; those are gone, and a stored rule that still has one is switched
- * off and listed for its owner to rewrite (see `RuleAttention`).
+ * attachment, and files it: into a folder, under a label, read, flagged or
+ * in Trash. Rules once also took a plain-English condition that Jev judged,
+ * and could put mail in an Inbox tab. Both are gone: the tabs belong to
+ * Jev and to sender pins. A stored rule that relied on either is listed for
+ * its owner (see `RuleAttention`).
  */
 export type RuleConditionField = 'from' | 'to' | 'subject' | 'body' | 'size' | 'hasAttachment';
 export type RuleConditionOp = 'contains' | 'not_contains' | 'is' | 'starts_with' | 'ends_with';
@@ -32,24 +32,30 @@ export type RuleActionType =
 	| 'applyLabel'
 	| 'markRead'
 	| 'markImportant'
-	| 'setCategory'
 	| 'delete'
 	| 'stopProcessing';
 
 export interface RuleAction {
 	type: RuleActionType;
-	/** Mailbox id for folder/label actions; the tab for `setCategory`. */
+	/** Mailbox id for folder/label actions. */
 	value?: string;
 }
 
 /**
  * Why a rule is listed under "Needs your attention" on the rules page.
- * `jev_condition`: it had a condition Jev judged, which rules no longer
- * have. The rule is switched off, and never runs until its owner has
- * rewritten it with exact conditions: without the Jev condition it would
- * match more mail than it was written for.
+ *
+ * - `jev_condition`: it had a condition Jev judged, which rules no longer
+ *   have. The rule is switched off, and never runs until its owner has
+ *   rewritten it with exact conditions: without the Jev condition it would
+ *   match more mail than it was written for.
+ * - `tab_rule`: all it did was put mail in an Inbox tab, which rules no
+ *   longer do, and it couldn't be turned into a sender pin. It is switched
+ *   off too: with its only action gone there is nothing for it to do.
+ * - `tab_removed`: it put mail in a tab beside something else (a label,
+ *   say). The tab part is gone and the rest still runs; this is only a note
+ *   for the owner, who can dismiss it.
  */
-export type RuleAttention = 'jev_condition';
+export type RuleAttention = 'jev_condition' | 'tab_rule' | 'tab_removed';
 
 /**
  * A rule as it was before an upgrade changed it, kept so its owner can read
@@ -110,7 +116,7 @@ export function hasOnlyKnownConditions(rule: Pick<Rule, 'conditions'>): boolean 
 
 /** Whether the rule is switched off until its owner rewrites it. */
 export function needsRewrite(rule: Pick<Rule, 'attention'>): boolean {
-	return rule.attention === 'jev_condition';
+	return rule.attention === 'jev_condition' || rule.attention === 'tab_rule';
 }
 
 /**
@@ -137,9 +143,4 @@ export function ruleHolds(
 	if (conds.length === 0) return false; // never match-everything
 	const results = conds.map((c) => conditionHolds(c, matches(c)));
 	return rule.logic === 'anyof' ? results.some(Boolean) : results.every(Boolean);
-}
-
-/** The actions a rule takes: a tab action with no tab picked is left out. */
-export function effectiveActions(rule: Rule): RuleAction[] {
-	return rule.actions.filter((a) => a.type !== 'setCategory' || isInboxCategory(a.value));
 }

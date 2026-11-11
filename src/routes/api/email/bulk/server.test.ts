@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	recordSenderMoves: vi.fn(),
 	forgetSenderMoves: vi.fn(),
 	getPinCategory: vi.fn(),
+	inboxTabs: true,
 	jevEnabled: true
 }));
 
@@ -32,7 +33,7 @@ vi.mock('$lib/server/db/queries/jev-learning', () => ({
 	getPinCategory: mocks.getPinCategory
 }));
 vi.mock('$lib/server/db/queries/jev-settings', () => ({
-	getJevSettings: () => ({ inboxTabs: true, jevEnabled: mocks.jevEnabled, sortCursor: null })
+	getJevSettings: () => ({ inboxTabs: mocks.inboxTabs, jevEnabled: mocks.jevEnabled, sortCursor: null })
 }));
 
 import { POST } from './+server';
@@ -47,6 +48,7 @@ async function move(body: Record<string, unknown>) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.inboxTabs = true;
 	mocks.jevEnabled = true;
 	mocks.getPinCategory.mockReturnValue(null);
 });
@@ -66,7 +68,7 @@ describe('moving mail to a tab', () => {
 		expect(res.pinSuggestion).toEqual({ sender: 'jobs@linkedin.com', category: 'updates' });
 	});
 
-	it('offers no pin for several senders, an existing pin, or while Jev is off', async () => {
+	it('offers no pin for several senders, an existing pin, or an Inbox without tabs', async () => {
 		mocks.senders = ['a@x.example', 'b@y.example'];
 		expect((await move({ ids: ['a', 'b'], action: 'setCategory', category: 'updates' })).pinSuggestion).toBeNull();
 
@@ -75,8 +77,15 @@ describe('moving mail to a tab', () => {
 		expect((await move({ ids: ['a'], action: 'setCategory', category: 'updates' })).pinSuggestion).toBeNull();
 
 		mocks.getPinCategory.mockReturnValue(null);
-		mocks.jevEnabled = false;
+		mocks.inboxTabs = false;
 		expect((await move({ ids: ['a'], action: 'setCategory', category: 'updates' })).pinSuggestion).toBeNull();
+	});
+
+	it('offers the pin with Jev off too: a pin acts without it', async () => {
+		mocks.senders = ['a@x.example'];
+		mocks.jevEnabled = false;
+		const res = await move({ ids: ['a'], action: 'setCategory', category: 'updates' });
+		expect(res.pinSuggestion).toEqual({ sender: 'a@x.example', category: 'updates' });
 	});
 
 	it('takes an undone move back out of the history instead of adding one', async () => {

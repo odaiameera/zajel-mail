@@ -70,7 +70,7 @@ Three principles shape it:
 ## Highlights
 
 - 📬 **Several mail accounts under one sign-in.** Each account has its own colour, photo and unread badges.
-- 🗂️ **Inbox tabs** (Important, Updates, Newsletters, Promotions). Sort by hand, by dragging, or with Jev.
+- 🗂️ **Inbox tabs** (Important, Updates, Newsletters, Promotions). Sort by hand, by dragging, by pinning a sender to a tab, or with Jev.
 - 🪶 **Zajel, the AI agent.** It searches your whole mailbox and calendar, summarises your day and drafts replies. On **Claude** it also files, archives, labels and snoozes mail for you, while anything that leaves your account waits for your click. It runs on **Claude**, **OpenAI GPT-5.6** or any **Ollama** model, chosen in Settings.
 - 🔎 **Search that understands what you mean.** Keyword search plus semantic search, from a small model on your own Ollama, in Arabic and English.
 - 💬 **Zajel on Telegram.** Urgent mail and reminders reach your phone, and scheduled jobs send digests or tidy the Inbox.
@@ -92,8 +92,9 @@ Three principles shape it:
 The inbox is built for getting through mail, not just reading it.
 
 **Inbox tabs.** Messages split into **Important**, **Updates**, **Newsletters** and **Promotions**, each with its own unread count. A tab only changes where you see a message; it stays in your Inbox on the server. You can sort mail yourself:
-- drag a message onto a tab, or
-- use **Move to tab**.
+- drag a message onto a tab,
+- use **Move to tab**, or
+- **pin a sender**, or a whole `@domain`, to a tab in Settings → Jev, so its new mail always lands there. Pins need tabs, not Jev.
 
 **Folders and labels.** Folders are real JMAP mailboxes and can nest. Labels are mailboxes too, grouped under a `Labels` parent, so they show up cleanly in any other client. Both can have a colour and an icon. Drag a folder or label in the sidebar to reorder it or nest it under another; the order is stored on the server, so other clients that honour it see the same arrangement. Settings → Folders and Labels have Move up and Move down for keyboards and touch screens.
 
@@ -124,7 +125,7 @@ With **semantic search** switched on in Settings → Search, it also finds mail 
 - **Starred** keeps the mail you flagged in one place.
 - **Archive** works even when your server has no folder with the archive role: it uses your top-level `Archive` folder.
 - **Trash can empty itself** after 7 or 30 days.
-- **Rules** match mail exactly, by sender, recipient, subject, body, size or attachment. They run on the server about a minute after mail lands, and are deployed as Sieve too, so they keep filtering with every tab closed. A live count shows how many existing emails a rule matches, and **Save & apply** sorts them right away.
+- **Rules** match mail exactly, by sender, recipient, subject, body, size or attachment, and file it: into a folder, under a label, marked read or important, or into Trash. A rule never picks an Inbox tab; a sender pin does that. Rules run on the server about a minute after mail lands, and are deployed as Sieve too, so they keep filtering with every tab closed. A live count shows how many existing emails a rule matches, and **Save & apply** sorts them right away.
 - **Auto-reply** is deployed to your mail server as a Sieve vacation message, with a subject and body you choose.
 - **Sender avatars** come from BIMI, site favicons and Gravatar. They're cached on the server, so every device shares one lookup. Lookups that find nothing are remembered too, instead of being retried on every render.
 
@@ -202,12 +203,12 @@ Otherwise it runs on **any Ollama-compatible endpoint**: Ollama Cloud, or a mode
 
 A confident pick is applied. Anything else stays in **Important**, so nothing is hidden because Jev was unsure. The message view shows **why** a message landed where it did.
 
-New mail appears **already in its tab**. The server listens to the mail server's push channel and asks Jev within seconds of delivery. Until Jev is done with a message, the Inbox tabs, their unread counts, the Inbox badge and new-mail notifications leave it out. That way it never shows in Important and then moves. Your rules act on it first, so a rule's tab or folder is already in place too. The wait is **two minutes at most**: if Jev is slow, down, rate-limited or stops answering, the message appears in Important when that time is up. Search, All Mail and other mail apps show it straight away. Only mail dated within two minutes of now is ever held back, and none at all while tabs or Jev are off for the account.
+New mail appears **already in its tab**. The server listens to the mail server's push channel and asks Jev within seconds of delivery. Until Jev is done with a message, the Inbox tabs, their unread counts, the Inbox badge and new-mail notifications leave it out. That way it never shows in Important and then moves. Your rules act on it first, so a rule's folder or label is already in place too. The wait is **two minutes at most**: if Jev is slow, down, rate-limited or stops answering, the message appears in Important when that time is up. Search, All Mail and other mail apps show it straight away. Only mail dated within two minutes of now is ever held back, and none at all while tabs are off for the account, or while nothing would sort its new mail (Jev is off and no sender is pinned).
 
 Jev learns from you:
 - **It never moves mail you've put in a tab yourself**, Important included.
-- **Your moves teach it.** When you move a message, that's passed to Jev with that sender's next email.
-- **Pinning** a sender, or a whole `@domain`, to a tab means Jev isn't asked again. Pins act while Inbox tabs and Jev are on for the account.
+- **Your moves teach it.** When you move a message, or ask Zajel to, that's passed to Jev with that sender's next email.
+- **Pinning** a sender, or a whole `@domain`, to a tab means Jev isn't asked again. A pin is yours, not Jev's: it acts whenever Inbox tabs are on for the account, **with Jev on, off or unreachable**, and nothing is sent anywhere for it. An Inbox with tabs and a pin holds new mail for the same few seconds, two minutes at most, so a pinned sender's mail lands in its tab without showing in Important first. A pin never overrules a tab you chose for a message yourself.
 
 Before switching it on, **Try Jev** shows where it would put your newest 200 Inbox emails, without moving anything. Afterwards, the mail already in your Inbox can be **sorted in the background**, with a cost estimate first.
 
@@ -216,6 +217,12 @@ Before switching it on, **Try Jev** shows where it would put your newest 200 Inb
 - **Active** moves mail Jev is at least 90% sure is spam or phishing to Junk. It warns from 60%, and never moves mail from your contacts or people you've written to, nor any mail when it couldn't check that. It also brings mail back out of Junk when Jev is very sure it's fine and the sender passed DMARC. A missing or errored DMARC result doesn't count as a pass.
 
 **Rules are not Jev's.** A rule matches mail exactly and is run by the app's own rules engine, whether Jev is on, off or unreachable. Earlier versions let a rule carry a condition written in plain English for Jev to judge. That is gone. When you upgrade, a rule that had such a condition is **switched off, not rewritten**: left running without the condition it would act on more mail than you wrote it for. It is listed under **Needs your attention** in Settings → Filters & Rules, with what it used to say, and you can rewrite it with exact conditions or delete it. Until you do, it never runs, even if it is switched back on.
+
+**Tabs are not a rule's to set.** "Always put this sender in Updates" is a sender pin, not a rule, and rules no longer have a "move to Inbox tab" action. When you upgrade, the rules that had one are converted:
+- A rule that **only** set a tab, was switched on, and matched **one sender** becomes a pin for that sender, and the rule is removed. That means a single *From* condition, without NOT, that *contains* or *ends with* an address or an `@domain`, or *is exactly* an address. If you had already pinned that sender, your pin stands.
+- A rule that also **moved** the mail to a folder or Trash simply loses the tab: the mail leaves the Inbox, where tabs mean nothing.
+- A rule that also **labelled** or marked the mail keeps running without the tab, and is noted under **Needs your attention** with the tab it used to set.
+- Any other rule that only set a tab (several conditions, a word in the subject, a switched-off rule) is **switched off** and listed there with what it matched, so you can pin the senders yourself or give the rule something else to do.
 
 Jev is **off until you turn it on, account by account.** For a demo or development without a key, `JEV_MOCK=1` answers on the server and labels every answer as a mock, so a demo can never be mistaken for Jev. What is still planned is in [docs/jev-plan.md](docs/jev-plan.md).
 

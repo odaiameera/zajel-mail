@@ -12,7 +12,7 @@
 		type Rule,
 		type RuleAction
 	} from '$lib/types/rules';
-	import { INBOX_CATEGORIES } from '$lib/types/categories';
+	import { INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
 
 	let { data }: { data: PageData } = $props();
@@ -172,6 +172,17 @@
 		return `${not}${FIELD_LABELS[c.field] ?? c.field} ${OP_LABELS[c.op ?? 'contains'] ?? c.op} “${value}”`;
 	}
 
+	/** The Inbox tab a rule used to put mail in, before rules stopped setting tabs: "the Updates tab", or null. */
+	function legacyTab(rule: Rule): string | null {
+		const tab = (rule.legacy?.actions ?? [])
+			.filter((a) => a.type === 'setCategory')
+			.map((a) => a.value)
+			.filter(isInboxCategory)
+			.at(-1);
+		const label = INBOX_CATEGORIES.find((c) => c.key === tab)?.label;
+		return label ? `the ${label} tab` : null;
+	}
+
 	/** Enough of a rule to run: something to match on, and something to do. */
 	function canRunAsExact(rule: Rule): boolean {
 		return rule.conditions.some(isUsableCondition) && rule.actions.length > 0;
@@ -187,6 +198,15 @@
 		const { attention: _attention, legacy: _legacy, ...rule } = $state.snapshot(localRules[idx]) as Rule;
 		localRules[idx] = { ...rule, enabled: true };
 		await saveOnly();
+	}
+
+	/** A note about a rule that still runs: read, so the note and the old copy go. */
+	async function dismissAttention(id: string) {
+		const idx = localRules.findIndex((r) => r.id === id);
+		if (idx < 0) return;
+		const { attention: _attention, legacy: _legacy, ...rule } = $state.snapshot(localRules[idx]) as Rule;
+		localRules[idx] = rule;
+		await persistAll();
 	}
 
 	// --- Editor mutations (selected rule) ---
@@ -397,10 +417,6 @@
 			}
 			case 'markRead': return 'Mark as read';
 			case 'markImportant': return 'Mark important';
-			case 'setCategory': {
-				const tab = INBOX_CATEGORIES.find((c) => c.key === a.value);
-				return tab ? `Move to the ${tab.label} tab` : 'Move to an Inbox tab';
-			}
 			case 'delete': return 'Delete';
 			case 'stopProcessing': return 'Stop processing';
 		}
@@ -518,10 +534,58 @@
 									It matched {rule.legacy.logic === 'anyof' ? 'ANY' : 'ALL'} of these{rule.legacy.enabled ? '' : ', and was already switched off'}.
 								</p>
 							{/if}
+							{#if legacyTab(rule)}
+								<p class="text-xs text-text-secondary">
+									It also moved that mail to {legacyTab(rule)}, which a rule can no longer do.
+								</p>
+							{/if}
 							<p class="text-xs text-text-secondary">
 								Rewrite it below with exact conditions and press
 								<span class="text-text">Save as exact rule</span> to switch it back on, or delete it.
 							</p>
+						</div>
+					{:else if rule.attention === 'tab_rule'}
+						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
+							<p class="text-sm font-medium text-text">This rule is switched off</p>
+							<p class="text-xs text-text-secondary">
+								All it did was move mail to {legacyTab(rule) ?? 'an Inbox tab'}, and rules no longer
+								put mail in a tab: sender pins do that now, whether Jev is on or off. It wasn’t turned
+								into a pin for you: a pin is one sender or one <span class="font-mono">@domain</span>,
+								and only a rule that was switched on and matched just that becomes one.
+								{rule.legacy?.enabled === false ? 'This one was switched off.' : ''}
+								It matched mail like this:
+							</p>
+							{#if rule.legacy}
+								<ul class="text-xs text-text list-disc pl-5 flex flex-col gap-0.5">
+									{#each rule.legacy.conditions as c}
+										<li>{legacyConditionText(c)}</li>
+									{/each}
+								</ul>
+								{#if rule.legacy.conditions.length > 1}
+									<p class="text-2xs text-text-tertiary">
+										It matched {rule.legacy.logic === 'anyof' ? 'ANY' : 'ALL'} of these.
+									</p>
+								{/if}
+							{/if}
+							<p class="text-xs text-text-secondary">
+								To keep those senders in their tab, pin them under
+								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a> and delete
+								this rule. Or give it something else to do below, a label or a folder, and press
+								<span class="text-text">Save as exact rule</span>.
+							</p>
+						</div>
+					{:else if rule.attention === 'tab_removed'}
+						<div class="rounded-xl border border-warning/30 bg-warning/10 p-4 flex flex-col gap-2" role="note">
+							<p class="text-sm font-medium text-text">This rule no longer sets a tab</p>
+							<p class="text-xs text-text-secondary">
+								It used to move mail to {legacyTab(rule) ?? 'an Inbox tab'} as well. Rules no longer
+								put mail in a tab, so that part was removed; the rest of the rule runs as before. To
+								keep a sender’s mail in that tab, pin the sender under
+								<a href="/settings/jev" class="underline">Settings → Jev → Pinned senders</a>.
+							</p>
+							<button onclick={() => dismissAttention(rule.id)} disabled={saving} class="btn btn-secondary self-start">
+								Got it
+							</button>
 						</div>
 					{/if}
 
@@ -611,18 +675,9 @@
 									<option value="moveToFolder">Move to folder</option>
 									<option value="markRead">Mark as read</option>
 									<option value="markImportant">Mark important</option>
-									<option value="setCategory">Move to Inbox tab</option>
 									<option value="delete">Move to trash</option>
 									<option value="stopProcessing">Stop processing</option>
 								</select>
-								{#if action.type === 'setCategory'}
-									<select bind:value={action.value} class="flex-1 min-w-[140px] bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
-										<option value="">Select a tab…</option>
-										{#each INBOX_CATEGORIES as tab (tab.key)}
-											<option value={tab.key}>{tab.label}</option>
-										{/each}
-									</select>
-								{/if}
 								{#if action.type === 'applyLabel'}
 									<select bind:value={action.value} class="flex-1 min-w-[140px] bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-xs text-text outline-none focus:border-accent">
 										<option value="">Select a label…</option>

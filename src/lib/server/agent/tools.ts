@@ -1,12 +1,6 @@
 import type { JMAPClient } from '$lib/jmap/client';
 import type { AuthState, Email, Mailbox } from '$lib/jmap/types';
-import {
-	getEmailDetail,
-	moveEmails,
-	searchEmails,
-	setEmailCategory,
-	updateEmailMailboxes
-} from '$lib/jmap/email';
+import { getEmailDetail, moveEmails, searchEmails, updateEmailMailboxes } from '$lib/jmap/email';
 import { ensureArchiveMailbox, ensureRemindMeLaterMailbox, getMailboxes } from '$lib/jmap/mailbox';
 import { categoryOf, INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
 import { labelMailboxIds } from '$lib/types/labels';
@@ -17,6 +11,7 @@ import { spend, type TurnBudget } from './budget';
 import { localClock, parseLocalTime } from './local-time';
 import { scheduleReminder } from '$lib/server/db/queries/reminders';
 import { getDecision } from '$lib/server/db/queries/jev-decisions';
+import { setTab as moveToTab } from '$lib/server/jev/tab';
 import { htmlToPromptText } from '$lib/server/ai/extract-event';
 import { mailFilterConditions, parseMailSearchSpec } from '$lib/server/ai/mail-search';
 import { searchMail as searchMailbox } from '$lib/server/search/hybrid';
@@ -377,7 +372,9 @@ const setTab: AgentTool = {
 	async run(ctx, input) {
 		const list = ids(input.email_ids);
 		if (list.length === 0 || !isInboxCategory(input.tab)) return { content: 'Unknown tab or no valid email ids', isError: true };
-		await setEmailCategory(ctx.client, ctx.auth.accountId, list, input.tab);
+		// Moved for you, so it counts as your move: recorded as your choice of
+		// tab and in the sender's history, as when you drag it there yourself.
+		await moveToTab(ctx.client, ctx.auth.accountId, ctx.accountRowId, list, input.tab);
 		const done = `Moved ${plural(list.length, 'message')} to ${input.tab}`;
 		return { content: `Done: ${done}.`, done };
 	}

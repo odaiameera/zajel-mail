@@ -953,24 +953,40 @@ describe('the Inbox’s hold on new mail', () => {
 describe('the Inbox’s hold, with rules and the push stream', () => {
 	const JUST_NOW = 9.5;
 	const SORTED = '$jev_sorted';
-	const githubToUpdates: Rule = {
+	// "Archive" stands in for a label: the rule adds a mailbox and leaves the Inbox.
+	const labelGithub: Rule = {
 		id: 'gh',
-		name: 'GitHub to Updates',
+		name: 'Label GitHub',
 		enabled: true,
 		logic: 'allof',
 		conditions: [{ id: 'c1', field: 'from', op: 'contains', value: 'github.com', negate: false }],
-		actions: [{ type: 'setCategory', value: 'updates' }],
+		actions: [{ type: 'applyLabel', value: 'archive' }],
 		createdAt: 0
 	};
 
-	it('lets exact rules act before it marks new mail, so a rule’s tab is there when the message shows', async () => {
-		setRules(ME, [githubToUpdates]);
+	it('lets exact rules act before it marks new mail, so a rule’s label is there when the message shows', async () => {
+		setRules(ME, [labelGithub]);
 		setRulesCursor(ME, at(0).toISOString());
 		fake.add('gh', JUST_NOW, { from: [{ name: 'GitHub', email: 'noreply@github.com' }], 'header:list-unsubscribe': ' <x>' });
+		// The order of the writes: the label has to be on before the mark is.
+		const inOrder: Record<string, unknown>[] = [];
+		const watched = fake.request.bind(fake);
+		fake.request = async (calls: MethodCall[]) => {
+			for (const [name, args] of calls) {
+				if (name === 'Email/set') inOrder.push((args.update as Record<string, Record<string, unknown>>).gh);
+			}
+			return watched(calls);
+		};
 
 		await sortNewMail(ACCT, ME, auth, at(10));
 
-		expect(fake.emails.get('gh')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		expect(fake.emails.get('gh')!.mailboxIds).toEqual({ inbox: true, archive: true });
+		expect(fake.emails.get('gh')!.keywords).toEqual({ $cat_newsletters: true, [SORTED]: true });
+		expect(inOrder).toEqual([
+			{ mailboxIds: { inbox: true, archive: true } },
+			{ 'keywords/$cat_newsletters': true, [`keywords/${SORTED}`]: true }
+		]);
+		fake.request = watched;
 		// The rules scheduler's own run afterwards finds nothing left to do.
 		const writes: MethodCall[] = [];
 		const realRequest = fake.request.bind(fake);
@@ -987,19 +1003,20 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 		env.TYPESAFE_API_KEY = 'ts-test-key';
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 500 })));
-		setRules(ME, [githubToUpdates]);
+		setRules(ME, [labelGithub]);
 		setRulesCursor(ME, at(0).toISOString());
 		fake.add('gh', JUST_NOW, { from: [{ name: 'GitHub', email: 'noreply@github.com' }] });
 
 		await sortNewMail(ACCT, ME, auth, at(10));
 
-		// The rule's tab is on; no mark, so the hold's timeout lets it through.
-		expect(fake.emails.get('gh')!.keywords).toEqual({ $cat_updates: true });
+		// The rule's label is on; no mark, so the hold's timeout lets it through.
+		expect(fake.emails.get('gh')!.mailboxIds).toEqual({ inbox: true, archive: true });
+		expect(fake.emails.get('gh')!.keywords).toEqual({});
 	});
 
 	it('runs rules first with the tabs off too, so a rule’s move lands before a spam verdict could take the message', async () => {
 		updateJevSettings(ACCT, { inboxTabs: false, spamMode: 'active' });
-		const githubToArchive: Rule = { ...githubToUpdates, id: 'gh-move', actions: [{ type: 'moveToFolder', value: 'archive' }] };
+		const githubToArchive: Rule = { ...labelGithub, id: 'gh-move', actions: [{ type: 'moveToFolder', value: 'archive' }] };
 		setRules(ME, [githubToArchive]);
 		setRulesCursor(ME, at(0).toISOString());
 		// Stalwart flagged it, and nobody here knows the sender: Jev would junk it.
@@ -1020,7 +1037,7 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 		// What the upgrade leaves of a rule with a Jev condition: flagged, its
 		// exact part in place. Someone has switched it on again unfixed.
 		const flagged: Rule = {
-			...githubToUpdates,
+			...labelGithub,
 			id: 'flagged',
 			actions: [{ type: 'moveToFolder', value: 'archive' }],
 			attention: 'jev_condition',
@@ -1121,4 +1138,270 @@ describe('the Inbox’s hold, with rules and the push stream', () => {
 
 		expect(ids.filter((id) => getDecision(ACCT, id)?.status === 'done')).toEqual([]);
 	}, 10_000);
+});
+
+describe('sender pins, with Jev off or out of reach', () => {
+	const JUST_NOW = 9.5;
+	const SORTED = '$jev_sorted';
+	const linkedIn = { from: [{ name: 'LinkedIn', email: 'jobs@linkedin.com' }], subject: 'New jobs for you' };
+	const sam = { from: [{ name: 'Sam', email: 'sam@example.com' }] };
+	/** Every call the pass makes to TypeSafe; none is answered. */
+	const noTypeSafe = () => {
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 500 }));
+		vi.stubGlobal('fetch', fetchMock);
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		return fetchMock;
+	};
+
+	it('puts a pinned sender’s new mail in its tab and marks it, with Jev switched off for the account', async () => {
+		const fetchMock = noTypeSafe();
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('jobs', JUST_NOW, linkedIn);
+		fake.add('person', JUST_NOW, sam);
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('jobs')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		expect(getDecision(ACCT, 'jobs')).toMatchObject({
+			status: 'done',
+			category: 'updates',
+			applied: 'updates',
+			pinnedBy: '@linkedin.com',
+			model: null
+		});
+		// Mail nobody pinned is let through where it is: marked, so the Inbox
+		// stops holding it, and not counted as sorted, so "sort the mail
+		// already in your Inbox" can still offer it once Jev is on.
+		expect(fake.emails.get('person')!.keywords).toEqual({ [SORTED]: true });
+		expect(getDecision(ACCT, 'person')).toMatchObject({ status: 'skipped', category: null, model: null });
+		// Nothing was asked of TypeSafe, and nothing counted as used.
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(getUsage(ACCT)).toEqual({ requests: 0, inputTokens: 0 });
+	});
+
+	it('does the same while Jev isn’t configured on the server at all', async () => {
+		delete env.JEV_MOCK; // no key, no mock: jevMode() is 'off'
+		const fetchMock = noTypeSafe();
+		setPin(ACCT, 'jobs@linkedin.com', 'promotions');
+		fake.add('jobs', JUST_NOW, linkedIn);
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('jobs')!.keywords).toEqual({ $cat_promotions: true, [SORTED]: true });
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('does nothing with Jev off when there are no pins, or no tabs', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false });
+		fake.add('jobs', JUST_NOW, linkedIn);
+		const requests: MethodCall[][] = [];
+		const realRequest = fake.request.bind(fake);
+		fake.request = async (calls: MethodCall[]) => {
+			requests.push(calls);
+			return realRequest(calls);
+		};
+
+		// No pins: nothing would sort this Inbox, so nothing is read or held.
+		await sortNewMail(ACCT, ME, auth, at(10));
+		// Pins, but no tabs to put mail in.
+		setPin(ACCT, '@linkedin.com', 'updates');
+		updateJevSettings(ACCT, { inboxTabs: false });
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(requests).toEqual([]);
+		expect(fake.emails.get('jobs')!.keywords).toEqual({});
+		expect(getJevSettings(ACCT).sortCursor).toBeNull();
+	});
+
+	it('starts with the mail the Inbox may be holding, and leaves older mail alone', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('old', 5, linkedIn); // five minutes before the pass: never held
+		fake.add('held', JUST_NOW, linkedIn);
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('old')!.keywords).toEqual({});
+		expect(getDecision(ACCT, 'old')).toBeNull();
+		expect(fake.emails.get('held')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+
+		// From then on it follows the cursor, like any pass: what arrives next
+		// is sorted, and what was handled isn't touched again.
+		fake.add('next', 10.5, linkedIn);
+		const sets: MethodCall[] = [];
+		const realRequest = fake.request.bind(fake);
+		fake.request = async (calls: MethodCall[]) => {
+			sets.push(...calls.filter(([name]) => name === 'Email/set'));
+			return realRequest(calls);
+		};
+		await sortNewMail(ACCT, ME, auth, at(11));
+		expect(fake.emails.get('next')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		expect(sets.map(([, args]) => Object.keys(args.update as object))).toEqual([['next']]);
+		expect(getJevSettings(ACCT).sortCursor).toBe(at(10).toISOString());
+	});
+
+	it('leaves mail you put in a tab yourself where it is, and mail a rule moved out of the Inbox alone', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		setRules(ME, [
+			{
+				id: 'file',
+				name: 'File receipts',
+				enabled: true,
+				logic: 'allof',
+				conditions: [{ id: 'c1', field: 'subject', op: 'contains', value: 'receipt', negate: false }],
+				actions: [{ type: 'moveToFolder', value: 'archive' }],
+				createdAt: 0
+			}
+		]);
+		setRulesCursor(ME, at(0).toISOString());
+		fake.add('mine', JUST_NOW, linkedIn);
+		recordCorrections(ACCT, ['mine'], 'important');
+		fake.add('pinnedReceipt', JUST_NOW, { ...linkedIn, subject: 'Your receipt' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		// Dragged to Important by you: the pin doesn't take it back.
+		expect(fake.emails.get('mine')!.keywords).toEqual({ [SORTED]: true });
+		expect(getDecision(ACCT, 'mine')).toMatchObject({ correctedTo: 'important', pinnedBy: null });
+		// The rule ran first and filed it: out of the Inbox, so no tab and no mark.
+		expect(fake.emails.get('pinnedReceipt')!.mailboxIds).toEqual({ archive: true });
+		expect(fake.emails.get('pinnedReceipt')!.keywords).toEqual({});
+	});
+
+	it('never sends Jev the mail that arrived while it was off, once it is switched on', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		const fetchMock = vi.fn().mockImplementation(async () => liveAnswer());
+		vi.stubGlobal('fetch', fetchMock);
+		updateJevSettings(ACCT, { jevEnabled: false });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('before', JUST_NOW, { 'header:list-unsubscribe': ' <x>' });
+		await sortNewMail(ACCT, ME, auth, at(10));
+		expect(getDecision(ACCT, 'before')?.status).toBe('skipped');
+
+		updateJevSettings(ACCT, { jevEnabled: true }, at(11));
+		fake.add('after', 11.5, { 'header:list-unsubscribe': ' <x>' });
+		await sortNewMail(ACCT, ME, auth, at(12));
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(String(fetchMock.mock.calls[0][1]?.body)).not.toContain('"before"');
+		expect(getDecision(ACCT, 'after')).toMatchObject({ status: 'done', applied: 'newsletters' });
+		expect(fake.emails.get('before')!.keywords).toEqual({ [SORTED]: true });
+	});
+
+	it('puts pinned mail in its tab while TypeSafe is down, and asks the rest about it once it answers', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		const fetchMock = noTypeSafe();
+		// Spam checks on: even a pinned sender's mail has a question for Jev.
+		updateJevSettings(ACCT, { spamMode: 'watch' });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('jobs', JUST_NOW, linkedIn);
+		fake.add('person', JUST_NOW, sam);
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fetchMock).toHaveBeenCalled();
+		// The pin needed no answer: in its tab and showing, not held for two minutes.
+		expect(fake.emails.get('jobs')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		// Still queued for its spam check, and not charged for TypeSafe's outage.
+		expect(getDecision(ACCT, 'jobs')).toMatchObject({ status: 'pending', attempts: 0 });
+		// Mail with no pin waits for Jev, as before.
+		expect(fake.emails.get('person')!.keywords).toEqual({});
+
+		fetchMock.mockImplementation(
+			async () =>
+				new Response(
+					JSON.stringify({
+						model: 'jev-1.13.0',
+						answers: { spam: { type: 'noul', noul: 0.02 }, phishing: { type: 'noul', noul: 0.01 } },
+						usage: { input_tokens: 10, output_tokens: 2 }
+					}),
+					{ status: 200 }
+				)
+		);
+		await sortNewMail(ACCT, ME, auth, at(11));
+		expect(fake.emails.get('jobs')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		// The record still says the pin put it there.
+		expect(getDecision(ACCT, 'jobs')).toMatchObject({
+			status: 'done',
+			category: 'updates',
+			applied: 'updates',
+			pinnedBy: '@linkedin.com',
+			spam: 0.02
+		});
+	});
+
+	it('puts pinned mail in its tab when its own call fails though others are answered', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		updateJevSettings(ACCT, { spamMode: 'watch' });
+		vi.stubGlobal(
+			'fetch',
+			vi.fn().mockImplementation(async (_url: string, init?: RequestInit) =>
+				String(init?.body).includes('New jobs')
+					? new Response('{}', { status: 500 })
+					: new Response(
+							JSON.stringify({
+								model: 'jev-1.13.0',
+								answers: { spam: { type: 'noul', noul: 0.02 }, phishing: { type: 'noul', noul: 0.01 } },
+								usage: { input_tokens: 10, output_tokens: 2 }
+							}),
+							{ status: 200 }
+						)
+			)
+		);
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('jobs', JUST_NOW, linkedIn);
+		fake.add('person', JUST_NOW, sam);
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('jobs')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		// This one failed on its own, so it is charged an attempt and retried.
+		expect(getDecision(ACCT, 'jobs')).toMatchObject({ status: 'pending', attempts: 1 });
+		expect(getDecision(ACCT, 'person')?.status).toBe('done');
+	});
+
+	it('puts pinned mail in its tab during the pause after a rate limit, asking TypeSafe nothing', async () => {
+		delete env.JEV_MOCK;
+		env.TYPESAFE_API_KEY = 'ts-test-key';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { status: 429 }));
+		vi.stubGlobal('fetch', fetchMock);
+		updateJevSettings(ACCT, { spamMode: 'watch' });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('news', 1, { 'header:list-unsubscribe': ' <x>' });
+		vi.useFakeTimers({ toFake: ['setTimeout'] });
+		const first = sortNewMail(ACCT, ME, auth, at(10));
+		await vi.advanceTimersByTimeAsync(5000);
+		await first;
+		vi.useRealTimers();
+
+		// Paused. A pinned sender's mail lands, and one from a stranger.
+		fetchMock.mockClear();
+		fake.add('jobs', 11.5, linkedIn);
+		fake.add('person', 11.5, sam);
+		await sortNewMail(ACCT, ME, auth, at(12));
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(fake.emails.get('jobs')!.keywords).toEqual({ $cat_updates: true, [SORTED]: true });
+		expect(getDecision(ACCT, 'jobs')).toMatchObject({ status: 'pending', attempts: 0 });
+		expect(fake.emails.get('person')!.keywords).toEqual({});
+		expect(getDecision(ACCT, 'person')?.status).toBe('pending');
+	});
+
+	it('still lets a spam verdict take pinned mail to Junk, and doesn’t mark it on the way', async () => {
+		updateJevSettings(ACCT, { spamMode: 'active' });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		fake.add('spoof', JUST_NOW, { ...linkedIn, 'header:x-spam-status:asText': 'Yes, score=8.1' });
+
+		await sortNewMail(ACCT, ME, auth, at(10));
+
+		expect(fake.emails.get('spoof')!.mailboxIds).toEqual({ junk: true });
+		expect(fake.emails.get('spoof')!.keywords).toEqual({});
+	});
 });

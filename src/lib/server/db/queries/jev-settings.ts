@@ -27,7 +27,12 @@ export interface JevSettings {
 	 * `inboxTabs`), and for spam checks and urgent alerts.
 	 */
 	jevEnabled: boolean;
-	/** ISO receivedAt new mail has been queued up to; null while Jev is off. */
+	/**
+	 * ISO receivedAt new mail has been queued up to by the sorting pass.
+	 * Switching Jev off clears it, and switching it on sets it to that
+	 * moment, so Jev is never sent mail from before. With Jev off the pass
+	 * keeps one only while there are sender pins to apply (see the worker).
+	 */
 	sortCursor: string | null;
 	/** Jev as the spam layer; only acted on while `jevEnabled`. */
 	spamMode: SpamMode;
@@ -65,7 +70,7 @@ function prepareStmts() {
 		),
 		advanceCursor: db.prepare(
 			`UPDATE jev_settings SET sort_cursor = ?, updated_at = ?
-			 WHERE account_id = ? AND jev_enabled = 1 AND sort_cursor = ?`
+			 WHERE account_id = ? AND sort_cursor = ?`
 		)
 	};
 }
@@ -117,8 +122,9 @@ export function updateJevSettings(
 
 /**
  * Move the cursor on after a pass, from where that pass read it. If Jev was
- * switched off, or off and on again, while the pass ran, the switch has
- * already set the cursor and this leaves it alone.
+ * switched off or on while the pass ran, the switch has already set the
+ * cursor (to nothing, or to that moment) and this leaves it alone: only a
+ * cursor still where the pass found it is moved.
  */
 export function advanceSortCursor(accountId: string, from: string, to: string, now = new Date()): void {
 	stmts().advanceCursor.run(to, now.getTime(), accountId, from);

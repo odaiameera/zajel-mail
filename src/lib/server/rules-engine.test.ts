@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Email } from '$lib/jmap/types';
 import type { Rule, RuleCondition } from '$lib/types/rules';
 import { evaluateRulesForEmail, outcomeToUpdate, updatesForEmails, type RuleActionCtx } from './rules-engine';
+import type { RuleAction } from '$lib/types/rules';
 import { buildJmapFilter } from './rules';
 import { buildSieveContext, compileRulesToSieve } from './sieve';
 
@@ -57,15 +58,18 @@ describe('evaluateRulesForEmail', () => {
 		expect([...outcome.removeMailboxIds]).toEqual(['inbox']);
 	});
 
-	it('moves to an Inbox tab, clearing the others', () => {
-		const tab = rule('tab', { conditions: [fromShop], actions: [{ type: 'setCategory', value: 'updates' }] });
+	it('never puts mail in an Inbox tab: an old tab action does nothing, and the rule’s other actions still run', () => {
+		// As a browser tab left open across the upgrade would still send it.
+		const toUpdates = { type: 'setCategory', value: 'updates' } as unknown as RuleAction;
+		const tab = rule('tab', { conditions: [fromShop], actions: [toUpdates, { type: 'markRead' }] });
 		const e = email({ keywords: { $cat_promotions: true } });
 		const outcome = evaluateRulesForEmail(e, [tab], ctx, '');
-		expect(outcome.category).toBe('updates');
-		expect(outcomeToUpdate(e, outcome)).toEqual({
-			'keywords/$cat_updates': true,
-			'keywords/$cat_promotions': false
-		});
+		expect(outcome.firedRuleIds).toEqual(['tab']);
+		expect(outcomeToUpdate(e, outcome)).toEqual({ 'keywords/$seen': true });
+
+		const script = compileRulesToSieve([tab], buildSieveContext([]));
+		expect(script).toContain('addflag "\\\\Seen";');
+		expect(script).not.toContain('$cat_');
 	});
 });
 
@@ -106,14 +110,6 @@ describe('rules that may not run', () => {
 			expect(script).not.toContain('if header');
 		}
 		expect(compileRulesToSieve([{ ...flagged, attention: undefined }], buildSieveContext(mailboxes))).toContain('fileinto "Finance";');
-	});
-});
-
-describe('tab actions in Sieve', () => {
-	it('compile to keyword flags', () => {
-		const tab = rule('tab', { conditions: [fromShop], actions: [{ type: 'setCategory', value: 'newsletters' }] });
-		const script = compileRulesToSieve([tab], buildSieveContext([]));
-		expect(script).toContain('removeflag ["$cat_updates", "$cat_newsletters", "$cat_promotions"]; addflag "$cat_newsletters";');
 	});
 });
 

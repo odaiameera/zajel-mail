@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
 	conditionHolds,
-	effectiveActions,
 	hasOnlyKnownConditions,
 	isRunnable,
 	isUsableCondition,
@@ -84,9 +83,17 @@ describe('isRunnable', () => {
 	});
 
 	it('is never a rule waiting to be rewritten, even switched back on', () => {
-		const flagged = rule({ attention: 'jev_condition', enabled: true });
-		expect(needsRewrite(flagged)).toBe(true);
-		expect(isRunnable(flagged)).toBe(false);
+		for (const attention of ['jev_condition', 'tab_rule'] as const) {
+			const flagged = rule({ attention, enabled: true });
+			expect(needsRewrite(flagged)).toBe(true);
+			expect(isRunnable(flagged)).toBe(false);
+		}
+	});
+
+	it('is still a rule that only lost its tab: that flag is a note, and the rest runs', () => {
+		const noted = rule({ attention: 'tab_removed' });
+		expect(needsRewrite(noted)).toBe(false);
+		expect(isRunnable(noted)).toBe(true);
 	});
 
 	it('is never a rule with a condition this version doesn’t have', () => {
@@ -94,17 +101,5 @@ describe('isRunnable', () => {
 		expect(isRunnable(rule({ conditions: [from(), jev] }))).toBe(false);
 		// Rules are stored as a browser sent them: not even a list of conditions is a given.
 		expect(isRunnable(rule({ conditions: undefined as unknown as RuleCondition[] }))).toBe(false);
-	});
-});
-
-describe('effectiveActions', () => {
-	it('keeps Delete, which no rule is barred from now', () => {
-		const actions = [{ type: 'delete' as const }, { type: 'markRead' as const }];
-		expect(effectiveActions(rule({ actions }))).toEqual(actions);
-	});
-
-	it('drops a tab action with no tab picked', () => {
-		const actions = [{ type: 'setCategory' as const, value: '' }, { type: 'setCategory' as const, value: 'updates' }];
-		expect(effectiveActions(rule({ actions }))).toEqual([{ type: 'setCategory', value: 'updates' }]);
 	});
 });
