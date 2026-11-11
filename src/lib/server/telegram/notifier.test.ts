@@ -110,6 +110,19 @@ describe('linking', () => {
 });
 
 describe('buttons', () => {
+	it('answers Archive with “No Archive folder” when there is none, and plainly when it fails', async () => {
+		const { FilingError } = await import('$lib/server/filing');
+		await start(createLinkCode('user-1'));
+
+		mocks.moveToArchive.mockRejectedValueOnce(new FilingError('Could not create Archive'));
+		await press(createButton({ userId: 'user-1', accountId: 'acct-1', emailId: 'e1', action: 'archive' }));
+		expect(mocks.answerCallback).toHaveBeenLastCalledWith('q1', 'No Archive folder');
+
+		mocks.moveToArchive.mockRejectedValueOnce(new Error('connection reset'));
+		await press(createButton({ userId: 'user-1', accountId: 'acct-1', emailId: 'e2', action: 'archive' }));
+		expect(mocks.answerCallback).toHaveBeenLastCalledWith('q1', 'That didn’t work');
+	});
+
 	it('runs the action once, only from the linked chat', async () => {
 		await start(createLinkCode('user-1'));
 		const id = createButton({ userId: 'user-1', accountId: 'acct-1', emailId: 'e1', action: 'read' });

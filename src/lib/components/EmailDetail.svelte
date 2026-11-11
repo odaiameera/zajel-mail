@@ -62,6 +62,11 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 
 	const mailboxes = $derived<Mailbox[]>(page.data.mailboxes ?? []);
 
+	// Where the message is: as loaded, or as the server answered a label
+	// change made here, until the message is loaded again.
+	let filed = $state.raw<{ of: Email; mailboxIds: Record<string, boolean> } | null>(null);
+	const mailboxIds = $derived(filed?.of === email ? filed.mailboxIds : email.mailboxIds);
+
 	const from = $derived(email.from?.[0]);
 	const toList = $derived(email.to ?? []);
 	const ccList = $derived(email.cc ?? []);
@@ -69,7 +74,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 
 	// A message waiting in Scheduled: when it goes out, or why it didn't.
 	const inScheduled = $derived(
-		mailboxes.some((m) => isScheduledMailbox(m) && email.mailboxIds[m.id])
+		mailboxes.some((m) => isScheduledMailbox(m) && mailboxIds[m.id])
 	);
 	let scheduledSend = $state<{ sendAt: string; status: string; error: string | null } | null>(null);
 	$effect(() => {
@@ -161,8 +166,15 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// mailbox for move-style actions (archive/trash/spam) so we don't
 	// accidentally treat a label as the email's home folder.
 	const labelIdSet = $derived(new Set(allLabels.map((l) => l.id)));
+	// Trash deletes for good only when the view is the Trash list itself: the
+	// reading pane beside it, or the message's page opened from it. Never from
+	// a label, Search, Starred or any other view, whatever the message is in.
+	const getListIsTrash = getContext<(() => boolean) | undefined>('listIsTrash');
+	const viewIsTrash = $derived(
+		getListIsTrash ? getListIsTrash() : page.url.searchParams.get('from') === 'trash'
+	);
 	const sourceMailboxId = $derived(
-		Object.keys(email.mailboxIds).find((id) => !labelIdSet.has(id)) ?? ''
+		Object.keys(mailboxIds).find((id) => !labelIdSet.has(id)) ?? ''
 	);
 	// The full-page view's way back: the folder the message lives in, not
 	// always the Inbox, so opening something from Sent returns you to Sent.
@@ -202,7 +214,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	let showSpamRules = $state(false);
 	const isFlaggedSpam = $derived(spamStatus.startsWith('yes'));
 	const isInJunk = $derived(
-		Object.keys(email.mailboxIds).some((id) => {
+		Object.keys(mailboxIds).some((id) => {
 			const mb = mailboxes.find((m) => m.id === id);
 			return mb?.role === 'junk';
 		})
@@ -496,11 +508,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			await fetch(`/api/email/${email.id}`, {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					action: 'moveTo',
-					targetMailboxId,
-					sourceMailboxId
-				})
+				body: JSON.stringify({ action: 'moveTo', targetMailboxId })
 			});
 			goto(destAfterAction(sourceMailboxId));
 		} finally {
@@ -508,7 +516,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		}
 	}
 
-	const appliedLabels = $derived(allLabels.filter((l) => email.mailboxIds[l.id] === true));
+	const appliedLabels = $derived(allLabels.filter((l) => mailboxIds[l.id] === true));
 
 	// The Inbox tab the message is in, shown with its labels. A tab is a
 	// keyword, not a label, so without this nothing on the message said
@@ -517,7 +525,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// needs no chip.
 	const inboxTab = $derived.by(() => {
 		const inbox = mailboxes.find((m) => m.role === 'inbox');
-		if (!page.data.inboxTabsOn || !inbox || !email.mailboxIds[inbox.id]) return null;
+		if (!page.data.inboxTabsOn || !inbox || !mailboxIds[inbox.id]) return null;
 		const key = categoryOf(email.keywords);
 		return key === 'important' ? null : INBOX_CATEGORIES.find((c) => c.key === key) ?? null;
 	});
@@ -539,23 +547,30 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	/** "Move to…" → a label: the label is added and the message stays where it is. */
 	async function addLabelFromPicker(labelId: string) {
 		showMovePicker = false;
-		if (email.mailboxIds[labelId] !== true) await toggleLabel(labelId);
+		if (mailboxIds[labelId] !== true) await toggleLabel(labelId);
 	}
 
 	async function toggleLabel(labelId: string) {
-		const isApplied = email.mailboxIds[labelId] === true;
+		const isApplied = mailboxIds[labelId] === true;
 		const action = isApplied ? 'remove' : 'apply';
-		await fetch(`/api/email/${email.id}/label`, {
+		showLabelMenu = false;
+		const res = await fetch(`/api/email/${email.id}/label`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ labelId, action })
-		});
-		if (isApplied) {
-			delete email.mailboxIds[labelId];
-		} else {
-			email.mailboxIds[labelId] = true;
+		}).catch(() => null);
+		const data = res?.ok
+			? ((await res.json().catch(() => null)) as { mailboxIds?: Record<string, boolean> | null } | null)
+			: null;
+		// Where the server put it (taking off the only label puts it in
+		// Archive), or failing that the label alone changed.
+		let next = data?.mailboxIds;
+		if (!next) {
+			next = { ...mailboxIds };
+			if (isApplied) delete next[labelId];
+			else next[labelId] = true;
 		}
-		showLabelMenu = false;
+		filed = { of: email, mailboxIds: next };
 	}
 
 	// --- Remote images: Settings → Messages → "Auto-load remote images" ---
@@ -780,7 +795,11 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			await fetch(`/api/email/${email.id}`, {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action, sourceMailboxId, ...extra })
+				body: JSON.stringify({
+					action,
+					...extra,
+					...(action === 'trash' && viewIsTrash ? { permanent: true } : {})
+				})
 			});
 			if (action === 'trash' || action === 'archive' || action === 'spam') {
 				goto('/inbox');
@@ -799,7 +818,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 
 	const otp = $derived(isDraft ? null : detectEmailVerificationCode(email));
 	const trashMailboxId = $derived(mailboxes.find((m) => m.role === 'trash')?.id ?? '');
-	const isInTrash = $derived(!!trashMailboxId && email.mailboxIds[trashMailboxId] === true);
+	const isInTrash = $derived(!!trashMailboxId && mailboxIds[trashMailboxId] === true);
 	const otpTrashAfterCopy = $derived(page.data.otpTrashAfterCopy !== false);
 	let otpBusy = $state(false);
 	let otpCopied = $state(false);
@@ -852,11 +871,10 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 
 			const id = email.id;
 			const from = sourceMailboxId;
-			const trashId = trashMailboxId;
 			const res = await fetch(`/api/email/${id}`, {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action: 'trash', sourceMailboxId: from })
+				body: JSON.stringify({ action: 'trash' })
 			}).catch(() => null);
 			if (!res?.ok) {
 				showToast({ message: 'Code copied, but the email could not be moved to Trash' });
@@ -866,7 +884,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 				message: 'Code copied · email moved to Trash',
 				duration: 6000,
 				action: from
-					? { label: 'Undo', onClick: () => void restoreFromTrash(id, from, trashId) }
+					? { label: 'Undo', onClick: () => void restoreFromTrash(id, from) }
 					: undefined
 			});
 			if (onRemoved) {
@@ -882,11 +900,16 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		}
 	}
 
-	async function restoreFromTrash(id: string, targetMailboxId: string, trashId: string) {
+	/**
+	 * Undo a Trash: back to the folder it came from, labels kept. `restore`
+	 * takes any folder it may have been in, Sent and Drafts too, and falls
+	 * back to the Inbox for one mail can't be put back in.
+	 */
+	async function restoreFromTrash(id: string, mailboxId: string) {
 		const res = await fetch(`/api/email/${id}`, {
 			method: 'PATCH',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ action: 'moveTo', targetMailboxId, sourceMailboxId: trashId })
+			body: JSON.stringify({ action: 'restore', mailboxId })
 		}).catch(() => null);
 		if (!res?.ok) {
 			showToast({ message: 'Could not restore the email' });

@@ -1,5 +1,6 @@
 import type { JMAPClient } from '$lib/jmap/client';
 import { getMailboxes } from '$lib/jmap/mailbox';
+import { EMAIL_SET_BATCH } from '$lib/jmap/email';
 import type { Email, Mailbox } from '$lib/jmap/types';
 import type { Rule } from '$lib/types/rules';
 import { matcherProperties, ruleContext, updatesForEmails } from './engine';
@@ -16,7 +17,7 @@ import { matcherProperties, ruleContext, updatesForEmails } from './engine';
  */
 
 const PAGE = 200;
-const BATCH = 50;
+const BATCH = EMAIL_SET_BATCH;
 
 export interface ScanResult {
 	scanned: number;

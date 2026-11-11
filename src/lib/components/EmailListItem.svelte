@@ -15,6 +15,8 @@
 	const allLabels: Label[] = $derived(labelsContext?.current ?? []);
 	const getRemindedIds = getContext<() => Set<string>>('remindedIds');
 	const listMailboxId = getContext<() => string>('listMailboxId');
+	/** Whether the list is the Trash mailbox itself, where Trash deletes for good. */
+	const getListIsTrash = getContext<(() => boolean) | undefined>('listIsTrash');
 	/** emailId → ISO return time for mail parked in Remind Me Later. */
 	const getReminderAt = getContext<(() => Map<string, string>) | undefined>('reminderAt');
 	const getInboxTabs = getContext<(() => InboxTabsState | null) | undefined>('inboxTabs');
@@ -39,6 +41,10 @@
 	const sourceMailboxId = $derived(
 		listMailboxId?.() || Object.keys(email.mailboxIds)[0] || ''
 	);
+
+	const listIsTrash = $derived(getListIsTrash?.() ?? false);
+	// Opened from the Trash list, the message's own page knows it was (see EmailDetail).
+	const openHref = $derived(listIsTrash ? `/email/${email.id}?from=trash` : `/email/${email.id}`);
 
 	const isRead = $derived('$seen' in email.keywords);
 	// Which tab this row is in, when the list is a tabbed Inbox.
@@ -85,7 +91,7 @@
 
 	function openRow() {
 		if (onClick) onClick(email);
-		else goto(`/email/${email.id}`);
+		else goto(openHref);
 	}
 
 	function handleRowClick(e: MouseEvent) {
@@ -136,7 +142,7 @@
 </script>
 
 <a
-	href="/email/{email.id}"
+	href={openHref}
 	onclick={handleRowClick}
 	ondblclick={handleRowDblClick}
 	draggable="true"
@@ -211,7 +217,7 @@
 					</time>
 				{/if}
 			</div>
-			<EmailRowActions emailId={email.id} {isUnread} {sourceMailboxId} hasReminder={!!reminderAt} {category} />
+			<EmailRowActions emailId={email.id} {isUnread} {sourceMailboxId} hasReminder={!!reminderAt} {category} trashIsPermanent={listIsTrash} />
 		</div>
 		<div class="email-subject truncate text-sm {isRead ? 'text-text-secondary' : 'text-text font-medium'} mt-0.5 flex items-center gap-1.5">
 			{#if wasReminded}

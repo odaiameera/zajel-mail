@@ -18,7 +18,7 @@
 	import type { MailboxMetaMap } from '$lib/types/mailbox-meta';
 	import { showToast } from '$lib/stores/toast';
 	import { isScheduledMailbox } from '$lib/jmap/mailbox';
-	import { canMoveInto, mailboxKind } from '$lib/mailboxes';
+	import { canDropOn, mailboxKind } from '$lib/mailboxes';
 	import {
 		buildFolderTree,
 		descendantIds,
@@ -137,10 +137,6 @@
 	 * which adds the label. Not on Drafts, Sent, Scheduled (only Send later
 	 * puts mail there) or Remind Me Later (a drop there set no reminder).
 	 */
-	function canDropOn(m: Mailbox): boolean {
-		if (m.name === 'Sent Messages') return false;
-		return canMoveInto(m, mailboxes) || mailboxKind(m, mailboxes) === 'label';
-	}
 
 	function hasEmailPayload(e: DragEvent): boolean {
 		return !!e.dataTransfer?.types?.includes(EMAIL_DRAG_TYPE);
@@ -395,7 +391,7 @@
 		<nav class="flex-1 overflow-y-auto py-1 px-2">
 			<!-- System folders -->
 			{#each systemFolders as mailbox (mailbox.id)}
-				{@const droppable = canDropOn(mailbox)}
+				{@const droppable = canDropOn(mailbox, mailboxes)}
 				<a
 					href={getMailboxHref(mailbox)}
 					ondragover={droppable ? onRowDragOver : undefined}

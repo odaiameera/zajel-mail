@@ -322,7 +322,14 @@ async function runButton(token: ButtonToken): Promise<string> {
 		return 'Marked read';
 	}
 	if (token.action === 'archive') {
-		await moveToArchive(client, auth.accountId, [token.emailId]);
+		try {
+			await moveToArchive(client, auth.accountId, [token.emailId]);
+		} catch (err) {
+			// The account has no Archive and none could be made. Anything else
+			// is a plain failure, answered by the caller.
+			if (err instanceof FilingError) return 'No Archive folder';
+			throw err;
+		}
 		return 'Archived';
 	}
 	// Snooze: into Remind Me Later, back in an hour, the same as in the app.

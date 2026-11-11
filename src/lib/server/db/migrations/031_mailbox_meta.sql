@@ -21,11 +21,18 @@ CREATE TABLE IF NOT EXISTS mailbox_meta (
 -- The old rows, matched to their account by address: exactly first, then,
 -- for an address no account has exactly, without regard to case. A row
 -- whose address has no account is left behind. Labels go first; where a
--- folder row names the same mailbox, the one changed last wins.
+-- folder row names the same mailbox, the one changed last wins its colour
+-- and icon.
+--
+-- A display name comes only from label_meta. A folder's name is the mail
+-- server's, and folder_meta rows were never removed when a folder was
+-- deleted, so a folder row's name could otherwise end up on a label made
+-- later with the same id. A folder row with no colour or icon brings nothing.
 CREATE TEMP TABLE _meta_031 AS
   SELECT 0 AS src, user_email, mailbox_id, color, icon, display_name, created_at, updated_at FROM label_meta
   UNION ALL
-  SELECT 1 AS src, user_email, mailbox_id, color, icon, display_name, created_at, updated_at FROM folder_meta;
+  SELECT 1 AS src, user_email, mailbox_id, color, icon, NULL AS display_name, created_at, updated_at FROM folder_meta
+  WHERE NULLIF(color, '') IS NOT NULL OR NULLIF(icon, '') IS NOT NULL;
 
 INSERT INTO mailbox_meta (account_id, mailbox_id, color, icon, display_name, created_at, updated_at)
   SELECT ma.id, m.mailbox_id, NULLIF(m.color, ''), NULLIF(m.icon, ''), NULLIF(m.display_name, ''), m.created_at, m.updated_at
@@ -39,7 +46,7 @@ INSERT INTO mailbox_meta (account_id, mailbox_id, color, icon, display_name, cre
 ON CONFLICT (account_id, mailbox_id) DO UPDATE SET
   color        = excluded.color,
   icon         = excluded.icon,
-  display_name = excluded.display_name,
+  display_name = COALESCE(excluded.display_name, mailbox_meta.display_name),
   updated_at   = excluded.updated_at
 WHERE excluded.updated_at >= mailbox_meta.updated_at;
 

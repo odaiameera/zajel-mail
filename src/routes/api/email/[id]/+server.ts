@@ -3,7 +3,15 @@ import type { RequestHandler } from './$types';
 import { createClient, fetchSession } from '$lib/jmap/auth';
 import { markEmail, flagEmail, destroyEmail, emailMailboxMembership, emailsInMailbox, EmailUpdateError } from '$lib/jmap/email';
 import { getMailboxes } from '$lib/jmap/mailbox';
-import { FilingError, fileInto, markNotSpam, markSpam, moveToArchive, moveToTrash } from '$lib/server/filing';
+import {
+	FilingError,
+	fileInto,
+	markNotSpam,
+	markSpam,
+	moveToArchive,
+	moveToTrash,
+	restoreFromTrash
+} from '$lib/server/filing';
 import { trustSender } from '$lib/server/trust-sender';
 import { recordSpamCorrections } from '$lib/server/db/queries/jev-decisions';
 
@@ -13,10 +21,10 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 	const body = await request.json();
 	const action = body.action as string;
 	const emailId = params.id;
-	// The folder the list was showing. Moves no longer read it (they go by
-	// where the message really is); Trash reads it only to know that it was
-	// pressed in Trash, where it deletes for good.
-	const viewMailboxId = body.sourceMailboxId as string | undefined;
+	// `sourceMailboxId` (the folder an older client says it was showing) is
+	// ignored: moves go by where the message really is, and only an explicit
+	// `permanent` deletes for good.
+	const permanent = body.permanent === true;
 
 	try {
 		const client = createClient(locals.auth);
@@ -39,15 +47,22 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 				const mailboxes = await getMailboxes(client, accountId);
 				const trash = mailboxes.find((m) => m.role === 'trash');
 				if (!trash) return json({ error: 'Trash folder not found' }, { status: 500 });
-				// Destroy only a message that is really in Trash.
+				// Delete for good only when asked to (Trash pressed in the Trash
+				// list) and the message really is in Trash. Otherwise it is a move
+				// to Trash, which changes nothing for a message already there.
 				const inTrash =
-					viewMailboxId === trash.id &&
-					(await emailsInMailbox(client, accountId, [emailId], trash.id)).has(emailId);
+					permanent && (await emailsInMailbox(client, accountId, [emailId], trash.id)).has(emailId);
 				if (inTrash) {
 					await destroyEmail(client, accountId, emailId);
 				} else {
 					await moveToTrash(client, accountId, [emailId], { mailboxes });
 				}
+				break;
+			}
+			case 'restore': {
+				// Undo a Trash: back where it was, labels kept.
+				const mailboxId = typeof body.mailboxId === 'string' ? body.mailboxId : '';
+				await restoreFromTrash(client, accountId, emailId, mailboxId);
 				break;
 			}
 			case 'archive':

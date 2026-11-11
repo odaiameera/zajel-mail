@@ -55,6 +55,16 @@ export async function listLabels(
 	);
 }
 
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
+/**
+ * Per account, after a run that left the cookie in place: when to try
+ * again, and when that was last logged. In memory, as the account tasks
+ * keep theirs: a restart may try once more straight away.
+ */
+const keywordMigrationWait = new Map<string, { retryAt: number; warnedAt: number }>();
+
 /**
  * The old keyword labels: an early version kept labels in a `mail_labels`
  * cookie and marked messages with a keyword per label. They become label
@@ -62,18 +72,26 @@ export async function listLabels(
  * any other label) with the keyword cleared in the same write.
  *
  * Runs only while that cookie is there, so a page load without it costs
- * nothing. The cookie goes once every label has been carried over; if the
- * mail server refuses a write, or anything else fails, it stays and the
- * next page load tries again.
+ * nothing. The cookie goes once every label has been carried over. If the
+ * mail server refuses a write, or anything else fails, it stays, and the
+ * next try for that account waits an hour (the failure is logged the first
+ * time, then at most once a day). The cookie's colour is given only to a
+ * label this run made: one that already exists keeps the colour its owner
+ * gave it.
  */
 export async function migrateKeywordLabelsIfNeeded(
 	client: JMAPClient,
 	accountId: string,
 	accountRowId: string | null | undefined,
-	cookies: Cookies
+	cookies: Cookies,
+	now = Date.now()
 ): Promise<void> {
 	const rawOld = cookies.get(LEGACY_LABELS_COOKIE);
 	if (!rawOld) return;
+
+	const key = accountRowId || accountId;
+	const waiting = keywordMigrationWait.get(key);
+	if (waiting && now < waiting.retryAt) return;
 
 	type OldLabel = { id: string; name: string; color: string };
 	let oldLabels: OldLabel[] = [];
@@ -88,35 +106,51 @@ export async function migrateKeywordLabelsIfNeeded(
 		// Malformed cookie: nothing in it can be carried over.
 	}
 
-	let complete = true;
+	let failure: unknown = null;
 	if (oldLabels.length > 0) {
-		// Existing label mailboxes, by lower-cased name, so a label that was
-		// carried over before is reused rather than created twice.
-		const existing = await listLabelMailboxes(client, accountId);
-		const existingByName = new Map(existing.map((m) => [m.name.toLowerCase(), m.id]));
+		try {
+			// Existing label mailboxes, by lower-cased name, so a label that was
+			// carried over before is reused rather than created twice.
+			const existing = await listLabelMailboxes(client, accountId);
+			const existingByName = new Map(existing.map((m) => [m.name.toLowerCase(), m.id]));
 
-		for (const old of oldLabels) {
-			try {
-				let newId = existingByName.get(old.name.trim().toLowerCase());
-				if (!newId) {
-					const result = await createLabelMailbox(client, accountId, old.name);
-					if ('error' in result) {
-						complete = false;
-						continue;
+			for (const old of oldLabels) {
+				try {
+					let newId = existingByName.get(old.name.trim().toLowerCase());
+					if (!newId) {
+						const result = await createLabelMailbox(client, accountId, old.name);
+						if ('error' in result) {
+							failure ??= new Error(`the label “${old.name}” could not be made: ${result.error}`);
+							continue;
+						}
+						newId = result.id;
+						existingByName.set(old.name.trim().toLowerCase(), newId);
+						// Only a label made here takes the old colour.
+						if (accountRowId && old.color) setMailboxMeta(accountRowId, newId, { color: old.color });
 					}
-					newId = result.id;
-					existingByName.set(old.name.trim().toLowerCase(), newId);
+					await migrateEmailsForLabel(client, accountId, old.id, newId);
+				} catch (err) {
+					failure ??= err;
 				}
-				if (accountRowId && old.color) setMailboxMeta(accountRowId, newId, { color: old.color });
-				await migrateEmailsForLabel(client, accountId, old.id, newId);
-			} catch (err) {
-				complete = false;
-				console.warn('[labels] carrying over an old label failed; will try again', err instanceof Error ? err.message : err);
 			}
+		} catch (err) {
+			failure ??= err;
 		}
 	}
 
-	if (complete) cookies.delete(LEGACY_LABELS_COOKIE, { path: '/' });
+	if (failure === null) {
+		keywordMigrationWait.delete(key);
+		cookies.delete(LEGACY_LABELS_COOKIE, { path: '/' });
+		return;
+	}
+	const warn = !waiting || now - waiting.warnedAt >= DAY;
+	keywordMigrationWait.set(key, { retryAt: now + HOUR, warnedAt: warn ? now : waiting.warnedAt });
+	if (warn) {
+		console.warn(
+			'[labels] carrying over the old labels failed; will try again in an hour',
+			failure instanceof Error ? failure.message : failure
+		);
+	}
 }
 
 /**

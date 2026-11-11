@@ -54,11 +54,14 @@ async function loadMailboxes(client: JMAPClient, accountId: string, opts?: Filin
 	return opts?.mailboxes ?? (await getMailboxes(client, accountId));
 }
 
+/** Each message's `mailboxIds` once filed. */
+export type FiledMailboxes = Map<string, Record<string, boolean>>;
+
 /**
  * Read where each message is, work out where it goes with `step`, and write
  * what differs. `step` returning null means it needs Archive (a message
  * that would otherwise be left in nothing); Archive is then found or made
- * and `step` asked again with it.
+ * and `step` asked again with it. Returns where each message now is.
  */
 async function file(
 	client: JMAPClient,
@@ -67,8 +70,9 @@ async function file(
 	step: (current: Record<string, boolean>, archiveId: string | null) => Record<string, boolean> | null,
 	archiveId: string | null,
 	keywords: Keywords = {}
-): Promise<void> {
-	if (ids.length === 0) return;
+): Promise<FiledMailboxes> {
+	const filed: FiledMailboxes = new Map();
+	if (ids.length === 0) return filed;
 	const membership = await emailMailboxMembership(client, accountId, ids);
 	const failures: EmailUpdateFailure[] = [];
 	const update: Record<string, Record<string, unknown>> = {};
@@ -89,6 +93,7 @@ async function file(
 			failures.push({ id, type: 'invalidProperties', description: 'No Archive folder to put the message in' });
 			continue;
 		}
+		filed.set(id, next);
 		const patch: Record<string, unknown> = {};
 		if (!sameMailboxIds(next, current)) patch.mailboxIds = next;
 		for (const [keyword, on] of Object.entries(keywords)) patch[`keywords/${keyword}`] = on;
@@ -96,6 +101,7 @@ async function file(
 	}
 
 	await sendEmailUpdates(client, accountId, update, failures);
+	return filed;
 }
 
 /** Archive as `ensureArchiveMailbox` finds it, without making one. */
@@ -149,23 +155,26 @@ function assertLabel(labelId: string, mailboxes: Mailbox[]): void {
 	if (!label || mailboxKind(label, mailboxes) !== 'label') throw new FilingError('Not a label');
 }
 
-/** Add a label. Nothing else about the messages changes (but `keywords`, written in the same write). */
+/**
+ * Add a label. Nothing else about the messages changes (but `keywords`,
+ * written in the same write). Returns where each message now is.
+ */
 export async function addLabel(
 	client: JMAPClient,
 	accountId: string,
 	ids: string[],
 	labelId: string,
 	opts?: FilingOptions & { keywords?: Keywords }
-): Promise<void> {
+): Promise<FiledMailboxes> {
 	const mailboxes = await loadMailboxes(client, accountId, opts);
 	assertLabel(labelId, mailboxes);
-	await file(client, accountId, ids, stepFor({ addLabel: labelId }, mailboxes), null, opts?.keywords);
+	return file(client, accountId, ids, stepFor({ addLabel: labelId }, mailboxes), null, opts?.keywords);
 }
 
 /**
  * Take a label off. A message that would be left in no mailbox at all (it
  * was only in this label) goes to Archive, which is made if the account has
- * none.
+ * none. Returns where each message now is.
  */
 export async function removeLabel(
 	client: JMAPClient,
@@ -173,10 +182,10 @@ export async function removeLabel(
 	ids: string[],
 	labelId: string,
 	opts?: FilingOptions
-): Promise<void> {
+): Promise<FiledMailboxes> {
 	const mailboxes = await loadMailboxes(client, accountId, opts);
 	assertLabel(labelId, mailboxes);
-	await file(
+	return file(
 		client,
 		accountId,
 		ids,
@@ -252,6 +261,38 @@ export async function markNotSpam(client: JMAPClient, accountId: string, ids: st
 		mailboxes,
 		keywords: { $junk: false, $notjunk: true }
 	});
+}
+
+/**
+ * Undo a Trash: take a message out of Trash and put it back where it was,
+ * keeping its labels. `mailboxId` may be any folder or system folder, Sent
+ * and Drafts included (that is where it came from). Remind Me Later,
+ * Scheduled, a label, the labels root, Trash itself, or a mailbox that no
+ * longer exists sends it to the Inbox instead. A message no longer in Trash
+ * is left as it is.
+ */
+export async function restoreFromTrash(
+	client: JMAPClient,
+	accountId: string,
+	emailId: string,
+	mailboxId: string,
+	opts?: FilingOptions
+): Promise<void> {
+	const mailboxes = await loadMailboxes(client, accountId, opts);
+	const trashId = roleId(mailboxes, 'trash', 'Trash');
+	const target = mailboxes.find((m) => m.id === mailboxId);
+	const kind = target ? mailboxKind(target, mailboxes) : null;
+	const home =
+		target && target.id !== trashId && (kind === 'folder' || kind === 'system')
+			? target.id
+			: roleId(mailboxes, 'inbox', 'Inbox');
+	await file(
+		client,
+		accountId,
+		[emailId],
+		(current) => (current[trashId] ? nextMailboxIds(current, { move: home }, mailboxes) : current),
+		null
+	);
 }
 
 export interface SnoozeResult {

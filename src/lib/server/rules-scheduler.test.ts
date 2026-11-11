@@ -14,7 +14,10 @@ const state = vi.hoisted(() => ({
 	outOfOffice: null as Record<string, unknown> | null,
 	answered: [] as string[][],
 	answerFails: false,
-	properties: [] as string[][]
+	properties: [] as string[][],
+	mailboxGets: 0,
+	/** Mailboxes made after the first Mailbox/get: every later one lists them. */
+	madeLater: [] as Record<string, unknown>[]
 }));
 
 vi.mock('$lib/jmap/auth', () => ({
@@ -24,7 +27,19 @@ vi.mock('$lib/jmap/auth', () => ({
 			if (name === 'Mailbox/get') {
 				return {
 					methodResponses: [
-						['Mailbox/get', { list: [{ id: 'IN', name: 'Inbox', role: 'inbox', parentId: null }] }, '0']
+						[
+							'Mailbox/get',
+							{
+								list: [
+									{ id: 'IN', name: 'Inbox', role: 'inbox', parentId: null },
+									{ id: 'LBLS', name: 'Labels', role: null, parentId: null },
+									{ id: 'WORK', name: 'Work', role: null, parentId: 'LBLS' },
+									{ id: 'PRJ', name: 'Projects', role: null, parentId: null },
+									...(state.mailboxGets++ > 0 ? state.madeLater : [])
+								]
+							},
+							'0'
+						]
 					],
 					sessionState: ''
 				};
@@ -122,6 +137,8 @@ beforeEach(() => {
 	state.answered = [];
 	state.answerFails = false;
 	state.properties = [];
+	state.mailboxGets = 0;
+	state.madeLater = [];
 });
 
 describe('the auto-apply cursor', () => {
@@ -264,5 +281,38 @@ describe('applyRulesNow', () => {
 		await now;
 
 		expect(state.sets.map((u) => Object.keys(u))).toEqual([['m0'], ['m1']]);
+	});
+});
+
+describe('a label made during the run', () => {
+	const toProjects: Rule = { ...markRead, id: 'r2', markRead: false, target: { kind: 'folder', mailboxId: 'PRJ' } };
+
+	it('stays on a message a rule moves, and the folders are fetched once more', async () => {
+		state.rules = [toProjects];
+		state.madeLater = [
+			{ id: 'NEWLBL', name: 'Fresh', role: null, parentId: 'LBLS' },
+			{ id: 'NEWDIR', name: 'Fresh folder', role: null, parentId: null }
+		];
+		state.emails = page(2, () => '2026-10-20T07:00:00Z');
+		state.emails[0].mailboxIds = { IN: true, WORK: true, NEWLBL: true };
+		state.emails[1].mailboxIds = { IN: true, NEWDIR: true };
+		await applyRulesForUser(auth, 'newlabel@example.test');
+		expect(state.sets).toEqual([
+			{
+				m0: { mailboxIds: { PRJ: true, WORK: true, NEWLBL: true } },
+				// The fresh list knows the new folder: the move leaves it.
+				m1: { mailboxIds: { PRJ: true } }
+			}
+		]);
+		expect(state.mailboxGets).toBe(2);
+	});
+
+	it('fetches the folders once when every message is in folders it knows', async () => {
+		state.rules = [toProjects];
+		state.emails = page(1, () => '2026-10-20T07:00:00Z');
+		state.emails[0].mailboxIds = { IN: true, WORK: true };
+		await applyRulesForUser(auth, 'knownlabels@example.test');
+		expect(state.sets).toEqual([{ m0: { mailboxIds: { PRJ: true, WORK: true } } }]);
+		expect(state.mailboxGets).toBe(1);
 	});
 });

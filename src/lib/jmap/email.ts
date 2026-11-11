@@ -672,10 +672,14 @@ export async function updateEmailMailboxes(
 	await sendEmailUpdates(client, accountId, update, failures);
 }
 
+/** Updates per Email/set, so a large selection is never one request. The rules use the same. */
+export const EMAIL_SET_BATCH = 50;
+
 /**
- * Send one Email/set of updates, and throw {@link EmailUpdateError} for
- * every one the server refused, along with any `failures` the caller found
- * before writing (a message that no longer exists, say).
+ * Send the updates, {@link EMAIL_SET_BATCH} to an Email/set, and throw
+ * {@link EmailUpdateError} for every one the server refused, along with any
+ * `failures` the caller found before writing (a message that no longer
+ * exists, say). Every batch is sent whatever an earlier one's refusals.
  */
 export async function sendEmailUpdates(
 	client: JMAPClient,
@@ -684,8 +688,10 @@ export async function sendEmailUpdates(
 	failures: EmailUpdateFailure[] = []
 ): Promise<void> {
 	const all = [...failures];
-	if (Object.keys(update).length > 0) {
-		const setResponse = await client.request([['Email/set', { accountId, update }, '0']]);
+	const entries = Object.entries(update);
+	for (let i = 0; i < entries.length; i += EMAIL_SET_BATCH) {
+		const chunk = Object.fromEntries(entries.slice(i, i + EMAIL_SET_BATCH));
+		const setResponse = await client.request([['Email/set', { accountId, update: chunk }, '0']]);
 		all.push(...collectSetFailures(setResponse.methodResponses[0][1] as EmailSetResult));
 	}
 	if (all.length > 0) {

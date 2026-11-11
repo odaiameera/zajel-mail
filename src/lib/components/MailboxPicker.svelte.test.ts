@@ -30,7 +30,7 @@ const MAILBOXES: Mailbox[] = [
 
 afterEach(cleanup);
 
-function open(props: Partial<{ excludeIds: string[]; appliedLabelIds: string[] }> = {}) {
+function open(props: Partial<{ excludeIds: string[]; appliedLabelIds: string[]; mailboxes: Mailbox[] }> = {}) {
 	const onMove = vi.fn();
 	const onAddLabel = vi.fn();
 	render(MailboxPicker, {
@@ -81,6 +81,12 @@ describe('MailboxPicker', () => {
 		const { rows } = open();
 		const names = rows().map((r) => r.name);
 		for (const name of ['Remind Me Later', 'Scheduled', 'Drafts', 'Sent', 'Labels']) expect(names).not.toContain(name);
+	});
+
+	it('never offers a folder named Sent Messages, as the server refuses it', () => {
+		const { rows } = open({ mailboxes: [...MAILBOXES, box('SM', 'Sent Messages')] });
+		expect(rows().map((r) => r.name)).not.toContain('Sent Messages');
+		expect(rows().map((r) => r.name)).toContain('Bills');
 	});
 
 	it('leaves out the folder the message is in', () => {

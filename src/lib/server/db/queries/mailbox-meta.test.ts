@@ -47,6 +47,10 @@ beforeAll(() => {
 		INSERT INTO folder_meta (user_email, mailbox_id, display_name, color, icon)
 			VALUES ('gone@example.test', 'F9', 'Old', '#123456', NULL);
 
+		-- A deleted folder's row: only a name, nothing to carry over.
+		INSERT INTO folder_meta (user_email, mailbox_id, display_name, color, icon)
+			VALUES ('me@example.test', 'F2', 'Deleted folder', '', '');
+
 		-- The same mailbox id in both tables: the one changed last wins.
 		INSERT INTO label_meta (user_email, mailbox_id, display_name, color, icon, updated_at)
 			VALUES ('me@example.test', 'BOTH', 'As a label', '#111111', NULL, '2026-01-01 10:00:00');
@@ -63,7 +67,12 @@ beforeAll(() => {
 describe('migration 031', () => {
 	it('copies label and folder rows to their account, an empty icon becoming none', () => {
 		expect(getMailboxMeta('acct-me', 'L1')).toEqual({ mailboxId: 'L1', color: '#ff0000', icon: 'star', displayName: 'Work' });
-		expect(getMailboxMeta('acct-me', 'F1')).toEqual({ mailboxId: 'F1', color: '#00ff00', icon: null, displayName: 'Bills' });
+		// A folder's name is the mail server's: its old display name is not carried.
+		expect(getMailboxMeta('acct-me', 'F1')).toEqual({ mailboxId: 'F1', color: '#00ff00', icon: null, displayName: null });
+	});
+
+	it('carries nothing for a folder row that held only a name', () => {
+		expect(getMailboxMeta('acct-me', 'F2')).toBeNull();
 	});
 
 	it('matches an address in another case only when no account has it exactly', () => {
@@ -74,12 +83,12 @@ describe('migration 031', () => {
 	it('leaves behind rows whose address has no account, and the old tables as they were', () => {
 		const all = getDb().prepare('SELECT mailbox_id FROM mailbox_meta ORDER BY mailbox_id').all() as { mailbox_id: string }[];
 		expect(all.map((r) => r.mailbox_id)).toEqual(['BOTH', 'BOTH2', 'F1', 'L1', 'L2']);
-		expect((getDb().prepare('SELECT COUNT(*) AS n FROM folder_meta').get() as { n: number }).n).toBe(4);
+		expect((getDb().prepare('SELECT COUNT(*) AS n FROM folder_meta').get() as { n: number }).n).toBe(5);
 		expect((getDb().prepare('SELECT COUNT(*) AS n FROM label_meta').get() as { n: number }).n).toBe(4);
 	});
 
-	it('keeps the row changed last when both tables have the same mailbox', () => {
-		expect(getMailboxMeta('acct-me', 'BOTH')).toEqual({ mailboxId: 'BOTH', color: '#222222', icon: 'folder-heart', displayName: 'As a folder' });
+	it('keeps the colour and icon changed last when both tables have the same mailbox, and the label’s name', () => {
+		expect(getMailboxMeta('acct-me', 'BOTH')).toEqual({ mailboxId: 'BOTH', color: '#222222', icon: 'folder-heart', displayName: 'As a label' });
 		expect(getMailboxMeta('acct-me', 'BOTH2')).toMatchObject({ color: '#333333', displayName: 'Label, newer' });
 	});
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Mailbox } from '$lib/jmap/types';
-import { canMoveInto, folderOptions, mailboxKind, nextMailboxIds } from './mailboxes';
+import { canDropOn, canMoveInto, folderOptions, mailboxKind, nextMailboxIds } from './mailboxes';
 
 function box(id: string, name: string, extra: Partial<Mailbox> = {}): Mailbox {
 	return { id, name, role: null, sortOrder: 0, totalEmails: 0, unreadEmails: 0, parentId: null, ...extra };
@@ -65,6 +65,24 @@ describe('canMoveInto', () => {
 	it('refuses labels, the Labels container, Remind Me Later, Scheduled, Drafts and Sent', () => {
 		for (const id of ['WORK', 'HOME', 'LBLS', 'RML', 'SCH', 'DR', 'SN']) expect(canMoveInto(byId(id), MAILBOXES)).toBe(false);
 	});
+
+	it('refuses a folder named Sent Messages, as the app always has', () => {
+		const sm = box('SM', 'Sent Messages');
+		expect(canMoveInto(sm, [...MAILBOXES, sm])).toBe(false);
+	});
+});
+
+describe('canDropOn', () => {
+	const list = [...MAILBOXES, box('SM', 'Sent Messages')];
+	const drop = (id: string) => canDropOn(list.find((m) => m.id === id)!, list);
+
+	it('takes mail on a folder, the Inbox, Archive, Junk and Trash, and on a label', () => {
+		for (const id of ['PRJ', 'ZAJ', 'IN', 'AR', 'JK', 'TR', 'WORK', 'HOME']) expect(drop(id)).toBe(true);
+	});
+
+	it('refuses the Labels container, Remind Me Later, Scheduled, Drafts, Sent and Sent Messages', () => {
+		for (const id of ['LBLS', 'RML', 'SCH', 'DR', 'SN', 'SM']) expect(drop(id)).toBe(false);
+	});
 });
 
 describe('nextMailboxIds', () => {
@@ -82,6 +100,15 @@ describe('nextMailboxIds', () => {
 
 	it('gives a message that was only in labels a folder', () => {
 		expect(nextMailboxIds({ WORK: true }, { move: 'PRJ' }, MAILBOXES)).toEqual({ PRJ: true, WORK: true });
+	});
+
+	it('keeps a mailbox the list doesn’t know (a label made since it was loaded) on a move', () => {
+		// A1: NEWLBL is missing from the list.
+		expect(nextMailboxIds({ IN: true, WORK: true, NEWLBL: true }, { move: 'JK' }, MAILBOXES)).toEqual({
+			JK: true,
+			WORK: true,
+			NEWLBL: true
+		});
 	});
 
 	it('adds a label and changes nothing else', () => {

@@ -3,6 +3,7 @@ import { listSchedulableAuths, markNeedsReauth } from './auth/accounts';
 import { JMAPAuthError } from '$lib/jmap/client';
 import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
+import { EMAIL_SET_BATCH } from '$lib/jmap/email';
 import type { AuthState, Email } from '$lib/jmap/types';
 import { isRunnable } from '$lib/types/rules';
 import { accountIdForEmail } from './db/queries/account-tasks';
@@ -11,6 +12,7 @@ import { listRules } from './rules/store';
 import { matcherProperties, ruleContext, updatesForEmails } from './rules/engine';
 import { runAccountTasks } from './account-tasks';
 import { AUTO_REPLY_PROPERTIES, answerNewMail, outOfOfficeFor, pruneOldAutoReplies } from './auto-reply';
+import { hasUnknownMailbox } from '$lib/mailboxes';
 
 /**
  * Server-side rule application. Rules are not handed to the mail server;
@@ -26,7 +28,7 @@ import { AUTO_REPLY_PROPERTIES, answerNewMail, outOfOfficeFor, pruneOldAutoRepli
  */
 
 const PAGE = 100;
-const BATCH = 50;
+const BATCH = EMAIL_SET_BATCH;
 
 let started = false;
 
@@ -121,13 +123,12 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 
 	const client = createClient(auth);
 	const { accountId } = auth;
-	const mailboxes = await getMailboxes(client, accountId);
+	let mailboxes = await getMailboxes(client, accountId);
 	const inbox = mailboxes.find((m) => m.role === 'inbox');
 	if (!inbox) {
 		setRulesCursor(userEmail, nowIso);
 		return;
 	}
-	const ctx = ruleContext(mailboxes);
 
 	const matcher = matcherProperties(enabled);
 	const { fetchTextBodyValues } = matcher;
@@ -169,7 +170,13 @@ async function runApply(auth: AuthState, userEmail: string): Promise<void> {
 			console.error('[rules] out-of-office failed', userEmail, err);
 		}
 	}
-	const { update } = updatesForEmails(emails, enabled, ctx);
+	// A message in a mailbox the list above doesn't know (a label made since
+	// it was loaded) needs a fresh list, or a move couldn't tell that label
+	// from a folder. Once per run at most.
+	if (hasUnknownMailbox(emails.map((e) => e.mailboxIds ?? {}), mailboxes)) {
+		mailboxes = await getMailboxes(client, accountId);
+	}
+	const { update } = updatesForEmails(emails, enabled, ruleContext(mailboxes));
 
 	const entries = Object.entries(update);
 	for (let i = 0; i < entries.length; i += BATCH) {

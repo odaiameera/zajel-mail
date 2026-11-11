@@ -9,7 +9,8 @@ import { addLabel, FilingError, removeLabel } from '$lib/server/filing';
  * and has to be one of the account's labels: the same call with a folder id
  * would file the message there (Trash included, which the retention sweep
  * then empties). A message that was in nothing but the label goes to
- * Archive when the label comes off, since it has to be somewhere.
+ * Archive when the label comes off, since it has to be somewhere. The
+ * answer carries the message's resulting `mailboxIds`.
  */
 export const POST: RequestHandler = async ({ request, locals, params }) => {
 	if (!locals.auth) {
@@ -29,12 +30,13 @@ export const POST: RequestHandler = async ({ request, locals, params }) => {
 	const client = createClient(locals.auth);
 	const { accountId } = locals.auth;
 	try {
-		if (action === 'apply') {
-			await addLabel(client, accountId, [params.id], labelId);
-		} else {
-			await removeLabel(client, accountId, [params.id], labelId);
-		}
-		return json({ success: true });
+		const filed =
+			action === 'apply'
+				? await addLabel(client, accountId, [params.id], labelId)
+				: await removeLabel(client, accountId, [params.id], labelId);
+		// Where the message is now, so an open view can show it without a
+		// reload (taking off its only label puts it in Archive).
+		return json({ success: true, mailboxIds: filed.get(params.id) ?? null });
 	} catch (err) {
 		if (err instanceof FilingError) return json({ error: err.message }, { status: err.status });
 		if (err instanceof EmailUpdateError) {

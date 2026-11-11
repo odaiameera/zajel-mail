@@ -8,7 +8,7 @@
 	import { page } from '$app/state';
 	import type { MailboxMetaMap } from '$lib/types/mailbox-meta';
 	import MailboxIcon from '$lib/components/MailboxIcon.svelte';
-	import { folderOptions, labelsInOrder, movableSystemFolders } from '$lib/mailboxes';
+	import { canMoveInto, folderOptions, labelsInOrder, movableSystemFolders } from '$lib/mailboxes';
 
 	/**
 	 * "Move to…": the one picker for filing mail by hand. Two sections:
@@ -64,8 +64,12 @@
 		for (const m of movableSystemFolders(mailboxes)) {
 			if (!excludeSet.has(m.id)) list.push({ id: m.id, name: m.name, section: 'move', depth: 0, role: m.role });
 		}
+		const byId = new Map(mailboxes.map((m) => [m.id, m]));
 		for (const opt of folderOptions(mailboxes)) {
 			if (excludeSet.has(opt.id)) continue;
+			// The same test the server makes (a folder named "Sent Messages" is not offered).
+			const box = byId.get(opt.id);
+			if (box && !canMoveInto(box, mailboxes)) continue;
 			list.push({ id: opt.id, name: opt.name, section: 'move', depth: opt.depth, iconNode: meta[opt.id]?.iconNode ?? null });
 		}
 		for (const m of labelsInOrder(mailboxes)) {

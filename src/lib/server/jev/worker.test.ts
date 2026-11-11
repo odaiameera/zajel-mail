@@ -92,6 +92,10 @@ interface FakeEmail {
 /** Just enough JMAP for a sorting pass, over an in-memory mailbox. */
 class FakeJmap {
 	emails = new Map<string, FakeEmail>();
+	/** Mailbox/get calls answered. */
+	mailboxGets = 0;
+	/** Mailboxes made after the first Mailbox/get: every later one lists them. */
+	madeLater: { id: string; name: string; role: null; sortOrder: number; parentId: string | null }[] = [];
 
 	add(id: string, minutes: number, extra: Partial<FakeEmail> = {}) {
 		this.emails.set(id, {
@@ -130,9 +134,11 @@ class FakeJmap {
 							{ id: 'junk', name: 'Junk', role: 'junk', sortOrder: 4, parentId: null },
 							{ id: 'trash', name: 'Trash', role: 'trash', sortOrder: 5, parentId: null },
 							{ id: 'labels', name: 'Labels', role: null, sortOrder: 6, parentId: null },
-							{ id: 'news', name: 'News', role: null, sortOrder: 0, parentId: 'labels' }
+							{ id: 'news', name: 'News', role: null, sortOrder: 0, parentId: 'labels' },
+							...(this.mailboxGets > 0 ? this.madeLater : [])
 						]
 					};
+					this.mailboxGets++;
 					break;
 				case 'Email/query': {
 					const f = args.filter as { operator?: string; conditions?: Record<string, string>[] } & Record<string, string>;
@@ -850,6 +856,37 @@ describe('sortNewMail', () => {
 
 			expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true, news: true });
 			expect(fake.emails.get('wronglyJunked')!.mailboxIds).toEqual({ inbox: true, news: true });
+		});
+
+		it('keeps a label made during the pass on a move to Junk and back, fetching the folders again once', async () => {
+			updateJevSettings(ACCT, { spamMode: 'active' });
+			// Made, and put on these messages, after the pass loaded its folder list.
+			fake.madeLater = [
+				{ id: 'newlbl', name: 'Fresh', role: null, sortOrder: 0, parentId: 'labels' },
+				{ id: 'newdir', name: 'Fresh folder', role: null, sortOrder: 0, parentId: null }
+			];
+			fake.add('spammy', 1, { ...flagged, mailboxIds: { inbox: true, news: true, newlbl: true } });
+			fake.add('wronglyJunked', 2, {
+				mailboxIds: { junk: true, newlbl: true, newdir: true },
+				'header:authentication-results:asText:all': ['mx.example.test; spf=pass; dkim=pass; dmarc=pass']
+			});
+
+			await sortNewMail(ACCT, ME, auth, at(10));
+
+			expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true, news: true, newlbl: true });
+			// The fresh list knows the new folder: the move leaves it, as any move leaves every folder.
+			expect(fake.emails.get('wronglyJunked')!.mailboxIds).toEqual({ inbox: true, newlbl: true });
+			expect(fake.mailboxGets).toBe(2);
+		});
+
+		it('fetches the folders only once in a pass whose mail is all in folders it knows', async () => {
+			updateJevSettings(ACCT, { spamMode: 'active' });
+			fake.add('spammy', 1, { ...flagged, mailboxIds: { inbox: true, news: true } });
+
+			await sortNewMail(ACCT, ME, auth, at(10));
+
+			expect(fake.emails.get('spammy')!.mailboxIds).toEqual({ junk: true, news: true });
+			expect(fake.mailboxGets).toBe(1);
 		});
 
 		it('leaves Junk alone while spam checks are off', async () => {

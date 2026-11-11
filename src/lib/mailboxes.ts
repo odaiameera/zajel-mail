@@ -52,14 +52,29 @@ export function mailboxKind(mailbox: MailboxLike, mailboxes: MailboxLike[]): Mai
 export const MOVABLE_ROLES = ['inbox', 'archive', 'junk', 'trash'] as const;
 
 /**
+ * A folder some mail servers and clients keep sent mail in without marking
+ * it as Sent. The app has never offered it as a place to move mail.
+ */
+export const SENT_MESSAGES_NAME = 'Sent Messages';
+
+/**
  * Whether a message may be moved into this mailbox: a folder, or the Inbox,
  * Archive, Junk or Trash. Never a label, the labels root, Remind Me Later,
- * Scheduled, Drafts or Sent.
+ * Scheduled, Drafts, Sent, or a folder named "Sent Messages".
  */
 export function canMoveInto(mailbox: MailboxLike, mailboxes: MailboxLike[]): boolean {
 	const kind = mailboxKind(mailbox, mailboxes);
-	if (kind === 'folder') return true;
+	if (kind === 'folder') return mailbox.name !== SENT_MESSAGES_NAME;
 	return kind === 'system' && (MOVABLE_ROLES as readonly string[]).includes(mailbox.role ?? '');
+}
+
+/**
+ * Whether mail dragged onto this mailbox is taken: a move into anywhere
+ * {@link canMoveInto} allows, or a label (which is added, moving nothing).
+ * The sidebar asks this and nothing else.
+ */
+export function canDropOn(mailbox: MailboxLike, mailboxes: MailboxLike[]): boolean {
+	return canMoveInto(mailbox, mailboxes) || mailboxKind(mailbox, mailboxes) === 'label';
 }
 
 export type FilingOp =
@@ -85,9 +100,13 @@ export function nextMailboxIds(
 ): Record<string, boolean> | null {
 	const now = Object.keys(current).filter((id) => current[id]);
 	if ('move' in op) {
+		// Leave every mailbox the list knows and calls something other than a
+		// label. An id the list doesn't know (a label made after the list was
+		// loaded) is kept: never take mail out of a mailbox we can't identify.
 		const labels = labelMailboxIds(mailboxes);
+		const known = new Set(mailboxes.map((m) => m.id));
 		const next: Record<string, boolean> = { [op.move]: true };
-		for (const id of now) if (labels.has(id)) next[id] = true;
+		for (const id of now) if (labels.has(id) || !known.has(id)) next[id] = true;
 		return next;
 	}
 	if ('addLabel' in op) {
@@ -98,6 +117,21 @@ export function nextMailboxIds(
 	const rest = now.filter((id) => id !== op.removeLabel);
 	if (rest.length > 0) return Object.fromEntries(rest.map((id) => [id, true]));
 	return op.archiveId ? { [op.archiveId]: true } : null;
+}
+
+/**
+ * True when any of these messages is in a mailbox the list doesn't know:
+ * the list is older than the mailbox (a label made since it was loaded).
+ */
+export function hasUnknownMailbox(
+	placements: Iterable<Record<string, boolean>>,
+	mailboxes: Pick<Mailbox, 'id'>[]
+): boolean {
+	const known = new Set(mailboxes.map((m) => m.id));
+	for (const ids of placements) {
+		for (const id of Object.keys(ids)) if (ids[id] && !known.has(id)) return true;
+	}
+	return false;
 }
 
 /** True when two `mailboxIds` objects name the same mailboxes. */

@@ -39,6 +39,7 @@ import { isUrgent, URGENT_QUESTION, URGENT_QUESTION_ID } from '$lib/server/teleg
 import { flushAlerts, queueUrgent, urgentAlertsWanted } from '$lib/server/telegram/notifier';
 import { errorFields, logEvent } from '$lib/server/log';
 import { INBOX_HOLD_MS, isHeld, JEV_SORTED_KEYWORD } from '$lib/inbox-hold';
+import { hasUnknownMailbox } from '$lib/mailboxes';
 import type { JevQuestion, JevResponse } from './types';
 import { startJevWatchers } from './stream';
 import { applyRulesNow } from '$lib/server/rules-scheduler';
@@ -541,6 +542,7 @@ export async function sortNewMail(
 		accountRowId,
 		inboxId: inbox.id,
 		mailboxes,
+		mailboxesRefreshed: false,
 		junkId: junk?.id ?? null,
 		spamMode,
 		jev: !jevOn ? 'off' : paused ? 'wait' : 'ask',
@@ -581,6 +583,8 @@ interface Batch {
 	inboxId: string;
 	/** Every mailbox on the account, for the filing rules a move follows. */
 	mailboxes: Mailbox[];
+	/** Whether `mailboxes` has been fetched again in this pass (at most once). */
+	mailboxesRefreshed: boolean;
 	/** Watched while spam checking is on. */
 	junkId: string | null;
 	spamMode: SpamMode;
@@ -740,6 +744,13 @@ async function judgeAndApply(
 	// rule: it stays as it was put, and Jev's answer is recorded unapplied.
 	const withWork = [...plans].filter(([, p]) => hasWork(p.outcome));
 	const placement = await currentPlacement(b.client, b.accountId, withWork.map(([id]) => id));
+	// The mailbox list is from the start of the pass. A message now in a
+	// mailbox it doesn't know (a label made meanwhile) needs a fresh one, or
+	// the move couldn't tell that label from a folder. Once per pass at most.
+	if (!b.mailboxesRefreshed && hasUnknownMailbox([...placement.values()].map((p) => p.mailboxIds), b.mailboxes)) {
+		b.mailboxes = await getMailboxes(b.client, b.accountId);
+		b.mailboxesRefreshed = true;
+	}
 	const updates: [string, Record<string, unknown>][] = [];
 	const moved = new Set<string>();
 	for (const [id, plan] of withWork) {

@@ -500,3 +500,139 @@ describe('EmailDetail Inbox tab', () => {
 		expect(screen.queryByTitle(/ tab$/)).toBeNull();
 	});
 });
+
+describe('EmailDetail filing', () => {
+	const data = mocks.page.data as Record<string, unknown>;
+	const labels: Label[] = [
+		{ id: 'WORK', name: 'Work', color: '#4493f8' },
+		{ id: 'HOME', name: 'Home', color: '#3fb950' }
+	];
+	const patches = () =>
+		(fetchMock.mock.calls as unknown as [RequestInfo | URL, RequestInit | undefined][])
+			.filter(([u, init]) => String(u) === '/api/email/M1' && init?.method === 'PATCH')
+			.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+	const labelCalls = () =>
+		(fetchMock.mock.calls as unknown as [RequestInfo | URL, RequestInit | undefined][])
+			.filter(([u]) => String(u) === '/api/email/M1/label')
+			.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+	const at = (mailboxIds: Record<string, boolean>, extra: Partial<Email> = {}) =>
+		({ ...email(), mailboxIds, ...extra }) as Email;
+	function show(e: Email, context: [unknown, unknown][] = []) {
+		return render(EmailDetail, {
+			props: { email: e },
+			context: new Map<unknown, unknown>([[LABELS_CONTEXT, { current: labels }], ...context])
+		});
+	}
+
+	beforeEach(() => {
+		mocks.page.data.autoLoadImages = 'never';
+		data.mailboxes = [
+			{ id: 'inbox', name: 'Inbox', role: 'inbox', parentId: null, sortOrder: 0 },
+			{ id: 'AR', name: 'Archive', role: 'archive', parentId: null, sortOrder: 0 },
+			{ id: 'TR', name: 'Trash', role: 'trash', parentId: null, sortOrder: 0 },
+			{ id: 'PRJ', name: 'Projects', role: null, parentId: null, sortOrder: 0 },
+			{ id: 'LBLS', name: 'Labels', role: null, parentId: null, sortOrder: 0 },
+			{ id: 'WORK', name: 'Work', role: null, parentId: 'LBLS', sortOrder: 0 },
+			{ id: 'HOME', name: 'Home', role: null, parentId: 'LBLS', sortOrder: 0 }
+		];
+	});
+	afterEach(() => {
+		data.mailboxes = [];
+		mocks.page.url = new URL('http://localhost:3000/inbox');
+		fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url.startsWith('/api/contacts/known')) return new Response(JSON.stringify({ known }), { status: 200 });
+			return new Response('{}', { status: 200 });
+		});
+	});
+
+	it('never deletes for good when opened from a label, even a message in Trash', async () => {
+		mocks.page.url = new URL('http://localhost:3000/folder/WORK');
+		show(at({ TR: true, WORK: true }));
+		await fireEvent.click(screen.getByTitle('Trash'));
+		await waitFor(() => expect(patches()).toHaveLength(1));
+		expect(patches()[0]).toEqual({ action: 'trash' });
+	});
+
+	it('never deletes for good in the reading pane of a list other than Trash', async () => {
+		show(at({ TR: true }), [['listIsTrash', () => false]]);
+		await fireEvent.click(screen.getByTitle('Trash'));
+		await waitFor(() => expect(patches()).toHaveLength(1));
+		expect(patches()[0]).toEqual({ action: 'trash' });
+	});
+
+	it('deletes for good when opened from the Trash list, on its own page or in its reading pane', async () => {
+		mocks.page.url = new URL('http://localhost:3000/email/M1?from=trash');
+		show(at({ TR: true }));
+		await fireEvent.click(screen.getByTitle('Trash'));
+		await waitFor(() => expect(patches()).toHaveLength(1));
+		expect(patches()[0]).toEqual({ action: 'trash', permanent: true });
+		cleanup();
+
+		mocks.page.url = new URL('http://localhost:3000/folder/TR');
+		show(at({ TR: true }), [['listIsTrash', () => true]]);
+		await fireEvent.click(screen.getByTitle('Trash'));
+		await waitFor(() => expect(patches()).toHaveLength(2));
+		expect(patches()[1]).toEqual({ action: 'trash', permanent: true });
+	});
+
+	it('Undo after copying a code restores the message to where it was', async () => {
+		const { toasts } = await import('$lib/stores/toast');
+		const { get } = await import('svelte/store');
+		Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true });
+		Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(async () => {}) }, configurable: true });
+		show(at({ PRJ: true, WORK: true }, { subject: '504072 is your verification code' }));
+		await fireEvent.click(screen.getByRole('button', { name: /Copy code/ }));
+		await waitFor(() => expect(patches()).toEqual([{ action: 'trash' }]));
+		const undo = get(toasts).find((t) => t.action?.label === 'Undo');
+		expect(undo).toBeTruthy();
+		undo!.action!.onClick();
+		await waitFor(() => expect(patches()).toHaveLength(2));
+		expect(patches()[1]).toEqual({ action: 'restore', mailboxId: 'PRJ' });
+	});
+
+	it('shows the message in Archive once its only label comes off', async () => {
+		fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+			String(input) === '/api/email/M1/label'
+				? new Response(JSON.stringify({ success: true, mailboxIds: { AR: true } }), { status: 200 })
+				: new Response('{}', { status: 200 })
+		);
+		show(at({ WORK: true }));
+		// Its page's way back names where it lives; a label is not a folder.
+		expect(screen.getByTitle('Back to Inbox')).toBeTruthy();
+		await fireEvent.click(screen.getByRole('button', { name: 'Remove label Work' }));
+		await waitFor(() => expect(screen.getByTitle('Back to Archive')).toBeTruthy());
+		expect(labelCalls()).toEqual([{ labelId: 'WORK', action: 'remove' }]);
+		expect(screen.queryByRole('button', { name: 'Remove label Work' })).toBeNull();
+	});
+
+	it('picking a label the message already has in “Move to…” leaves it on', async () => {
+		show(at({ inbox: true, WORK: true }));
+		await fireEvent.click(screen.getByTitle('Move to…'));
+		await fireEvent.click(
+			[...document.querySelectorAll<HTMLButtonElement>('button[data-section="label"]')].find((b) =>
+				b.textContent?.includes('Work')
+			)!
+		);
+		await tick();
+		expect(labelCalls()).toEqual([]);
+		expect(screen.getByRole('button', { name: 'Remove label Work' })).toBeTruthy();
+	});
+
+	it('“Move to…” files into a folder by a move, and a label through the label endpoint', async () => {
+		show(at({ inbox: true }));
+		await fireEvent.click(screen.getByTitle('Move to…'));
+		const pick = (section: string, name: string) =>
+			[...document.querySelectorAll<HTMLButtonElement>(`button[data-section="${section}"]`)].find((b) =>
+				b.textContent?.includes(name)
+			)!;
+		await fireEvent.click(pick('label', 'Home'));
+		await waitFor(() => expect(labelCalls()).toEqual([{ labelId: 'HOME', action: 'apply' }]));
+		expect(patches()).toEqual([]);
+
+		await fireEvent.click(screen.getByTitle('Move to…'));
+		await fireEvent.click(pick('move', 'Projects'));
+		await waitFor(() => expect(patches()).toEqual([{ action: 'moveTo', targetMailboxId: 'PRJ' }]));
+		expect(labelCalls()).toHaveLength(1);
+	});
+});
