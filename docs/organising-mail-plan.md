@@ -100,7 +100,7 @@ Stage 3 took 028 (`account_tasks`, one-time jobs per account such as retiring th
   - Deleting a folder or label deletes its rules (the confirmation says how many).
 - **029 `auto_reply_log`** (stage 4): account, sender address, time, message. One row per reply, written before it is sent; a sender gets at most one a day and a login at most 30 an hour, across all its accounts; pruned after 30 days.
 - **031 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).
-- **032**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows).
+- **032**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), and `jev_settings.sort_cursor` renamed `jev_since`. `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows) moved to the clean-up stage.
 - **033**: drop `user_rules`, `rules_cursor`, `label_meta`, `folder_meta`, `jev_rule_feedback` and the unused Jev columns.
 
 ## Settings
@@ -122,7 +122,7 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 | 4 | **Done.** Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
 | 5 | **Done.** Rules table (030) and validated saves | Splitting multi-target rules |
 | 6 | **Done.** Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
-| 7 | One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
+| 7 | **Done.** One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
 | 8 | The two settings pages | UI only |
 | 9 | Clean-up (033): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
 
@@ -150,7 +150,7 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 
 ## Status
 
-Stages 0 to 6 are done. Later stages follow one PR at a time.
+Stages 0 to 7 are done. Later stages follow one PR at a time.
 
 ## Design notes
 
@@ -466,3 +466,123 @@ Principle: never take a message out of a mailbox the app can't identify, and nev
 
 #### Notes for the PR
 - A tab left open across the deploy can't change folder or label colours until it is reloaded: the routes it used are gone (404 / 400). No mail is affected.
+
+### Stage 7 design: one pipeline for new mail
+
+#### Why
+Two loops handle the same new Inbox message today, each with its own cursor, guard, catch-up and write code:
+- The rules scheduler (`src/lib/server/rules-scheduler.ts`, keyed by mail address, cursor in `rules_cursor`, an in-memory `lastHandled`), which also hosts out-of-office and the one-time account tasks.
+- The Jev worker (`src/lib/server/jev/worker.ts`, 914 lines, keyed by account id, cursor in `jev_settings.sort_cursor`), which calls the rules scheduler from inside its own pass (`applyRulesNow`) when the account has a rule.
+
+Consequences found in the code:
+- Rules act within seconds only on accounts that happen to have a Jev stream; otherwise they wait for the minute run. Out-of-office never rides the fast path.
+- A stream pass during a Jev outage returns early and runs no rules.
+- Rule writes don't re-read where the message is, so they can undo a move you made a moment earlier; a rules run from the cron is not serialised against Jev's write.
+- Discovery, cursor stepping, batched writes, the no-overlap guard, the minute cron and the 20-second catch-up all exist twice.
+- With rules only (no Jev, no pins) there is no Inbox hold, so mail a rule files shows in the Inbox first.
+
+#### What a pass does
+One pass per account, keyed by **account id** throughout. In order:
+
+1. **Needs.** `pipelineNeeds(accountId)` (new, the one place that reads the switches) returns what is on: runnable rules, a runnable rule that moves mail out of the Inbox, out-of-office active, Jev sorting (enabled and configured), tabs shown, pins, spam mode, urgent alerts, and from those `hold` and `wantsArrivals`. One-time account tasks run first, as today, and never block.
+2. **Nothing on** (`wantsArrivals` false): the cursor is set to now and the pass ends without asking the mail server anything.
+3. **Discover.** Inbox mail received after the cursor minus a 60-second look-back, oldest first, 100 at a time (plus Junk while the spam add-on is on). Each message not seen before is recorded in `mail_arrivals`; that table, not memory, is what stops a message being handled twice. The cursor then steps exactly as today (a full page steps to its last second; a full page all in one second moves past it; otherwise to now).
+4. **Out-of-office**, for new Inbox arrivals, on the message as it arrived (`answerNewMail`, unchanged rules).
+5. **Rules**, on new Inbox arrivals, in order (the stage 5 engine).
+6. **First write.** Rule changes are written now, so rules never wait for Jev. If Jev will not be asked anything in this pass, this write is held back and merged with the next one.
+7. **Jev queue.** Inbox arrivals a rule did not move out (and Junk arrivals while spam is on), received on or after "Jev on since", are queued for Jev. Marking the arrival handled and queueing it happen in one database transaction.
+8. **Jev step** (only if Jev sorting, pins, spam or urgent is on): up to 25 queued messages; one call per message asking tab, spam and urgent together, as today; spam plan; tab from `decideTab` (your own choice, then a pin, then Jev's confident pick, else Important).
+9. **Second write**: tab, spam move, and the "sorted" marker for held Inbox mail, together.
+10. **Record** decisions, then send urgent alerts.
+11. **Backfill** ("sort existing mail"), only on scheduled passes, as today.
+
+Every write goes through one function that **re-reads where each message is first**: a message that has left the mailbox it was found in is not touched (your move wins); a message whose tab changed keeps the rule changes but not the tab; the update is computed against the current placement. This is Jev's existing re-check, now also covering rule writes.
+
+#### Behaviour changes
+1. **Rules, out-of-office and pins act within seconds** on any account where one of them is on, because the account gets an event stream whenever `wantsArrivals` is true (today only with Jev or pins).
+2. **The Inbox hold also applies when an enabled rule moves mail out of the Inbox**, whatever the Jev and tab settings, so mail a rule files never shows in the Inbox first. Every new Inbox message on such an account is hidden until the pass has looked at it: normally a second or two, and never longer than the existing two-minute limit. Rules that only label, star or mark as read do not switch the hold on.
+3. **A stream pass during a Jev outage still runs rules, out-of-office and pins**; only the Jev call is skipped.
+4. **Rule writes respect a move you just made.**
+5. **A pass that fails part-way is picked up again**: arrivals not yet handled are retried on the next pass, up to 5 attempts, then given up with a log line.
+6. Accounts are run side by side on the minute run, so a slow Jev call for one account no longer delays rules for another.
+
+Unchanged on purpose: rule changes and the tab are still two writes when Jev is asked (rules first); Jev is never sent mail from before it was switched on; pins act with Jev off, during an outage and during a rate-limit pause; the marker rules; backfill; spam modes; urgent alerts; out-of-office rules.
+
+#### Data
+Migration `032_mail_pipeline.sql`:
+- `mail_pipeline(account_id PRIMARY KEY → mail_accounts ON DELETE CASCADE, cursor TEXT, updated_at)`.
+  - Seeded for each account from the earlier of its `rules_cursor.last_run` (matched by address: exact, then case-insensitive only where no exact row exists) and `jev_settings.sort_cursor`; no row when it has neither (the first pass then starts at now). Do this in SQL or as a one-time data step, whichever compares the two timestamp formats correctly; test it.
+- `mail_arrivals(account_id → mail_accounts ON DELETE CASCADE, email_id, mailbox TEXT ('inbox' | 'junk'), received_at, seen_at, handled_at NULL, attempts INTEGER DEFAULT 0, rules_json NULL, PRIMARY KEY (account_id, email_id))`. `rules_json` holds the ids of the rules that matched. Rows older than 7 days are pruned on the daily job that prunes the auto-reply log.
+- `jev_settings.sort_cursor` is renamed `jev_since`. It keeps the meaning it already has at the edges (set to now when Jev is switched on, null when off) and is **no longer advanced**. The pass sets it to null whenever Jev sorting is not on (disabled, or enabled but not configured) and to now when it finds Jev on with no value, judging nothing in that pass.
+- `rules_cursor` is no longer read or written (dropped in the last stage). `jev_decisions` stays Jev's queue and record, unchanged. The plan's `jev_user_tabs` table is **not** part of this stage (moved to the clean-up stage); "you chose this tab yourself" keeps coming from `correctedEmailIds`.
+
+#### Code
+
+**New `src/lib/server/mail-pipeline/`**
+- `needs.ts`: `pipelineNeeds(accountId)`.
+- `arrivals.ts`: the cursor, discovery, `mail_arrivals` queries (record new, list unhandled, mark handled + queue for Jev in one transaction, count an attempt, prune).
+- `write.ts`: the change set (rule outcome, tab keywords, spam move, marker per message), `flush()` with the re-read, batched `Email/set`, and the refusal accounting from today's `writeUpdates` / `noteWrites`.
+- `pass.ts`: `runPass(accountId, auth, { fromStream })`, the eleven steps above and nothing else.
+- `index.ts`: `startMailPipeline()` (one `* * * * *` cron over `listSchedulableAuths()`, accounts side by side; the daily prune), `requestPass(accountId, auth, opts)` with the no-overlap guard and merged re-run taken from `sortNewMailSafe`, error handling as today (`JMAPAuthError` → `markNeedsReauth`; anything else logged once and noted), and `refreshPipeline()`.
+- `stream.ts`: moved from `jev/stream.ts`. Targets: accounts where `wantsArrivals` is true. Refreshed every minute and by `refreshPipeline()`, which is called from the Jev settings and pin routes (as now) **and** from every rule write (`/api/rules/**`, and folder / label deletion when it changes rules) and the out-of-office save.
+- `hold.ts`: moved from `jev/hold.ts`. `inboxHoldOn(accountId)` = `pipelineNeeds(accountId).hold` = (tabs shown and (Jev sorting or pins)) or an enabled runnable rule that moves mail out of the Inbox. `src/lib/inbox-hold.ts` is unchanged.
+
+**`src/lib/server/jev/`**: `worker.ts` is split and deleted.
+- `judge.ts`: `fetchEmailsForJev`, `judgeEmails`, `PREVIEW_LIMIT`, the property list.
+- `tab.ts`: gains pure `decideTab({ tabsOn, userChose, currentTab, pin, jevPick })`, replacing `tabToApply`, `planFor`'s open check, `tabOpen` and the `wantsTabs && !chosen` argument. `setTab` stays.
+- `spam.ts`: gains the spam plan (junk, rescue, or record only) from `judgeAndApply`.
+- `urgent.ts`: moved from `telegram/urgent.ts`.
+- `health.ts`: rate-limit pause, outage flag, log de-duplication (`forgetRateLimits`, `noteFailure`, `noteRecovered`).
+- `step.ts`: the Jev step (steps 8 and 10): given the queued ids and the needs, returns changes for `write.ts` and what to record. `backfill.ts`, `record.ts`.
+
+**Deleted**: `src/lib/server/rules-scheduler.ts` (and `applyRulesNow`, `applyRulesForUser`, `lastHandled`), `jev/worker.ts`, `jev/stream.ts`, `jev/hold.ts`, `telegram/urgent.ts`, the rules-cursor query functions, and one of the two 20-second catch-ups in `src/hooks.server.ts` (the remaining one calls `requestPass` for the request's active account, throttled by account id). `startRulesScheduler` and `startJevScheduler` become `startMailPipeline`.
+
+`runAccountTasks`, `answerNewMail` / `outOfOfficeFor` take an account id instead of an address. Stale comments that say "on the account's next rules run" are updated.
+
+Not in this stage: merging the push worker's own event stream with this one; `jev_user_tabs`.
+
+#### Tests
+Port by behaviour, not by file. The report must include a table mapping **every** existing test in `jev/worker.test.ts` (64), `rules-scheduler.test.ts` (12), `jev/stream.test.ts` (6) and `jev/hold.test.ts` (7) to the new test that covers it, or to a reason it no longer applies (allowed reasons: it tested `applyRulesNow` waiting and re-running, `lastHandled`, or the pins-only cursor clamp; for the clamp, the replacing tests are "switching pins / tabs / Jev on never acts on mail from before"). Groups that must survive: cursor stepping; failure accounting; no overwrite of your move or tab; write refusals; TypeSafe refusals and rate limits; your own tab choices; pins, history, backfill; urgent alerts; switching Jev off mid-pass; spam modes; every marker case; rules before the marker with the two writes in order; rules while TypeSafe is down; a rule needing a rewrite never runs; stream passes are new mail only and make no TypeSafe call while it is failing; pins with Jev off, unconfigured, in an outage, per-message failure and rate-limit pause; out-of-office (first sight, only unseen mail, a failure doesn't stop rules); account tasks never block; stream open / debounce / 401 / relink / stall; `inboxHoldOn` and the unread maths.
+
+New tests:
+- One cursor: rules-only, Jev-only, both, neither (no mail-server call at all), pins with Jev off.
+- Migration 032: seeded from the earlier cursor; from only one; from none; case-different address; `jev_since` renamed with its value kept; cascade on account removal.
+- `mail_arrivals`: a message is handled once across passes and the look-back; a pass that throws after discovery leaves its arrivals unhandled and the next pass handles them; given up after 5 attempts; handled + queued atomically; pruning.
+- Hold: on for a rules-only account with a move rule (tabs off and on), off with only label / star / read rules, off when the rule is disabled or flagged; held Inbox mail on such an account is marked in the pass, in the same write as its rule changes when Jev is not asked.
+- Stream: opens for a rules-only account and for out-of-office only; a rule save and an out-of-office save refresh it.
+- Out-of-office answered on a stream pass with no rules; `answerNewMail` tested directly, not only through mocks.
+- A stream pass during an outage runs rules and pins and makes no TypeSafe call.
+- Rule write re-read: a message you moved between discovery and write is left alone; one whose tab you changed keeps its rule label.
+- Two accounts on one tick: a slow Jev call for one does not delay the other's rule write.
+- `decideTab`: every row of its truth table.
+- Hooks: one start function, one catch-up, throttled by account id.
+
+#### Verification on the owner's server
+1. An exact rule files a new message within a few seconds, with Jev off and no pins, and the message never shows in the Inbox.
+2. With that rule on, an ordinary new message appears in the Inbox within a second or two.
+3. New mail still reaches its tab within seconds with Jev on; a pinned sender lands in its tab with Jev off.
+4. Out-of-office answers within seconds.
+5. Restart the app: no message is filed, answered or alerted twice.
+
+#### Risks
+- **The largest change in the plan.** Mitigated by building it as three commits, each passing on its own: (1) `jev/worker.ts` split into the files above with no behaviour change; (2) the pipeline, arrivals and cursor, with the scheduler and the worker loop removed; (3) the hold for move rules, stream targets, refresh on rule and out-of-office saves, docs.
+- **Hold for rules-only accounts** delays every new Inbox message until the pass has run. If the stream is down that is up to a minute (20 seconds while the app is open), capped at two minutes.
+- **First pass after upgrade** starts from the earlier of the two old cursors, so up to a minute of mail may be looked at again: rules re-evaluate it (writes only differences), Jev's queue ignores what it already has, out-of-office's once-a-day check prevents a second reply.
+
+#### Done means
+Every test point above has a test seen to fail without its behaviour; the mapping table is complete; `npm run lint` clean, `npm run check` 0 errors, full `npx vitest run` passing on each commit; README (Jev and rules sections), `docs/jev-plan.md` and `docs/organising-mail-plan.md` updated.
+
+#### As built
+Built as three commits: the split of `jev/worker.ts` with no change in behaviour; the pipeline; then the hold for rules that move mail, the event streams and these docs.
+
+- **The cursor** is stored as the Jev worker kept its own: after a partial page it is set a minute back from the pass (never back past where it was), and the next pass reads mail received after it. That is the 60-second look-back. Reading a further minute back from a stored "now" would have re-read a full page of mail stamped in one second for ever.
+- **When the rules wait for the next write** (Jev isn't asked anything in the pass: no Jev, Jev rate-limited, or a stream pass while TypeSafe is failing), the arrivals are marked handled, and queued for Jev in the same transaction, after that one write rather than before Jev's step. So a pass that fails before writing leaves the arrivals unhandled, and the next pass runs their rules again. When Jev is asked, the order is as designed: the rules' write, then handled and queued together, then Jev.
+- **`jev_since`**: when a pass clears it (Jev switched on but not configured on the server) or sets it (Jev found configured again, or after the upgrade for an account that had no place), new arrivals still queued for Jev are withdrawn. In the pass that sets it, Jev's step doesn't run at all, pins included; mail that arrived before it is marked (if held) and shows in Important.
+- **Queued for Jev**: with Jev off, the Inbox's new mail is queued for pins as before (and recorded as never sorted when no pin takes it). Junk is read, and its arrivals recorded, only while the spam add-on is on.
+- **Arrivals no longer in the Inbox** when the pass reads them (moved within seconds of arriving) are handled with nothing done: no reply, no rules, nothing queued.
+- **The hold** applies on the Inbox page with the tabs off too, when a rule moves mail. Mail the pass doesn't queue for Jev is marked in the rules' write; mail queued for Jev is marked once Jev has answered, as before.
+- **`refreshPipeline()`** is called by: creating, editing, deleting and reordering rules; dismissing a note that deletes a rule; pinning a rule's sender; deleting a folder or label when that changed rules; saving out-of-office; and, as before, Jev's settings and pins.
+- **Rule writes** share Jev's refusal accounting and log line (`write_refused`, now logged under `mail`). A refused rule write is not retried, as before.
+- **The minute's run** starts every account's pass at once and waits for all of them.
+- **The rules-cursor data step** from stage 1 (`data/rules_exact_only`) still rewinds `rules_cursor`, which nothing reads now. A database upgrading from before stage 1 straight to this version loses that rewind; its pipeline starts from the earlier of the two old places as usual.
+- **Tests**: the old worker, scheduler, stream and hold tests are ported by behaviour into `src/lib/server/mail-pipeline/` (`pass.test.ts`, `stream.test.ts`, `hold.test.ts`), with `needs.test.ts` and `migration.test.ts` new. The tests of `applyRulesNow` and the pins-only cursor clamp are gone with them, replaced by "switching pins, tabs or Jev on never acts on mail from before".

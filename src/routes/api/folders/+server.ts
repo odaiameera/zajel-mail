@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { deleteRulesForMailbox } from '$lib/server/rules/store';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 import { deleteMailboxMeta } from '$lib/server/db/queries/mailbox-meta';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
@@ -144,6 +145,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				: { deleted: 0, kept: 0 };
 			// And its colour and icon.
 			if (locals.activeAccountId) deleteMailboxMeta(locals.activeAccountId, body.id);
+			if (rulesDeleted || rulesKept) refreshPipeline();
 
 			const refreshed = await getMailboxes(client, accountId);
 			return json({ success: true, mailboxes: refreshed, rulesDeleted, rulesKept });

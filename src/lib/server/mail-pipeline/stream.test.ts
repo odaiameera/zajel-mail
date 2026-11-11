@@ -6,19 +6,27 @@ const accounts = vi.hoisted(() => ({
 	jevOn: new Set<string>(),
 	/** Accounts whose Inbox holds new mail for their sender pins. */
 	holding: new Set<string>(),
+	/** Accounts with a rule that may run, and with out-of-office on. */
+	rules: new Set<string>(),
+	away: new Set<string>(),
 	mode: 'live' as 'live' | 'off'
 }));
 vi.mock('$lib/server/auth/accounts', () => ({
 	listSchedulableAuths: () => accounts.list,
 	markNeedsReauth: accounts.reauth
 }));
-// What each account's pass has to do: Jev reads it (while Jev can answer at
-// all), or its Inbox holds new mail.
+// What each account's pass has to do: anything that acts on new mail (see
+// needs.test.ts for how that is worked out).
 vi.mock('./needs', () => ({
-	pipelineNeeds: (id: string) => ({ jev: accounts.mode !== 'off' && accounts.jevOn.has(id), hold: accounts.holding.has(id) })
+	pipelineNeeds: (id: string) => {
+		const jev = accounts.mode !== 'off' && accounts.jevOn.has(id);
+		const hold = accounts.holding.has(id);
+		return { jev, hold, wantsArrivals: jev || hold || accounts.rules.has(id) || accounts.away.has(id) };
+	}
 }));
 
 import { refreshStreams, startStreams, stopStreams } from './stream';
+import { refreshPipeline } from './index';
 
 /** An event stream the test writes to, as the mail server would. */
 function openStream() {
@@ -40,6 +48,8 @@ beforeEach(() => {
 	accounts.list = [account('a'), account('b')];
 	accounts.jevOn = new Set(['a']);
 	accounts.holding = new Set();
+	accounts.rules = new Set();
+	accounts.away = new Set();
 	accounts.mode = 'live';
 	accounts.reauth.mockReset();
 });
@@ -97,6 +107,50 @@ describe('the new-mail event streams', () => {
 		await vi.waitFor(() => expect(runPass).toHaveBeenCalledWith('b', accounts.list[1].auth, { fromStream: true }), {
 			timeout: 3000
 		});
+	});
+
+	it('opens a stream for an account with rules only, and for one with out-of-office only', async () => {
+		accounts.mode = 'off';
+		accounts.list = [account('a'), account('b'), account('c')];
+		accounts.rules = new Set(['a']);
+		accounts.away = new Set(['b']);
+		const fetchMock = vi.fn(async () => openStream().response);
+		vi.stubGlobal('fetch', fetchMock);
+
+		startStreams(vi.fn(async () => {}));
+
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+		expect(fetchMock.mock.calls.map((c) => (c as unknown[])[0]).sort()).toEqual([
+			'https://mail.example/jmap/a/eventsource/?types=Email&closeafter=no&ping=60',
+			'https://mail.example/jmap/b/eventsource/?types=Email&closeafter=no&ping=60'
+		]);
+	});
+
+	it('opens a stream as soon as a rule or out-of-office is saved, and closes it when nothing is left', async () => {
+		accounts.mode = 'off';
+		const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => openStream().response);
+		vi.stubGlobal('fetch', fetchMock);
+		startStreams(vi.fn(async () => {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		// A rule saved for b (the rule routes call refreshPipeline).
+		accounts.rules.add('b');
+		refreshPipeline();
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+		expect(fetchMock.mock.calls[0][0]).toBe('https://mail.example/jmap/b/eventsource/?types=Email&closeafter=no&ping=60');
+
+		// Out-of-office switched on (its save calls refreshPipeline too).
+		accounts.away.add('a');
+		refreshPipeline();
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+		expect(fetchMock.mock.calls[1][0]).toBe('https://mail.example/jmap/a/eventsource/?types=Email&closeafter=no&ping=60');
+
+		// The rule deleted: b's stream is closed.
+		accounts.rules.delete('b');
+		refreshPipeline();
+		expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
+		expect((fetchMock.mock.calls[1][1] as RequestInit).signal?.aborted).toBe(false);
 	});
 
 	it('stops and flags the account when the mail server refuses its password', async () => {

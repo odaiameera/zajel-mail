@@ -84,6 +84,57 @@ describe('inboxHoldOn', () => {
 	});
 });
 
+describe('inboxHoldOn, with rules', () => {
+	const rule = (over: Record<string, unknown> = {}) => ({
+		id: 'r',
+		name: 'r',
+		enabled: true,
+		logic: 'allof',
+		conditions: [{ id: 'c', field: 'from', op: 'contains', value: 'github.com', negate: false }],
+		target: { kind: 'folder', mailboxId: 'projects' },
+		markRead: false,
+		star: false,
+		stop: false,
+		...over
+	});
+
+	beforeEach(() => {
+		// Nothing else would hold new mail: Jev off, no pins.
+		jev.settings = { ...jev.settings, jevEnabled: false };
+	});
+
+	it('holds new mail while a rule moves mail out of the Inbox, tabs on or off', () => {
+		jev.rules = [rule()];
+		expect(inboxHoldOn('acct')).toBe(true);
+		jev.settings = { ...jev.settings, inboxTabs: false };
+		expect(inboxHoldOn('acct')).toBe(true);
+		for (const kind of ['archive', 'trash', 'junk']) {
+			jev.rules = [rule({ target: { kind } })];
+			expect(inboxHoldOn('acct')).toBe(true);
+		}
+	});
+
+	it('holds nothing for rules that only label, star or mark as read', () => {
+		jev.settings = { ...jev.settings, inboxTabs: false };
+		jev.rules = [
+			rule({ target: { kind: 'label', mailboxId: 'news' } }),
+			rule({ id: 'r2', target: { kind: 'none' }, star: true }),
+			rule({ id: 'r3', target: { kind: 'none' }, markRead: true })
+		];
+		expect(inboxHoldOn('acct')).toBe(false);
+	});
+
+	it('holds nothing for a move rule that is switched off, or waiting to be rewritten', () => {
+		jev.settings = { ...jev.settings, inboxTabs: false };
+		jev.rules = [rule({ enabled: false })];
+		expect(inboxHoldOn('acct')).toBe(false);
+		jev.rules = [rule({ attention: 'jev_condition' })];
+		expect(inboxHoldOn('acct')).toBe(false);
+		jev.rules = [rule({ attention: 'tab_rule' })];
+		expect(inboxHoldOn('acct')).toBe(false);
+	});
+});
+
 describe('heldInInbox', () => {
 	it('counts held unread mail and says when the oldest held message shows', async () => {
 		const { client, requests } = fakeClient(([name, , tag]) =>

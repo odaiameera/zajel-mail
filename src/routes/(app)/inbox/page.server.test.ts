@@ -61,9 +61,17 @@ describe('Inbox page load', () => {
 		for (const filter of filters()) expect(filter).not.toContain(JEV_SORTED_KEYWORD);
 	});
 
-	it('holds nothing with the tabs off, where the Inbox is all of it as before', async () => {
+	it('holds nothing with the tabs off and nothing to move new mail, where the Inbox is all of it as before', async () => {
 		state.tabs = false;
+		state.hold = false;
 		await run();
 		expect(filters()).toEqual([JSON.stringify({ inMailbox: 'inbox' })]);
+	});
+
+	it('holds new mail with the tabs off too, while a rule may move it out of the Inbox', async () => {
+		state.tabs = false;
+		await run();
+		expect(filters()).toHaveLength(1);
+		expect(filters()[0]).toContain(JEV_SORTED_KEYWORD);
 	});
 });

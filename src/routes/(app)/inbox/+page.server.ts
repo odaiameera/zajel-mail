@@ -57,9 +57,10 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	// all of it, exactly as before tabs existed.
 	const tabsOn = !!locals.activeAccountId && getJevSettings(locals.activeAccountId).inboxTabs;
 	const category = tabsOn ? parseInboxCategory(url.searchParams.get('category')) : null;
-	// While Jev sorts the tabs, a message it hasn't finished with yet waits
-	// (two minutes at most) instead of showing in Important and then moving.
-	const hold = tabsOn && inboxHoldOn(locals.activeAccountId) ? shownCondition(Date.now()) : null;
+	// While something will move new mail (Jev or a pin into its tab, or a
+	// rule out of the Inbox), a message the new-mail pass hasn't finished
+	// with yet waits (two minutes at most) instead of showing and then moving.
+	const hold = inboxHoldOn(locals.activeAccountId) ? shownCondition(Date.now()) : null;
 
 	const [result, tabUnread] = await Promise.all([
 		queryAndFetchEmails(client, locals.auth.accountId, inbox.id, {

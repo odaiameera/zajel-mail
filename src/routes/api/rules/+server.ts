@@ -4,6 +4,7 @@ import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import { parseRule } from '$lib/server/rules/schema';
 import { createRule, listRules } from '$lib/server/rules/store';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 
 /**
  * The active account's rules: GET lists them in the order they run, POST
@@ -22,5 +23,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const mailboxes = await getMailboxes(createClient(locals.auth), locals.auth.accountId);
 	const { rule, problems } = parseRule(body, mailboxes);
 	if (problems.length > 0) return json({ error: problems[0].message, problems }, { status: 400 });
-	return json({ rule: createRule(locals.activeAccountId, rule) });
+	const created = createRule(locals.activeAccountId, rule);
+	// New mail now has something to act on it: an event stream, and maybe the Inbox's hold.
+	refreshPipeline();
+	return json({ rule: created });
 };

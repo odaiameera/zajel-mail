@@ -55,12 +55,15 @@ export function pipelineNeeds(accountRowId: string, now = new Date()): PipelineN
 	const urgent = jev && urgentAlertsWanted(accountRowId);
 	const jevStep = (tabs && jev) || pins.length > 0 || spamMode !== 'off' || urgent;
 	// Held only while a pass will mark it: while something puts new mail in
-	// the tabs (Jev or a pin). Without the hold, such mail would show in
-	// Important for a moment and then jump to its tab.
-	const hold = tabs && (jev || pins.length > 0);
+	// the tabs (Jev or a pin), or while a rule may take it out of the Inbox,
+	// whatever the tab settings. Without the hold, such mail would show for a
+	// moment and then jump to its tab, or vanish into a folder. Rules that
+	// only label, star or mark as read leave mail where it is: no hold.
+	const rulesMoveMail = rules.some(movesMail);
+	const hold = (tabs && (jev || pins.length > 0)) || rulesMoveMail;
 	return {
 		rules,
-		rulesMoveMail: rules.some(movesMail),
+		rulesMoveMail,
 		outOfOffice,
 		jev,
 		jevSince: settings.jevSince,

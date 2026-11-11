@@ -211,7 +211,7 @@ export async function writeUpdates(
  * recovering, and logging per batch said both every minute.
  */
 export function noteWrites(accountRowId: string, w: WriteOutcome): void {
-	if (w.unreachable) noteFailure('write', accountRowId, 'write_failed', errorFields(w.unreachable));
-	else if (w.refusal) noteFailure('write', accountRowId, 'write_refused', { count: w.refused, error: w.refusal });
-	else if (w.attempted) noteRecovered('write', accountRowId, 'write_recovered');
+	if (w.unreachable) noteFailure('write', accountRowId, 'write_failed', errorFields(w.unreachable), 'mail');
+	else if (w.refusal) noteFailure('write', accountRowId, 'write_refused', { count: w.refused, error: w.refusal }, 'mail');
+	else if (w.attempted) noteRecovered('write', accountRowId, 'write_recovered', 'mail');
 }

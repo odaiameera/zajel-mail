@@ -157,16 +157,14 @@ function state(): StreamState | undefined {
 }
 
 /**
- * Accounts a pass has work for: those that let Jev read their mail, while
- * Jev can answer at all, and those whose Inbox is holding new mail. The
- * second kind needs no Jev: without a stream, every new message in such an
- * Inbox would wait for the once-a-minute run.
+ * Accounts a pass has work for: anything at all that acts on new mail
+ * (rules, out-of-office, Jev, pins). Without a stream, each new message
+ * would wait for the once-a-minute run, or the Inbox's hold on it would.
  */
 function desiredTargets(): Map<string, Target> {
 	const out = new Map<string, Target>();
 	for (const { account, auth } of listSchedulableAuths()) {
-		const needs = pipelineNeeds(account.id);
-		if (needs.jev || needs.hold) {
+		if (pipelineNeeds(account.id).wantsArrivals) {
 			out.set(account.id, { id: account.id, email: account.email, auth });
 		}
 	}

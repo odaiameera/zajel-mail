@@ -54,14 +54,16 @@ export function retryTypesafe(accountRowId: string): void {
 	typesafeFailing.delete(accountRowId);
 }
 
-export function noteFailure(kind: string, accountRowId: string, event: string, fields: Record<string, unknown>): void {
+/** Log a failure of this kind for the account, unless it is the one logged last. `area` is the log's (Jev's, or the pipeline's). */
+export function noteFailure(kind: string, accountRowId: string, event: string, fields: Record<string, unknown>, area = 'jev'): void {
 	const key = `${kind}:${accountRowId}`;
 	const text = `${event}:${String(fields.error)}`;
 	if (lastFailure.get(key) === text) return;
 	lastFailure.set(key, text);
-	logEvent('error', 'jev', event, { account: accountRowId, ...fields });
+	logEvent('error', area, event, { account: accountRowId, ...fields });
 }
 
-export function noteRecovered(kind: string, accountRowId: string, event: string): void {
-	if (lastFailure.delete(`${kind}:${accountRowId}`)) logEvent('info', 'jev', event, { account: accountRowId });
+/** Log that a failure of this kind has stopped, if one was logged. */
+export function noteRecovered(kind: string, accountRowId: string, event: string, area = 'jev'): void {
+	if (lastFailure.delete(`${kind}:${accountRowId}`)) logEvent('info', area, event, { account: accountRowId });
 }

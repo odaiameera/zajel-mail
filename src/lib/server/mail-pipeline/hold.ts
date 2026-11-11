@@ -10,15 +10,18 @@ import { pipelineNeeds } from './needs';
 
 /**
  * Whether new mail in this account's Inbox waits for the new-mail pass:
- * only while the Inbox has tabs and something will put new mail in them.
- * That is Jev, when it may read the account's mail, or your sender pins,
- * which act with Jev off or not configured at all: without the hold, a
- * pinned sender's mail would show in Important for a moment and then jump
- * to its tab.
+ * - while the Inbox has tabs and something will put new mail in them: Jev,
+ *   when it may read the account's mail, or your sender pins, which act
+ *   with Jev off or not configured at all. Without the hold, a pinned
+ *   sender's mail would show in Important for a moment and then jump to
+ *   its tab;
+ * - while an enabled rule moves mail out of the Inbox, tabs or none, so
+ *   mail a rule files never shows in the Inbox first. Rules that only
+ *   label, star or mark as read don't hold anything.
  *
- * With tabs but neither, nothing is held, as nothing would ever sort it.
- * The pass decides from the same answer (pipelineNeeds), so mail is only
- * ever held for a pass that will mark it.
+ * Otherwise nothing is held, as nothing would move it. The pass decides
+ * from the same answer (pipelineNeeds), so mail is only ever held for a
+ * pass that will mark it.
  */
 export function inboxHoldOn(accountRowId: string | null | undefined): boolean {
 	if (!accountRowId) return false;

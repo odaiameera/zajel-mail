@@ -304,12 +304,16 @@ describe('a pass over new mail, with Jev', () => {
 		// As after the upgrade for an account Jev had no place for.
 		getDb().prepare('UPDATE jev_settings SET jev_since = NULL').run();
 		fake.add('old', 1, { 'header:list-unsubscribe': ' <x>' });
+		// A sort of existing mail you asked for waits too: that pass judges nothing.
+		fake.add('existing', -60, { 'header:list-unsubscribe': ' <x>' });
+		enqueueEmails(ACCT, ['existing'], T0.getTime(), true);
 
 		await runPass(ACCT, auth, { now: at(5) });
 
 		expect(getJevSettings(ACCT).jevSince).toBe(at(5).toISOString());
 		expect(fake.emails.get('old')!.keywords).toEqual({});
 		expect(getDecision(ACCT, 'old')).toBeNull();
+		expect(getDecision(ACCT, 'existing')?.status).toBe('pending');
 		// Nor on the next pass: it arrived before Jev was on.
 		await runPass(ACCT, auth, { now: at(6) });
 		expect(getDecision(ACCT, 'old')).toBeNull();
@@ -2268,6 +2272,41 @@ describe('a pass the event stream asked for, while TypeSafe is down', () => {
 });
 
 describe('the minute’s run', () => {
+	it('goes on to the other accounts when one account’s pass fails', async () => {
+		const SECOND = 'acct-3';
+		const db = getDb();
+		db.prepare(
+			`INSERT OR IGNORE INTO mail_accounts (id, user_id, email, server_url, jmap_account_id, secret_enc)
+			 VALUES (?, 'user-1', 'three@example.test', 'https://mail.example', 'jmap-3', 'x')`
+		).run(SECOND);
+		markAccountTaskDone(SECOND, 'retire_sieve_script');
+		setCursor(SECOND, T0.toISOString(), T0);
+		importRules(SECOND, [labelRule('r', 'lunch')]);
+		const other = new FakeJmap();
+		jmap.clients['jmap-3'] = other;
+		const auth3 = { ...auth, accountId: 'jmap-3' } as AuthState;
+		const accounts = await import('$lib/server/auth/accounts');
+		vi.spyOn(accounts, 'listSchedulableAuths').mockReturnValue([
+			{ account: { id: ACCT, email: ME } as never, auth, email: ME },
+			{ account: { id: SECOND, email: 'three@example.test' } as never, auth: auth3, email: 'three@example.test' }
+		]);
+		// The first account's mail server is failing.
+		fake.request = async () => {
+			throw new Error('mail server down');
+		};
+		const complaints = vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(at(10));
+		other.add('lunch', 9.5, { subject: 'Lunch?' });
+
+		await expect(runScheduledPasses()).resolves.toBeUndefined();
+
+		expect(other.emails.get('lunch')!.mailboxIds).toEqual({ inbox: true, news: true });
+		expect(complaints).toHaveBeenCalledWith('[mail] new-mail pass failed', ACCT, expect.any(Error));
+		expect(logged('pass_failed')).toEqual(['pass_failed']);
+		db.prepare('DELETE FROM mail_accounts WHERE id = ?').run(SECOND);
+	});
+
 	it('runs accounts side by side: a slow Jev call for one doesn’t hold up the other’s rules', async () => {
 		const SECOND = 'acct-2';
 		const db = getDb();
@@ -2313,5 +2352,102 @@ describe('the minute’s run', () => {
 		await tick;
 		expect(fake.emails.get('news')!.keywords).toEqual({ $cat_newsletters: true, $jev_sorted: true });
 		db.prepare('DELETE FROM mail_accounts WHERE id = ?').run(SECOND);
+	});
+});
+
+describe('the Inbox’s hold for an account whose rules move mail', () => {
+	const JUST_NOW = 9.5;
+	const SORTED = '$jev_sorted';
+	/** Each Email/set the pass makes: its updates by message. */
+	const watchSets = () => {
+		const sets: Record<string, Record<string, unknown>>[] = [];
+		const realRequest = fake.request.bind(fake);
+		fake.request = async (calls: MethodCall[]) => {
+			for (const [name, args] of calls) if (name === 'Email/set' && args.update) sets.push(structuredClone(args.update) as Record<string, Record<string, unknown>>);
+			return realRequest(calls);
+		};
+		return sets;
+	};
+
+	beforeEach(() => {
+		// Nothing of Jev's: no Jev, no tabs.
+		updateJevSettings(ACCT, { jevEnabled: false, inboxTabs: false });
+	});
+
+	it('marks held Inbox mail in the same write as its rule changes, and leaves filed mail unmarked', async () => {
+		setRules(ME, [labelRule('file', 'receipt', { kind: 'folder', mailboxId: 'projects' }), labelRule('tag', 'lunch')]);
+		fake.add('receipt', JUST_NOW, { subject: 'Your receipt' });
+		fake.add('lunch', JUST_NOW, { subject: 'Lunch?' });
+		fake.add('plain', JUST_NOW, { subject: 'Hello' });
+		fake.add('older', 1, { subject: 'Hello again' }); // too old to be held
+		const sets = watchSets();
+
+		await runPass(ACCT, auth, { now: at(10) });
+
+		expect(sets).toEqual([
+			{
+				receipt: { mailboxIds: { projects: true } },
+				lunch: { mailboxIds: { inbox: true, news: true }, [`keywords/${SORTED}`]: true },
+				plain: { [`keywords/${SORTED}`]: true }
+			}
+		]);
+		expect(fake.emails.get('receipt')!.keywords).toEqual({});
+		expect(fake.emails.get('older')!.keywords).toEqual({});
+	});
+
+	it('marks it with the tabs on too, with Jev off and no pins', async () => {
+		updateJevSettings(ACCT, { inboxTabs: true });
+		setRules(ME, [labelRule('file', 'receipt', { kind: 'archive' })]);
+		fake.add('plain', JUST_NOW, { subject: 'Hello' });
+
+		await runPass(ACCT, auth, { now: at(10) });
+
+		expect(fake.emails.get('plain')!.keywords).toEqual({ [SORTED]: true });
+	});
+
+	it('marks nothing while the rules only label, star or mark as read', async () => {
+		setRules(ME, [labelRule('tag', 'lunch', undefined, { markRead: true })]);
+		fake.add('lunch', JUST_NOW, { subject: 'Lunch?' });
+		fake.add('plain', JUST_NOW, { subject: 'Hello' });
+		const sets = watchSets();
+
+		await runPass(ACCT, auth, { now: at(10) });
+
+		expect(sets).toEqual([{ lunch: { mailboxIds: { inbox: true, news: true }, 'keywords/$seen': true } }]);
+	});
+
+	it('marks nothing for a move rule that is switched off', async () => {
+		setRules(ME, [labelRule('file', 'receipt', { kind: 'archive' }, { enabled: false })]);
+		fake.add('plain', JUST_NOW, { subject: 'Hello' });
+		const sets = watchSets();
+
+		await runPass(ACCT, auth, { now: at(10) });
+
+		expect(sets).toEqual([]);
+	});
+
+	it('writes a rule’s change, a pin’s tab and the marker together when Jev isn’t asked', async () => {
+		updateJevSettings(ACCT, { inboxTabs: true });
+		setPin(ACCT, '@linkedin.com', 'updates');
+		setRules(ME, [labelRule('tag', 'jobs')]);
+		fake.add('jobs', JUST_NOW, { from: [{ name: 'LinkedIn', email: 'jobs@linkedin.com' }], subject: 'New jobs for you' });
+		const sets = watchSets();
+
+		await runPass(ACCT, auth, { now: at(10) });
+
+		expect(sets).toEqual([
+			{ jobs: { mailboxIds: { inbox: true, news: true }, 'keywords/$cat_updates': true, [`keywords/${SORTED}`]: true } }
+		]);
+	});
+
+	it('marks held mail after Jev’s answer when Jev is asked, with the tabs off', async () => {
+		updateJevSettings(ACCT, { jevEnabled: true, spamMode: 'watch' }, T0);
+		setRules(ME, [labelRule('file', 'receipt', { kind: 'archive' })]);
+		fake.add('plain', JUST_NOW, { subject: 'Hello' });
+
+		await runPass(ACCT, auth, { now: at(10) });
+
+		expect(fake.emails.get('plain')!.keywords).toEqual({ [SORTED]: true });
+		expect(getDecision(ACCT, 'plain')?.status).toBe('done');
 	});
 });

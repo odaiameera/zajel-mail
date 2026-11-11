@@ -5,7 +5,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'zajel-rules-routes-')), 'test.db');
 vi.mock('$lib/server/log', () => ({ logEvent: vi.fn(), errorFields: (e: unknown) => ({ error: String(e) }) }));
-vi.mock('$lib/server/mail-pipeline', () => ({ refreshPipeline: vi.fn() }));
+const pipeline = vi.hoisted(() => ({ refreshPipeline: vi.fn() }));
+vi.mock('$lib/server/mail-pipeline', () => pipeline);
 
 // The account's mailboxes, and a mail server that destroys what it is asked to.
 const boxes = vi.hoisted(() => [
@@ -119,6 +120,23 @@ beforeEach(() => {
 });
 
 describe('the rules API', () => {
+	it('opens or closes the new-mail event streams on every change to the rules', async () => {
+		pipeline.refreshPipeline.mockClear();
+		const rule = await create('Receipts');
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(1);
+		await call(one.PATCH as Handler, { id: rule.id, body: { enabled: false } });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(2);
+		await call(one.PATCH as Handler, { id: rule.id, body: draft('Receipts', { target: { kind: 'trash' } }) });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(3);
+		await call(reorder.POST as Handler, { body: { ids: [rule.id] } });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(4);
+		await call(one.DELETE as Handler, { id: rule.id });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(5);
+		// A refused save changes nothing.
+		await call(list.POST as Handler, { body: draft('') });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(5);
+	});
+
 	it('wants a sign-in and an active account on every route', async () => {
 		const handlers: Handler[] = [
 			list.GET,
@@ -334,6 +352,18 @@ describe('small edits to a rule an upgrade carried over', () => {
 });
 
 describe('deleting a folder or a label', () => {
+	it('opens or closes the new-mail event streams when it changes the rules', async () => {
+		pipeline.refreshPipeline.mockClear();
+		await create('Receipts');
+		pipeline.refreshPipeline.mockClear();
+		await call(folders as Handler, { body: { action: 'delete', id: 'RCPT' } });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(1);
+		await create('Work', { target: { kind: 'label', mailboxId: 'WORK' } });
+		pipeline.refreshPipeline.mockClear();
+		await call(labels as Handler, { body: { action: 'delete', id: 'WORK' } });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(1);
+	});
+
 	it('deletes the rules that only file into it, and says how many', async () => {
 		await create('to folder');
 		await create('to folder too');

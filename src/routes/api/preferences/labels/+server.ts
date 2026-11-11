@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { deleteRulesForMailbox } from '$lib/server/rules/store';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 import type { RequestHandler } from './$types';
 import { createClient } from '$lib/jmap/auth';
 import { ensureArchiveMailbox } from '$lib/jmap/mailbox';
@@ -83,6 +84,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const { deleted: rulesDeleted, kept: rulesKept } = locals.activeAccountId
 				? deleteRulesForMailbox(locals.activeAccountId, body.id)
 				: { deleted: 0, kept: 0 };
+			if (rulesDeleted || rulesKept) refreshPipeline();
 
 			const labels = await listLabels(client, accountId, accountRowId);
 			return json({ success: true, labels, rulesDeleted, rulesKept });

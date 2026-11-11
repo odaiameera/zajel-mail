@@ -4,6 +4,7 @@ import { createClient } from '$lib/jmap/auth';
 import { getMailboxes } from '$lib/jmap/mailbox';
 import { MAX_NAME, parseRule } from '$lib/server/rules/schema';
 import { deleteRule, getRule, setRuleBasics, updateRule } from '$lib/server/rules/store';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 import { needsRewrite, type RuleDraft, type RuleProblem } from '$lib/types/rules';
 
 /**
@@ -58,7 +59,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 			if (flagged && sent.enabled) return json({ error: SWITCH_ON_REFUSED }, { status: 400 });
 			change.enabled = sent.enabled;
 		}
-		return json({ rule: setRuleBasics(locals.activeAccountId, params.id, change) });
+		const saved = setRuleBasics(locals.activeAccountId, params.id, change);
+		refreshPipeline();
+		return json({ rule: saved });
 	}
 
 	if (flagged && !rewrite && sent.enabled === true) return json({ error: SWITCH_ON_REFUSED }, { status: 400 });
@@ -76,11 +79,14 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const mailboxes = await getMailboxes(createClient(locals.auth), locals.auth.accountId);
 	const { rule, problems } = parseRule({ ...current, ...sent }, mailboxes);
 	if (problems.length > 0) return refuse(problems);
-	return json({ rule: updateRule(locals.activeAccountId, params.id, rule, { rewrite }) });
+	const saved = updateRule(locals.activeAccountId, params.id, rule, { rewrite });
+	refreshPipeline();
+	return json({ rule: saved });
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.auth || !locals.activeAccountId) return json({ error: 'Not authenticated' }, { status: 401 });
 	if (!deleteRule(locals.activeAccountId, params.id)) return json({ error: 'Rule not found' }, { status: 404 });
+	refreshPipeline();
 	return json({ success: true });
 };

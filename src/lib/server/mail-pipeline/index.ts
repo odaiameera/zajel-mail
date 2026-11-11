@@ -44,7 +44,7 @@ export async function requestPass(accountRowId: string, auth: AuthState, opts: P
 			rerun.delete(accountRowId);
 			try {
 				await runPass(accountRowId, next.auth, next.opts);
-				noteRecovered('pass', accountRowId, 'pass_recovered');
+				noteRecovered('pass', accountRowId, 'pass_recovered', 'mail');
 			} catch (err) {
 				// A 401 is logged, and sent to Telegram, by markNeedsReauth.
 				if (err instanceof JMAPAuthError) {
@@ -52,7 +52,7 @@ export async function requestPass(accountRowId: string, auth: AuthState, opts: P
 					break;
 				}
 				console.error('[mail] new-mail pass failed', accountRowId, err);
-				noteFailure('pass', accountRowId, 'pass_failed', errorFields(err));
+				noteFailure('pass', accountRowId, 'pass_failed', errorFields(err), 'mail');
 			}
 			next = rerun.get(accountRowId);
 		}
