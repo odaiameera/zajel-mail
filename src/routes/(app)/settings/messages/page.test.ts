@@ -32,6 +32,12 @@ import { userState } from '$lib/stores/userState';
 const store = userState as unknown as { set(value: { loaded: boolean; displayName: null; settings: Record<string, unknown> }): void };
 
 const data = {
+	// The composer's rows are a section of the same page.
+	composerFont: 'Calibri',
+	composerFontSize: '12',
+	autoSaveInterval: 10,
+	undoSendSeconds: 0,
+	autoReplyEnabled: false,
 	markReadDelay: 1000,
 	autoLoadImages: 'contacts_only',
 	defaultSort: 'date_desc',
@@ -63,7 +69,7 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-describe('Settings → Messages', () => {
+describe('Settings → Messages & composer', () => {
 	it('shows the saved page size after a reload, although it is stored as a string', () => {
 		render(Page, { props: { data } as never });
 		expect(select('Messages per page').value).toBe('25');
@@ -93,7 +99,8 @@ describe('Settings → Messages', () => {
 	it('shows "Mark as read after" in seconds, though it is stored in milliseconds', () => {
 		open({ markReadDelay: 1500 });
 		expect(seconds().value).toBe('1.5');
-		expect(screen.getByText(/Seconds to wait before marking an open email as read/)).toBeTruthy();
+		// The unit is beside the field, in place of a sentence under it.
+		expect(screen.getByText('seconds', { selector: '#opening-mail *' })).toBeTruthy();
 	});
 
 	it('shows no Save bar until something is changed, and none once it is changed back', async () => {
@@ -115,7 +122,7 @@ describe('Settings → Messages', () => {
 		open();
 		await fireEvent.change(select('Default sort'), { target: { value: 'date_asc' } });
 		await fireEvent.input(seconds(), { target: { value: '2.5' } });
-		await fireEvent.click(screen.getByRole('switch', { name: 'Trash sign-in code emails after copying' }));
+		await fireEvent.click(screen.getByRole('switch', { name: 'Trash sign-in codes after copying' }));
 
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(mocks.updateSettings).not.toHaveBeenCalled();

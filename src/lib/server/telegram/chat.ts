@@ -171,7 +171,7 @@ export async function chatInTelegram(link: TelegramLink, text: string, opts: { r
 	const { chatId, userId } = link;
 	try {
 		if (!claudeConfigured()) {
-			await say(chatId, 'Chatting with Zajel here needs Claude as the AI provider (Settings → Agent).', opts.replyTo);
+			await say(chatId, 'Chatting with Zajel here needs Claude as the AI provider (Settings → Assistant).', opts.replyTo);
 			return;
 		}
 		if (running.has(userId)) {

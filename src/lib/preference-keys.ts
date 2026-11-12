@@ -1,6 +1,6 @@
 /**
  * Every preference stored in `app_prefs.prefs`, keyed to the webmail login:
- * what Settings → Import / Export lists, the export file holds, an import
+ * what Settings → Backup & reset lists, the export file holds, an import
  * accepts and Reset clears. Shared so the page and the server can't disagree.
  */
 export const PREFERENCES = [
@@ -22,11 +22,11 @@ export const PREFERENCES = [
 	{ key: 'notify_event_reminders', description: 'Event reminders' },
 	{ key: 'calendar_week_start', description: 'First day of the week' },
 	{ key: 'calendar_view', description: 'Last calendar view' },
-	{ key: 'auto_reply_enabled', description: 'Auto-reply on or off' },
-	{ key: 'auto_reply_subject', description: 'Auto-reply subject' },
-	{ key: 'auto_reply_body', description: 'Auto-reply message' },
-	{ key: 'auto_reply_from', description: 'Auto-reply first day' },
-	{ key: 'auto_reply_until', description: 'Auto-reply last day' },
+	{ key: 'auto_reply_enabled', description: 'Out of office on or off' },
+	{ key: 'auto_reply_subject', description: 'Out of office subject' },
+	{ key: 'auto_reply_body', description: 'Out of office message' },
+	{ key: 'auto_reply_from', description: 'Out of office first day' },
+	{ key: 'auto_reply_until', description: 'Out of office last day' },
 	{ key: 'auto_reply_tz', description: 'Time zone of the auto-reply dates' },
 	{ key: 'folder_expanded', description: 'Which sidebar folders are expanded' },
 	// Written by /api/user-state/settings and read by getDefaultPageSize();

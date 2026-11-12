@@ -13,7 +13,7 @@ import { aiSettings, chosenProvider, type Effort } from './settings';
  *   summaries, drafts, digests and extraction.
  *
  * Claude takes over every AI feature once `ANTHROPIC_API_KEY` is set, unless
- * another provider is chosen in Settings → Agent or named by `AI_PROVIDER`.
+ * another provider is chosen in Settings → Assistant or named by `AI_PROVIDER`.
  * Models and effort chosen in Settings win over their variables (settings.ts).
  */
 
@@ -154,7 +154,7 @@ export function claudeError(err: unknown): MailAssistantError {
 		return new MailAssistantError('The AI service rejected its API key', 502);
 	}
 	if (err instanceof Anthropic.NotFoundError) {
-		return new MailAssistantError('The AI service does not serve the configured model — choose another in Settings → Agent', 502);
+		return new MailAssistantError('The AI service does not serve the configured model — choose another in Settings → Assistant', 502);
 	}
 	if (err instanceof Anthropic.RateLimitError) {
 		// The first sentence names the limit (requests, input or output tokens per minute).

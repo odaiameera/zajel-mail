@@ -639,6 +639,63 @@ select.fc-select:not([multiple]):not([size]) {
 	margin-top: 0;
 }
 
+/*
+ * Rows reordered by dragging (see $lib/actions/sortable). The action only
+ * sets attributes; this is how they look. The handle keeps the page from
+ * scrolling under a finger, so a drag can start on a phone.
+ */
+[data-sort-handle] {
+	touch-action: none;
+	cursor: grab;
+}
+[data-sort-dragging] {
+	opacity: 0.3;
+}
+/* Where it would land, between two rows: a line the action places, with a
+   ring where it starts. The copy being carried hangs below it. */
+.sort-line {
+	position: fixed;
+	top: 0;
+	left: 0;
+	z-index: 79;
+	height: 2px;
+	border-radius: 1px;
+	background-color: var(--color-accent);
+	pointer-events: none;
+}
+.sort-line::before {
+	content: '';
+	position: absolute;
+	left: -7px;
+	top: -3px;
+	width: 8px;
+	height: 8px;
+	box-sizing: border-box;
+	border: 2px solid var(--color-accent);
+	border-radius: 50%;
+	background-color: var(--color-bg);
+}
+/* Or inside the row it is over. */
+[data-sort-drop='into'] {
+	border-radius: 0.5rem;
+	box-shadow: inset 0 0 0 2px var(--color-accent);
+	background-color: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+/* The copy of the row that follows the pointer. */
+.sort-ghost {
+	position: fixed;
+	top: 0;
+	left: 0;
+	z-index: 80;
+	pointer-events: none;
+	overflow: hidden;
+	border: 1px solid var(--color-border);
+	border-radius: 0.625rem;
+	background-color: var(--color-bg);
+	color: var(--color-text);
+	box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+}
+
 @media print {
 	aside,
 	header,

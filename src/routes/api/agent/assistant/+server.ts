@@ -17,7 +17,7 @@ import { logEvent } from '$lib/server/log';
 const FIELDS = new Set(['provider', 'agentModel', 'writerModel', 'agentEffort', 'model']);
 
 /**
- * Settings → Agent: choose the provider, its models and the agent's effort.
+ * Settings → Assistant: choose the provider, its models and the agent's effort.
  * The provider decides where mail content is sent, so every change needs a
  * fresh re-check. The reply is the status as it now stands.
  */

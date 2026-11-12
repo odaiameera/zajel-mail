@@ -17,7 +17,7 @@
 
 	// Phones open Settings on its section list; wider screens have that list
 	// in the left column, so they start on the first section.
-	const settingsHref = $derived($isPhone ? '/settings' : '/settings/account');
+	const settingsHref = $derived($isPhone ? '/settings' : '/settings/accounts');
 
 	// The three built surfaces in the order they get used (Zajel, the AI mail
 	// agent, lives in the bottom-right corner, beside Compose). Unbuilt apps (Tasks)

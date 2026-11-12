@@ -14,19 +14,20 @@
 	} from '$lib/stores/folderExpanded';
 	import type { Mailbox } from '$lib/jmap/types';
 	import type { Label } from '$lib/types/labels';
-	import { findLabelsParentId } from '$lib/types/labels';
 	import type { MailboxMetaMap } from '$lib/types/mailbox-meta';
 	import { showToast } from '$lib/stores/toast';
 	import { isScheduledMailbox } from '$lib/jmap/mailbox';
 	import { canDropOn, mailboxKind } from '$lib/mailboxes';
 	import {
 		buildFolderTree,
-		descendantIds,
+		canDropMailbox,
+		dropRequest,
 		filterUserFolders,
-		orderedSiblings,
+		type DropWhere,
 		type FolderTreeNode,
 		type ReorderRequest
 	} from '$lib/utils/folder-tree';
+	import { zoneAt } from '$lib/actions/sortable';
 
 	let {
 		mailboxes,
@@ -86,7 +87,6 @@
 			})
 	);
 
-	const labelsParentId = $derived(findLabelsParentId(mailboxes));
 
 	// The same tree Settings and the folder pickers show, in the order the
 	// user gave it (sortOrder, then name).
@@ -192,10 +192,9 @@
 	// (bottom quarter) or inside it (the middle; folders only). Labels move
 	// among labels and folders among folders; the server renumbers the level
 	// and keeps the order in every client that honours JMAP sortOrder. The
-	// Move up / Move down buttons in Settings do the same without a pointer.
+	// rows in Settings are dragged by the same rules (see folder-tree.ts).
 
 	const MAILBOX_DRAG_TYPE = 'application/x-mailbox-id';
-	type DropWhere = 'before' | 'after' | 'into';
 	/** The row being dragged; dataTransfer can't be read during dragover. */
 	let mailboxDrag = $state<{ id: string; label: boolean } | null>(null);
 	/** The row under the pointer and where relative to it the drop would land. */
@@ -218,27 +217,18 @@
 	}
 
 	/** Can what is being dragged land on this row at all? */
-	function canPlace(targetId: string, targetIsLabel: boolean): boolean {
-		if (!mailboxDrag) return false;
-		if (mailboxDrag.label !== targetIsLabel) return false;
-		if (mailboxDrag.id === targetId) return false;
-		// A folder can't go inside itself or one of its own children.
-		if (!targetIsLabel && descendantIds(mailboxes, mailboxDrag.id).has(targetId)) return false;
-		return true;
+	function canPlace(targetId: string): boolean {
+		return !!mailboxDrag && canDropMailbox(mailboxes, mailboxDrag.id, targetId);
 	}
 
 	function dropZone(e: DragEvent, allowInto: boolean): DropWhere {
 		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		const y = (e.clientY - rect.top) / Math.max(rect.height, 1);
-		if (!allowInto) return y < 0.5 ? 'before' : 'after';
-		if (y < 0.25) return 'before';
-		if (y > 0.75) return 'after';
-		return 'into';
+		return zoneAt((e.clientY - rect.top) / Math.max(rect.height, 1), allowInto);
 	}
 
 	function rowDragOver(e: DragEvent, target: { id: string }, isLabel: boolean) {
 		if (hasEmailPayload(e)) return onRowDragOver(e);
-		if (!hasMailboxPayload(e) || !canPlace(target.id, isLabel)) return;
+		if (!hasMailboxPayload(e) || !canPlace(target.id)) return;
 		e.preventDefault();
 		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
 		mailboxDrop = { id: target.id, where: dropZone(e, !isLabel) };
@@ -251,28 +241,18 @@
 		if (mailboxDrop?.id === id) mailboxDrop = null;
 	}
 
-	async function rowDrop(e: DragEvent, target: { id: string; parentId: string | null }, isLabel: boolean) {
+	async function rowDrop(e: DragEvent, target: { id: string }) {
 		if (hasEmailPayload(e)) return onRowDrop(e, target.id);
 		if (!hasMailboxPayload(e)) return;
 		e.preventDefault();
 		const drag = mailboxDrag;
 		const drop = mailboxDrop;
-		const allowed = canPlace(target.id, isLabel);
+		const allowed = canPlace(target.id);
 		onMailboxDragEnd();
 		if (!drag || !drop || drop.id !== target.id || !allowed) return;
 
-		let request: ReorderRequest;
-		if (drop.where === 'into') {
-			request = { id: drag.id, parentId: target.id, beforeId: null };
-		} else {
-			const parentId = isLabel ? labelsParentId : target.parentId;
-			const siblings = orderedSiblings(mailboxes, parentId, isLabel)
-				.map((m) => m.id)
-				.filter((id) => id !== drag.id);
-			const at = siblings.indexOf(target.id);
-			const beforeId = drop.where === 'before' ? target.id : (siblings[at + 1] ?? null);
-			request = { id: drag.id, parentId, beforeId };
-		}
+		const request = dropRequest(mailboxes, drag.id, target.id, drop.where);
+		if (!request) return;
 		await reorder(request);
 	}
 
@@ -479,7 +459,7 @@
 								ondragover={(e) => rowDragOver(e, label, true)}
 								ondragenter={(e) => onRowDragEnter(e, label.id)}
 								ondragleave={(e) => rowDragLeave(e, label.id)}
-								ondrop={(e) => rowDrop(e, { id: label.id, parentId: labelsParentId }, true)}
+								ondrop={(e) => rowDrop(e, label)}
 								class="flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm transition-colors {rowLook(label.id, isLabelActive(label))}"
 							>
 								<MailboxIcon node={label.iconNode} fallback="dot" color={label.color} />
@@ -508,7 +488,7 @@
 			ondragover={(e) => rowDragOver(e, node, false)}
 			ondragenter={(e) => onRowDragEnter(e, node.id)}
 			ondragleave={(e) => rowDragLeave(e, node.id)}
-			ondrop={(e) => rowDrop(e, node, false)}
+			ondrop={(e) => rowDrop(e, node)}
 			class="relative flex items-center gap-2.5 pr-1 py-1.5 rounded-lg text-sm transition-colors {rowLook(node.id, isMailboxActive(node))}"
 			style="padding-left: {0.75 * (depth + 1)}rem"
 		>

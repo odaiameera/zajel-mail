@@ -4,9 +4,9 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 
 vi.mock('$app/navigation', () => ({ invalidateAll: vi.fn(), beforeNavigate: () => {} }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/search') } }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/assistant') } }));
 
-import Page from './+page.svelte';
+import Page from './SearchSection.svelte';
 import Harness from '../SettingsHarness.svelte';
 import { barShown, discardButton, saveButton as barSave } from '$lib/settings/save-bar.testing';
 import { stepUpPrompt } from '$lib/auth/step-up';
@@ -38,17 +38,16 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-describe('Settings → Search', () => {
-	it('says where the endpoint is reached from, and that it receives mail text', async () => {
+describe('Settings → Assistant: semantic search', () => {
+	it('says that the endpoint receives mail text', async () => {
 		render(Page);
-		expect(await screen.findByText(/Reached from the server, not your browser/)).toBeTruthy();
-		expect(screen.getByText(/receives the text of every message it indexes/)).toBeTruthy();
+		expect(await screen.findByText(/receives the text of every message it indexes/)).toBeTruthy();
 	});
 
 	it('shows the loaded endpoint and model with nothing to save', async () => {
 		open();
 		expect((await endpoint()).value).toBe('http://ollama:11434');
-		expect((screen.getByLabelText('Model') as HTMLInputElement).value).toBe('embeddinggemma-2:270m');
+		expect((screen.getByLabelText('Embedding model') as HTMLInputElement).value).toBe('embeddinggemma-2:270m');
 		expect(barShown()).toBe(false);
 	});
 

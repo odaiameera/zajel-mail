@@ -6,7 +6,7 @@ import { describeSchedule } from '$lib/server/jobs/schedule';
 import { describeSpec } from '$lib/server/jobs/specs';
 import { deleteJob, jobsPaused, listJobs, setJobEnabled, setJobsPaused } from '$lib/server/jobs/store';
 
-/** Settings → Agent: the AI in use, the scheduled jobs, the pause-all switch, and the activity log. */
+/** Settings → Assistant: the AI in use, the scheduled jobs, the pause-all switch, and the activity log. */
 
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) error(401, 'Not signed in');

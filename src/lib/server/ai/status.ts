@@ -18,7 +18,7 @@ import { toolsFor } from '$lib/server/agent/tools';
 import { logEvent } from '$lib/server/log';
 
 /**
- * Which AI the server is using, for Settings → Agent; the models each
+ * Which AI the server is using, for Settings → Assistant; the models each
  * provider offers, for its pickers; and a check that the setup works.
  */
 

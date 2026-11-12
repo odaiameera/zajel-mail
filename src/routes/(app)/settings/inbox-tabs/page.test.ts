@@ -79,9 +79,10 @@ describe('Settings → Inbox tabs', () => {
 	it('puts its sections in the order they depend on each other', () => {
 		page('live');
 		const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
-		expect(headings).toEqual(['The four tabs', 'Let Jev sort new mail', 'Pinned senders', 'Add-ons']);
+		expect(headings).toEqual(['Show tabs', 'Let Jev sort new mail', 'Pinned senders', 'Spam checks']);
 		expect(document.getElementById('pinned-senders')?.getAttribute('aria-labelledby')).toBe('pins-heading');
-		expect(screen.getByRole('link', { name: 'Settings → Notifications' }).getAttribute('href')).toBe('/settings/notifications');
+		// Links elsewhere land on this heading by its id.
+		expect(screen.getByRole('heading', { name: 'Let Jev sort new mail' }).id).toBe('jev-heading');
 	});
 
 	it('sends nothing as tabs, Jev and spam checks are changed, then both accounts on Save', async () => {
@@ -149,7 +150,7 @@ describe('Settings → Inbox tabs', () => {
 
 	it('says how Jev is connected: live, mock or not at all', () => {
 		page('live');
-		expect(region('Let Jev sort new mail').getByText(/Connected to TypeSafe with model/)).toBeTruthy();
+		expect(region('Let Jev sort new mail').getByText('Connected to TypeSafe')).toBeTruthy();
 		expect(region('Let Jev sort new mail').getByText('jev-1.13.0')).toBeTruthy();
 		cleanup();
 		page('mock');

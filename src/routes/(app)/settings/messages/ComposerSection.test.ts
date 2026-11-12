@@ -3,9 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 
 vi.mock('$app/navigation', () => ({ invalidateAll: vi.fn(async () => {}), beforeNavigate: () => {} }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/composer') } }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/messages') } }));
 
-import Page from './+page.svelte';
+import Page from './ComposerSection.svelte';
 import Harness from '../SettingsHarness.svelte';
 import { barShown, barText, discardButton, saveButton as barSave } from '$lib/settings/save-bar.testing';
 
@@ -13,7 +13,7 @@ const data = { composerFont: 'Calibri', composerFontSize: '12', autoSaveInterval
 const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
 
 const open = () => render(Harness, { props: { page: Page, data } as never });
-const interval = () => screen.getByLabelText('Auto-save interval') as HTMLInputElement;
+const interval = () => screen.getByLabelText('Save drafts every (seconds)') as HTMLInputElement;
 const saveButton = () => barSave()!;
 const sent = () => fetchMock.mock.calls.map(([url, init]) => ({ url, body: JSON.parse(String(init?.body)) }));
 
@@ -27,7 +27,7 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-describe('Settings → Composer', () => {
+describe('Settings → Messages & composer: the composer', () => {
 	it('saves every change in one request when Save is pressed', async () => {
 		open();
 		await fireEvent.change(screen.getByLabelText('Undo send'), { target: { value: '10' } });
@@ -46,7 +46,7 @@ describe('Settings → Composer', () => {
 		open();
 		await fireEvent.input(interval(), { target: { value: typed } });
 
-		expect(barText()).toBe('“Auto-save interval” takes 5 to 120 seconds.');
+		expect(barText()).toBe('“Save drafts every” takes 5 to 120 seconds.');
 		expect(saveButton().disabled).toBe(true);
 		await fireEvent.click(saveButton());
 		expect(fetchMock).not.toHaveBeenCalled();
@@ -95,7 +95,7 @@ describe('Settings → Composer', () => {
 
 		// Typed, it is held to the limits.
 		await fireEvent.input(interval(), { target: { value: '150' } });
-		expect(barText()).toBe('“Auto-save interval” takes 5 to 120 seconds.');
+		expect(barText()).toBe('“Save drafts every” takes 5 to 120 seconds.');
 	});
 
 	it('stores a decimal interval as whole seconds, rounded down, and shows it so', async () => {

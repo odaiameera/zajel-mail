@@ -2,6 +2,8 @@
 	import { untrack } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
+	import PageHeader from '$lib/components/settings/PageHeader.svelte';
+	import Section from '$lib/components/settings/Section.svelte';
 	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import Select from '$lib/components/settings/Select.svelte';
 	import { useDraft } from '$lib/settings/draft.svelte';
@@ -10,7 +12,7 @@
 
 	let { data }: { data: LayoutData } = $props();
 
-	// Stored when Save is pressed in the bar at the foot of the page.
+	// Stored when Save is pressed in the pill at the foot of the page.
 	const draft = useDraft({
 		// What the page opened with; later reloads of `data` leave the form alone.
 		initial: untrack(() => ({ weekStart: String(data.calendarWeekStart) })),
@@ -23,19 +25,10 @@
 
 <svelte:head><title>{pageTitle({ page: 'Calendar', subtitle: 'Settings' })}</title></svelte:head>
 
-<header class="mb-6">
-	<h1 class="text-xl font-semibold text-text">Calendar</h1>
-	<p class="text-sm text-text-tertiary mt-1">
-		Display preferences for the calendar app. Event notifications live under
-		<a href="/settings/notifications" class="text-accent-fg hover:text-accent-fg-hover transition-colors">Notifications</a>.
-	</p>
-</header>
+<PageHeader title="Calendar" />
 
-<section>
-	<SettingRow
-		title="Week starts on"
-		description="First day of the week in the month grid, week view and mini calendar."
-	>
+<Section>
+	<SettingRow title="Week starts on">
 		{#snippet control()}
 			<Select
 				value={draft.value.weekStart}
@@ -49,4 +42,4 @@
 			/>
 		{/snippet}
 	</SettingRow>
-</section>
+</Section>

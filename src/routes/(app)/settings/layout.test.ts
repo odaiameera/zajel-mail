@@ -20,7 +20,7 @@ vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/c
 import Harness from './SettingsHarness.svelte';
 import Calendar from './calendar/+page.svelte';
 import Appearance from './appearance/+page.svelte';
-import Reset from './reset/+page.svelte';
+import Backup from './backup/+page.svelte';
 
 const data = { calendarWeekStart: 1, theme: 'dark', density: 'comfortable', readingPane: 'on' };
 const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
@@ -69,8 +69,8 @@ describe('the settings Save bar', () => {
 	});
 
 	it('stays away from a page that only has actions', () => {
-		render(Harness, { props: { page: Reset, data } as never });
-		expect(screen.getByRole('heading', { name: 'Reset' })).toBeTruthy();
+		render(Harness, { props: { page: Backup, data } as never });
+		expect(screen.getByRole('heading', { name: 'Backup & reset' })).toBeTruthy();
 		expect(saveButton()).toBeNull();
 	});
 
@@ -81,7 +81,7 @@ describe('the settings Save bar', () => {
 		expect(await screen.findByText('Saved')).toBeTruthy();
 
 		// On to a page with no settings: no bar, and no "Saved" left behind.
-		await rerender({ page: Reset, data } as never);
+		await rerender({ page: Backup, data } as never);
 		expect(saveButton()).toBeNull();
 		expect(screen.queryByText('Saved')).toBeNull();
 
@@ -116,7 +116,7 @@ describe('the settings Save bar', () => {
 		await screen.findByText('Saved');
 		expect(leave()).not.toHaveBeenCalled();
 
-		await rerender({ page: Reset, data } as never);
+		await rerender({ page: Backup, data } as never);
 		expect(leave()).not.toHaveBeenCalled();
 		expect(confirm).toHaveBeenCalledTimes(1);
 	});

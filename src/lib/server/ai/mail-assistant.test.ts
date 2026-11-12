@@ -111,7 +111,7 @@ describe('runMailAssistant', () => {
 					receivedAt: '',
 					bodyText: 'Hello'
 				})
-			).rejects.toThrow(/choose another in Settings → Agent/);
+			).rejects.toThrow(/choose another in Settings → Assistant/);
 		}
 	});
 
@@ -202,7 +202,7 @@ describe('listAvailableModels', () => {
 
 		const logged = warn.mock.calls.map((call) => String(call[0])).join('\n');
 		expect(logged).toContain('deepseek-v3.1:671b-cloud');
-		expect(logged).toContain('choose one in Settings → Agent');
+		expect(logged).toContain('choose one in Settings → Assistant');
 	});
 
 	it('does not go looking for models on an unrelated failure', async () => {

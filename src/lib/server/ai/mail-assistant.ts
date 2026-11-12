@@ -27,7 +27,7 @@ const DEFAULT_AI_URL = 'https://ollama.com';
  * is how an operator picks a model, and it needs no code change. Any tag
  * hard-coded here can still be retired upstream, surfacing as a 404/410 from
  * `/api/chat`, which is why the failure path below reports what the endpoint
- * does serve, and Settings → Agent lists the same tags. Treat this
+ * does serve, and Settings → Assistant lists the same tags. Treat this
  * default as a starting point, not a guarantee.
  */
 const DEFAULT_AI_MODEL = 'deepseek-v4-flash:cloud';
@@ -43,7 +43,7 @@ const DEFAULT_OPENAI_MODEL = 'gpt-5.6-terra';
 export type AIProvider = 'openai' | 'ollama';
 
 /**
- * The provider chosen in Settings → Agent when it is OpenAI or Ollama, else
+ * The provider chosen in Settings → Assistant when it is OpenAI or Ollama, else
  * the one AI_PROVIDER names, else OpenAI when its key is set, otherwise the
  * Ollama endpoint, if any.
  */
@@ -90,7 +90,7 @@ function authHeader(): Record<string, string> {
 export function upstreamErrorMessage(status: number): string {
 	if (status === 401 || status === 403) return 'The AI service rejected its API key';
 	if (status === 404 || status === 410) {
-		return `The AI service does not serve the model "${aiModel()}" (${status}) — choose another in Settings → Agent`;
+		return `The AI service does not serve the model "${aiModel()}" (${status}) — choose another in Settings → Assistant`;
 	}
 	if (status === 429) {
 		return 'The AI service is rate limiting this account — wait a moment and try again';
@@ -139,7 +139,7 @@ export async function logUpstreamFailure(status: number, detail: string): Promis
 	const available = await listAvailableModels();
 	console.warn(
 		available.length
-			? `[ai] ${aiEndpoint()} serves: ${available.join(', ')} — choose one in Settings → Agent`
+			? `[ai] ${aiEndpoint()} serves: ${available.join(', ')} — choose one in Settings → Assistant`
 			: `[ai] could not list models from ${aiEndpoint()}/api/tags — check OLLAMA_URL and OLLAMA_API_KEY`
 	);
 }

@@ -101,11 +101,11 @@ The inbox is built for getting through mail, not just reading it.
 - **Move to…** lists the Inbox, Archive, Junk and Trash, then your folders as a tree, and your labels in their own section. Picking a folder moves the message there: it leaves whatever folder it was in and keeps its labels. Picking a label adds the label and leaves the message where it is. Dropping a message on a label in the sidebar does the same.
 - Taking a message's last label off, when it is in no folder, puts it in Archive, and an open message shows it there straight away.
 - Remind Me Later and Scheduled belong to the app: mail can't be moved into them by hand, and they can't be renamed, moved or deleted.
-- Folders and labels can have a colour and an icon, kept per mail account; a colour can be cleared again. Drag a folder or label in the sidebar to reorder it or nest it under another; the order is stored on the server, so other clients that honour it see the same arrangement. Settings → Folders & labels has Move up and Move down for keyboards and touch screens, and shows beside each folder and label the rules that file into it, with **Add rule** to start one there.
+- Folders and labels can have a colour and an icon, kept per mail account; a colour can be cleared again. Drag a folder or label in the sidebar to reorder it or nest it under another; the order is stored on the server, so other clients that honour it see the same arrangement. Settings → Folders & labels does the same: drag a row by the handle at its start, with a mouse or a finger, onto another to reorder it or drop it inside; the arrow keys on a focused handle move it one place. It shows beside each folder and label the rules that file into it, with **Add rule** to start one there, and **All rules, in order** is dragged the same way.
 
 **Search** sits at the top of every page (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>, or <kbd>/</kbd>). It looks across every folder, and active filters show as chips you can clear. Operators narrow it down: `from:`, `to:`, `cc:`, `subject:`, `body:`, `in:`, `label:`, `is:unread`, `has:attachment`, `before:` and `after:`, and `tab:` (`important`, `updates`, `newsletters` or `promotions`) for Inbox mail in that tab.
 
-With **semantic search** switched on in Settings → Search, it also finds mail by meaning. For example, *"the plumber's quote from spring"* finds the estimate for the leaking pipe, in Arabic or English.
+With **semantic search** switched on in Settings → Assistant, it also finds mail by meaning. For example, *"the plumber's quote from spring"* finds the estimate for the leaking pipe, in Arabic or English.
 - Keyword and meaning results are merged, so a message both find comes first. A match has to stand out from the rest of the mailbox, so a mailbox with fewer than ten messages, or a folder where nothing does, gets keyword results alone.
 - The embedding model runs on **your own Ollama**. Mail text never goes to the chat AI's endpoint.
 - Each account is indexed in the background, newest mail first. Until its index is complete, and for a minute at most after a restart while the index is read back into memory, search is keyword-only. Results found by meaning are shown best match first.
@@ -132,7 +132,7 @@ With **semantic search** switched on in Settings → Search, it also finds mail 
 - **Trash can empty itself** after 7 or 30 days. Pressing Trash deletes a message for good only in the Trash folder itself; anywhere else (a label, Search, Starred) it moves the message to Trash, and a message already there stays put.
 - **Bulk actions** say how many messages couldn't be changed, if any, and do the rest.
 - **Rules** match mail exactly, by sender, recipient, subject, body, size or attachment, and file it in **one** place: a folder, a label, Trash, Archive or Junk (or nowhere). A rule can also mark the mail read, star it, or stop the rules after it. Rules live in Settings → Folders & labels, under the folder or label they file into, and all of them under **All rules, in order**. Rules run in the order of that list, which you change with **move up / move down** (a rule waiting under **Needs your attention** keeps its place): labels add up, and the first rule that moves a message decides its folder; the message leaves every other folder it was in and keeps its labels. Each rule is saved on its own with **Save**, and checked by the server, which says what is wrong beside the field. Rules belong to the mail account: unlinking it deletes them (the confirmation says how many), and deleting a folder or label deletes the rules that only file into it (a rule that also marks read, stars or stops later rules is kept, filing nowhere; the confirmation says how many of each). A rule never picks an Inbox tab; a sender pin does that. Rules run on the server within seconds of mail landing (the server listens to the mail server's push channel; if that is down, within a minute), so they keep filtering with every tab closed. While a rule that moves mail out of the Inbox is switched on, a new message waits, a second or two and never more than two minutes, until the rules have had it, so mail a rule files never shows in the Inbox first. Saving such a rule never hides mail that is already in the Inbox: only mail that arrives after it waits. A rule that only labels, stars or marks as read holds nothing back. A message the mail server can't read for the rules doesn't hold up the others; it is tried again on later passes (at most once a minute) and after five tries is let through without the rules. A rule never undoes a move you made: if you move a message before its rule acts, it stays where you put it. A live count shows how many of your newest Inbox messages a rule matches, counted exactly as **Save & apply** then sorts them.
-- **Auto-reply** (out-of-office) is sent by Zajel itself, with optional start and end dates and one setting for all your linked accounts. Replies go to the sender's own address (never a Reply-To), and each person gets at most one a day across all your accounts; newsletters, mailing lists, automatic mail, delivery reports, spam, mail that fails the sender checks and mail from before you switched it on get none. Replies go out only while Zajel is running, within seconds of the mail arriving, and the settings page lists the latest ones.
+- **Out of office** replies (Settings → Messages & composer) are sent by Zajel itself, with optional start and end dates and one setting for all your linked accounts. Replies go to the sender's own address (never a Reply-To), and each person gets at most one a day across all your accounts; newsletters, mailing lists, automatic mail, delivery reports, spam, mail that fails the sender checks and mail from before you switched it on get none. Replies go out only while Zajel is running, within seconds of the mail arriving, and the settings page lists the latest ones.
 - **Sender avatars** come from BIMI, site favicons and Gravatar. They're cached on the server, so every device shares one lookup. Lookups that find nothing are remembered too, instead of being retried on every render.
 
 ### The composer
@@ -197,7 +197,7 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
 - **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools, including drafting replies. They run once, hourly, daily, on weekdays, on chosen days of the week, or weekly.
   - **Reports:** an instruction's answer comes to Telegram in full, formatted, over several messages when it's long. A job that only watches for something ("tell me when Elaine replies") stays quiet until it happens.
   - **Cards:** with **Confirm from Telegram** on, an instruction may also prepare up to 5 emails, invitations or deletions per run. They arrive as cards after its report, and nothing goes out until you press. Its drafts arrive the same way.
-- **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from the models each provider offers your key. **Check** sends a real request to the provider in use, and checks the fallback model when `ANTHROPIC_FALLBACK_MODEL` is set.
+- **Choosing the AI:** Settings → Assistant picks the provider, the models and the agent's effort, from the models each provider offers your key. **Check** sends a real request to the provider in use, and checks the fallback model when `ANTHROPIC_FALLBACK_MODEL` is set.
 
 **Only on Claude:** acting on your mailbox, Telegram reminders, and scheduled jobs, which only Zajel can set up (`schedule_job`). Telegram alerts for urgent mail come from Jev and work with any provider.
 
@@ -288,16 +288,18 @@ Jev is **off until you turn it on, account by account.** For a demo or developme
 
   ![The inbox in the light theme](docs/screenshots/inbox-light.png)
 
-- **Messages**:
+- **Messages & composer**, one page:
   - list order for the Inbox, folders and Starred: newest, oldest, subject or sender
   - how long an open message waits before it's marked read
   - remote-image policy
   - automatic Trash emptying
-- **Composer**: default font and size, auto-save interval and Undo send window.
-- **Signatures**: as many as you like, with a default for each identity.
+  - the composer's default font and size, how often drafts save, and the Undo send window
+  - **Signatures**, as many as you like, with a default for each address, and **Out of office**, each on a page of its own under it
 - **Notifications** for new mail, plus new and updated events and event reminders. Push is per device: each phone or browser has its own switch, and the page lists the devices receiving push.
-- **Import / Export** your preferences as a file, or **Reset** them.
-- **Nothing in Settings saves until you press Save.** Change what you want and a bar at the foot of the page offers **Save** and **Discard** (Ctrl+S or Cmd+S saves too); leaving with unsaved changes asks first. A theme you pick shows straight away and goes back if you don't save it. Actions still happen at once: adding or removing a pin, linking Telegram, signing out a device, importing.
+- **Accounts** has your name and photo above the mail accounts you've linked; drag the accounts into the order you want, and the first one opens when you sign in.
+- **Backup & reset**: export your preferences as a file, import one, or reset them.
+- **Search settings** from the top of the settings menu: type what you're looking for ("undo", "signatures") and go straight to the page it is on.
+- **Nothing in Settings saves until you press Save.** Change what you want and a pill at the foot of the page offers **Save** and **Discard** (Ctrl+S or Cmd+S saves too); leaving with unsaved changes asks first. A theme you pick shows straight away and goes back if you don't save it. Actions still happen at once: adding or removing a pin, linking Telegram, signing out a device, importing.
 
 ### On your phone
 
@@ -348,7 +350,7 @@ Zajel Mail holds the keys to your mail, so security comes first.
 
 **AI that asks first**
 - **Anything that leaves your account waits for your click.** Sending, drafts to other people, calendar changes, invitations and scheduled jobs are cards that name exactly what will happen.
-- **What Zajel does on its own stays in your mailbox and can be undone.** Marking, filing, labelling, snoozing, drafts to you and reminders are logged in Settings → Agent.
+- **What Zajel does on its own stays in your mailbox and can be undone.** Marking, filing, labelling, snoozing, drafts to you and reminders are logged in Settings → Assistant.
 
 ### Where your data goes
 
@@ -492,14 +494,14 @@ environment:
 
 ### Setting up Zajel
 
-Zajel is optional too, and hidden until an AI service is configured. Pick one of these. When several keys are set, Claude wins, then OpenAI, then Ollama, unless `AI_PROVIDER` names one (`claude` or `anthropic`, `openai`, `ollama`). A provider chosen in Settings → Agent wins over both.
+Zajel is optional too, and hidden until an AI service is configured. Pick one of these. When several keys are set, Claude wins, then OpenAI, then Ollama, unless `AI_PROVIDER` names one (`claude` or `anthropic`, `openai`, `ollama`). A provider chosen in Settings → Assistant wins over both.
 
 **Claude (the agent that acts):**
 
 ```yaml
 environment:
   - ANTHROPIC_API_KEY=<your Anthropic API key>
-  # Optional overrides; Settings → Agent can also pick these.
+  # Optional overrides; Settings → Assistant can also pick these.
   # - ANTHROPIC_MODEL=claude-opus-5-5
   # - ANTHROPIC_FAST_MODEL=claude-haiku-5-5
 ```
@@ -522,7 +524,7 @@ environment:
   - OLLAMA_MODEL=<a tag your endpoint serves>
 ```
 
-`OLLAMA_MODEL` has to name a tag your endpoint actually serves. Ollama Cloud uses `-cloud` tags; a bare library tag resolves only on a self-hosted endpoint that has pulled it. Settings → Agent lists the models your endpoint or key offers, and **Check** sends the model a real request.
+`OLLAMA_MODEL` has to name a tag your endpoint actually serves. Ollama Cloud uses `-cloud` tags; a bare library tag resolves only on a self-hosted endpoint that has pulled it. Settings → Assistant lists the models your endpoint or key offers, and **Check** sends the model a real request.
 
 If a model request fails, the server log has an `[ai]` line with the provider's own explanation. That detail is kept out of the browser on purpose.
 
@@ -542,16 +544,16 @@ To let Zajel propose tasks (OpenAI and Ollama), configure any combination of Tod
 | `DATABASE_PATH` | No | SQLite path. Defaults to `local-data/ameera.db`, or `/data/ameera.db` when `NODE_ENV` is `production`. |
 | `NODE_ENV` | No | `production` picks the production database path. The Docker image sets it. |
 | `ANTHROPIC_API_KEY` | AI only | Runs Zajel on Claude, as an agent that acts on your mailbox. |
-| `ANTHROPIC_MODEL`, `ANTHROPIC_FAST_MODEL` | No | The agent and writing models. Default to Claude Opus 5.5 and Claude Haiku 5.5; Settings → Agent can override them. |
-| `ANTHROPIC_FALLBACK_MODEL` | No | Takes a turn when the agent model is rate-limited. Defaults to Claude Sonnet 5.5. Settings → Agent → Check tests it when set. |
-| `AI_PROVIDER` | No | `claude` (or `anthropic`), `openai` or `ollama`, when more than one key is set. Otherwise Claude wins, then OpenAI. Settings → Agent overrides it. |
+| `ANTHROPIC_MODEL`, `ANTHROPIC_FAST_MODEL` | No | The agent and writing models. Default to Claude Opus 5.5 and Claude Haiku 5.5; Settings → Assistant can override them. |
+| `ANTHROPIC_FALLBACK_MODEL` | No | Takes a turn when the agent model is rate-limited. Defaults to Claude Sonnet 5.5. Settings → Assistant → Check tests it when set. |
+| `AI_PROVIDER` | No | `claude` (or `anthropic`), `openai` or `ollama`, when more than one key is set. Otherwise Claude wins, then OpenAI. Settings → Assistant overrides it. |
 | `OPENAI_API_KEY` | AI only | Runs Zajel and event extraction on OpenAI. |
 | `OPENAI_MODEL` | No | OpenAI model. Defaults to `gpt-5.6-terra`; `gpt-5.6-luna` is faster and cheaper. |
 | `OLLAMA_URL` | AI only | Ollama-compatible endpoint. |
 | `OLLAMA_API_KEY` | AI only | Bearer token, when the endpoint requires one. |
-| `OLLAMA_MODEL` | AI only | Model tag the endpoint serves. Settings → Agent lists them. |
-| `EMBED_URL` | Semantic search only | Ollama on your own server that embeds mail for search, such as `http://host.docker.internal:11434`. Settings → Search can set or override it. Never falls back to `OLLAMA_URL`. |
-| `EMBED_MODEL` | No | Embedding model. Defaults to `embeddinggemma-2:270m`; Settings → Search can override it. Changing it rebuilds the index. |
+| `OLLAMA_MODEL` | AI only | Model tag the endpoint serves. Settings → Assistant lists them. |
+| `EMBED_URL` | Semantic search only | Ollama on your own server that embeds mail for search, such as `http://host.docker.internal:11434`. Settings → Assistant can set or override it. Never falls back to `OLLAMA_URL`. |
+| `EMBED_MODEL` | No | Embedding model. Defaults to `embeddinggemma-2:270m`; Settings → Assistant can override it. Changing it rebuilds the index. |
 | `EMBED_QUERY_PREFIX`, `EMBED_DOCUMENT_PREFIX` | No | Retrieval prompts for a model Zajel has none built in for. |
 | `TELEGRAM_BOT_TOKEN` | Telegram only | Zajel's bot, from @BotFather. Link your chat in Settings → Notifications. |
 | `LOG_FILE` | No | Writes an event log, one JSON object per line and never mail content, for a monitor on the host. |

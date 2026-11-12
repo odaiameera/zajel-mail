@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 
 vi.mock('$app/navigation', () => ({ invalidateAll: vi.fn(), beforeNavigate: () => {} }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/agent') } }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/assistant') } }));
 
 import Page from './+page.svelte';
 import Harness from '../SettingsHarness.svelte';
@@ -41,6 +41,8 @@ beforeEach(() => {
 			assistant = { ...assistant, ...JSON.parse(String(init?.body)) };
 			return Response.json(assistant);
 		}
+		// The page's other section, semantic search, loads its own values.
+		if (url === '/api/search/index') return Response.json({ url: '', model: '', accounts: [] });
 		return Response.json({ assistant, paused: false, jobs: [job], activity: [] });
 	});
 	vi.stubGlobal('fetch', fetchMock);
@@ -51,7 +53,7 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-describe('Settings → Agent', () => {
+describe('Settings → Assistant', () => {
 	it('sends a model choice only when Save is pressed, and only the model that changed', async () => {
 		open();
 		const model = await select('Agent model');

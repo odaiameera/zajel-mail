@@ -3,10 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 
 vi.mock('$app/navigation', () => ({ invalidateAll: vi.fn(), beforeNavigate: () => {} }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/auto-reply') } }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/messages/out-of-office') } }));
 
 import Page from './+page.svelte';
-import Harness from '../SettingsHarness.svelte';
+import Harness from '../../SettingsHarness.svelte';
 import { barShown, barText, discardButton, saveButton } from '$lib/settings/save-bar.testing';
 
 let posted: Record<string, unknown>[] = [];
@@ -37,7 +37,7 @@ const page = (over: Record<string, unknown> = {}) =>
 
 const status = () => screen.getByTestId('auto-reply-status').textContent?.replace(/\s+/g, ' ').trim();
 
-describe('Settings → Auto-reply', () => {
+describe('Settings → Out of office', () => {
 	it('saves nothing until Save, then sends the whole form with the time zone', async () => {
 		page();
 		await fireEvent.input(screen.getByLabelText('Message'), { target: { value: 'Away this week.' } });
@@ -75,14 +75,14 @@ describe('Settings → Auto-reply', () => {
 	it('shows each status, and the new one after a save', async () => {
 		for (const s of ['Off', 'On', 'Starts 20 Nov', 'On until 28 Nov', 'Ended 28 Nov']) {
 			page({ status: s });
-			expect(status()).toBe(`Status: ${s}`);
+			expect(status()).toBe(s);
 			cleanup();
 		}
 		answer = { status: 200, body: { success: true, status: 'On until 28 Nov' } };
 		page({ autoReply: { ...saved, enabled: true, body: 'Away' } });
 		await fireEvent.input(screen.getByLabelText('Until'), { target: { value: '2026-11-28' } });
 		await fireEvent.click(saveButton()!);
-		await waitFor(() => expect(status()).toBe('Status: On until 28 Nov'));
+		await waitFor(() => expect(status()).toBe('On until 28 Nov'));
 	});
 
 	it('won’t save an end date before the start date', async () => {
@@ -135,6 +135,6 @@ describe('Settings → Auto-reply', () => {
 	it('lists the replies sent', () => {
 		page({ sent: [{ to: 'bob@outside.test', at: '2026-11-20T11:00:00Z', account: 'me@example.test' }] });
 		expect(screen.getByText('bob@outside.test')).toBeTruthy();
-		expect(screen.queryByText('None yet.')).toBeNull();
+		expect(screen.getByRole('heading', { name: 'Replies sent' })).toBeTruthy();
 	});
 });

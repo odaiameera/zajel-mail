@@ -9,11 +9,11 @@ import { PREF_KEYS } from '$lib/server/preferences';
 
 afterEach(cleanup);
 
-describe('Settings → Import / Export', () => {
+describe('Settings → Backup & reset', () => {
 	it('lists exactly the preferences the server exports, imports and resets', () => {
 		const { container } = render(Page);
 		const listed = [...container.querySelectorAll('details li code')].map((el) => el.textContent);
 		expect(listed).toEqual([...PREF_KEYS]);
-		expect(screen.getByText(`Settings in the file (${PREF_KEYS.length})`)).toBeTruthy();
+		expect(screen.getByText(`What the file holds (${PREF_KEYS.length} settings)`)).toBeTruthy();
 	});
 });
