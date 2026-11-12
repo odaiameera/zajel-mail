@@ -192,8 +192,10 @@ export function listUnhandled(accountRowId: string, limit = UNHANDLED_PAGE): Arr
 }
 
 /**
- * A pass is about to try these: counted before it starts, so a pass that
- * dies part-way still counts. At most once a minute per arrival.
+ * A pass is trying these: counted before the rest of its work, so a pass
+ * that dies part-way still counts. Mail the pass reads is counted once it
+ * has been tried, so what a failing server left unread isn't charged. At
+ * most once a minute per arrival.
  */
 export function countAttempt(accountRowId: string, emailIds: string[], now = new Date()): void {
 	const s = stmts();

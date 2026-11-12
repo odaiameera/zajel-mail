@@ -94,8 +94,8 @@ export function securityFacts(email: Email): JevSecurityFacts {
 
 // --- Questions --------------------------------------------------------------
 
-export const SPAM_QUESTION_ID = 'spam';
-export const PHISHING_QUESTION_ID = 'phishing';
+const SPAM_QUESTION_ID = 'spam';
+const PHISHING_QUESTION_ID = 'phishing';
 
 /** Two narrow questions, as TypeSafe recommends, rather than one broad one. */
 export const SPAM_QUESTIONS: Record<string, JevQuestion> = {
@@ -111,7 +111,7 @@ export const SPAM_QUESTIONS: Record<string, JevQuestion> = {
 	}
 };
 
-export function spamAnswers(answers: Record<string, JevAnswer> | undefined): { spam: number; phishing: number } | null {
+function spamAnswers(answers: Record<string, JevAnswer> | undefined): { spam: number; phishing: number } | null {
 	const spam = answers?.[SPAM_QUESTION_ID];
 	const phishing = answers?.[PHISHING_QUESTION_ID];
 	if (spam?.type !== 'noul' || phishing?.type !== 'noul') return null;
@@ -121,15 +121,15 @@ export function spamAnswers(answers: Record<string, JevAnswer> | undefined): { s
 // --- The decision table -----------------------------------------------------
 
 /** Above this, Jev moves mail to Junk (active mode). */
-export const JUNK_AT = 0.9;
+const JUNK_AT = 0.9;
 /** Above this, mail stays put with a "looks suspicious" warning. */
-export const FLAG_AT = 0.6;
+const FLAG_AT = 0.6;
 /** Out of Junk only when Jev is this sure it is neither spam… */
-export const RESCUE_SPAM_BELOW = 0.1;
+const RESCUE_SPAM_BELOW = 0.1;
 /** …nor phishing, and the sender's domain passed DMARC. */
-export const RESCUE_PHISHING_BELOW = 0.05;
+const RESCUE_PHISHING_BELOW = 0.05;
 
-export type SpamAction = 'junk' | 'rescue' | 'flag';
+type SpamAction = 'junk' | 'rescue' | 'flag';
 
 /**
  * What Jev's answers call for, before the mode decides whether to act:
@@ -177,14 +177,14 @@ export interface SpamRecord {
  * written to — or null when a lookup couldn't tell. Unknown is not "no":
  * nothing moves to Junk on it (see decideSpam).
  */
-export function trustOf(facts: JevFacts | null): boolean | null {
+function trustOf(facts: JevFacts | null): boolean | null {
 	const looked = [facts?.sender_in_contacts, facts?.you_have_written_to_sender];
 	if (looked.includes(true)) return true;
 	return looked.every((v) => v === false) ? false : null;
 }
 
 /** How a spam action reads in the record: what was done, or would have been. */
-export function spamActionLabel(action: SpamAction | null, mode: SpamMode): string | null {
+function spamActionLabel(action: SpamAction | null, mode: SpamMode): string | null {
 	if (!action) return null;
 	const done = { junk: 'junked', rescue: 'rescued', flag: 'flagged' }[action];
 	return mode === 'active' ? done : `would_${action}`;
@@ -233,7 +233,7 @@ export function jevVerdict(r: Pick<SpamRow, 'spam' | 'phishing'>): 'spam' | 'cle
 	return 'unsure';
 }
 
-export interface SpamSummary {
+interface SpamSummary {
 	judged: number;
 	agree: number;
 	unsure: number;

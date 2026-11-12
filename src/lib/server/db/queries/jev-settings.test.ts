@@ -8,7 +8,7 @@ process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'ameera-jev-')), 'te
 
 import { getDb } from '../index';
 import { runMigrations } from '../migrate';
-import { getJevSettings, sortingEnabled, updateJevSettings } from './jev-settings';
+import { getJevSettings, updateJevSettings } from './jev-settings';
 
 function linkAccount(id: string) {
 	getDb()
@@ -52,7 +52,6 @@ describe('jev settings', () => {
 			jevSince: on.toISOString(),
 			spamMode: 'off'
 		});
-		expect(sortingEnabled(getJevSettings('acct-3'))).toBe(true);
 
 		// Saving it on again doesn't rewind the cursor.
 		updateJevSettings('acct-3', { jevEnabled: true }, new Date('2026-10-18T10:00:00Z'));
@@ -60,11 +59,6 @@ describe('jev settings', () => {
 
 		updateJevSettings('acct-3', { jevEnabled: false });
 		expect(getJevSettings('acct-3')).toMatchObject({ jevEnabled: false, jevSince: null });
-	});
-
-	it('only sorts while the tabs are on too', () => {
-		expect(sortingEnabled({ inboxTabs: false, jevEnabled: true, jevSince: null, spamMode: 'off' })).toBe(false);
-		expect(sortingEnabled({ inboxTabs: true, jevEnabled: false, jevSince: null, spamMode: 'off' })).toBe(false);
 	});
 
 	it('keeps the spam mode', () => {

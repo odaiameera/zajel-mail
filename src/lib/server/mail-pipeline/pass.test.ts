@@ -26,7 +26,7 @@ vi.mock('$lib/jmap/auth', () => ({
 	}
 }));
 
-// `notify` records each email queued for an alert, as notifyUrgent once did.
+// `notify` records each email queued for an alert.
 const telegram = vi.hoisted(() => ({ wanted: false, notify: vi.fn(), flush: vi.fn(async () => {}) }));
 vi.mock('$lib/server/telegram/notifier', () => ({
 	urgentAlertsWanted: () => telegram.wanted,
@@ -42,7 +42,7 @@ vi.mock('$lib/server/jev/urgent', async (importOriginal) => ({
 	isUrgent: () => true
 }));
 
-// The event log, kept in memory: what the worker says about failing passes.
+// The event log, kept in memory: what the pass says when it fails.
 const log = vi.hoisted(() => ({ events: [] as { level: string; event: string; fields: Record<string, unknown> }[] }));
 vi.mock('$lib/server/log', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/server/log')>()),
@@ -2545,6 +2545,57 @@ describe('one part of a pass failing never takes another part’s work away', ()
 			expect(getDecision(ACCT, 'bad')).toBeNull();
 			expect(fake.emails.get('bad')!.keywords).toEqual({});
 			expect(logged('arrival_read_failed')).toEqual(['arrival_read_failed']);
+		});
+
+		/** The single reads of new mail the pass makes, by message. */
+		const watchSingleReads = () => {
+			const reads: string[] = [];
+			const realRequest = fake.request.bind(fake);
+			fake.request = async (calls: MethodCall[]) => {
+				for (const [name, args] of calls) if (isRulesRead(name, args) && (args.ids as string[]).length === 1) reads.push((args.ids as string[])[0]);
+				return realRequest(calls);
+			};
+			return reads;
+		};
+		const ten = Array.from({ length: 10 }, (_, i) => `m${i}`);
+
+		it('stops reading after three single reads in a row fail, and charges only the three it tried', async () => {
+			setRules(ME, [labelRule('r', 'lunch')]);
+			for (const id of ten) fake.add(id, JUST_NOW, { subject: `Lunch? ${id}` });
+			failRequests(isRulesRead);
+			const reads = watchSingleReads();
+
+			await runPass(ACCT, auth, { now: at(10) });
+
+			expect(reads).toEqual(['m0', 'm1', 'm2']);
+			expect(unhandled()).toEqual(ten.map((id, i) => ({ id, attempts: i < 3 ? 1 : 0 })));
+			expect(logged('arrival_read_failed')).toEqual(['arrival_read_failed']);
+		});
+
+		it('reads all ten one at a time when only one of them can’t be read, and handles the other nine', async () => {
+			setRules(ME, [labelRule('r', 'lunch')]);
+			for (const id of ten) fake.add(id, JUST_NOW, { subject: `Lunch? ${id}` });
+			failRequests((name, args) => isRulesRead(name, args) && (args.ids as string[]).includes('m1'));
+			const reads = watchSingleReads();
+
+			await runPass(ACCT, auth, { now: at(10) });
+
+			expect(reads).toEqual(ten);
+			expect(unhandled()).toEqual([{ id: 'm1', attempts: 1 }]);
+			for (const id of ten.filter((id) => id !== 'm1')) expect(fake.emails.get(id)!.mailboxIds).toEqual({ inbox: true, news: true });
+		});
+
+		it('counts only failures in a row: three bad messages apart from each other don’t stop the reading', async () => {
+			setRules(ME, [labelRule('r', 'lunch')]);
+			for (const id of ten) fake.add(id, JUST_NOW, { subject: `Lunch? ${id}` });
+			const bad = ['m1', 'm4', 'm7'];
+			failRequests((name, args) => isRulesRead(name, args) && (args.ids as string[]).some((id) => bad.includes(id)));
+			const reads = watchSingleReads();
+
+			await runPass(ACCT, auth, { now: at(10) });
+
+			expect(reads).toEqual(ten);
+			expect(unhandled()).toEqual(bad.map((id) => ({ id, attempts: 1 })));
 		});
 
 		it(`gives up on a message it can never read after ${MAX_ARRIVAL_ATTEMPTS} attempts a minute apart, and still sends it to Jev`, async () => {

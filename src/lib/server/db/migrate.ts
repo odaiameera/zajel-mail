@@ -50,8 +50,30 @@ const DATA_STEPS: { name: string; needs: string[]; run: () => void }[] = [
 		name: 'data/rules_to_table',
 		needs: ['006_auth.sql', '030_rules.sql', 'data/rules_exact_only', 'data/rule_tabs_to_pins'],
 		run: () => moveStoredRulesToTable()
+	},
+	// What nothing reads or writes any more: the rules scheduler's place
+	// (the pipeline's took over from it in 032), Jev's per-rule feedback and
+	// its answers about rule conditions (rules haven't had Jev conditions
+	// since the first step above). A step, not a .sql file, because every
+	// .sql file runs before any step, and the rule steps above still read
+	// and write `rules_cursor` on a database that hasn't run them yet.
+	// `user_rules`, `label_meta` and `folder_meta` are kept: they are the
+	// only copy of the rules and colours as they were before this upgrade.
+	{
+		name: 'data/drop_unused',
+		needs: ['032_mail_pipeline.sql', 'data/rules_exact_only', 'data/rule_tabs_to_pins', 'data/rules_to_table'],
+		run: () => dropUnused()
 	}
 ];
+
+/** Drop the tables and the column nothing uses (see `data/drop_unused`). Safe to run again. */
+function dropUnused(): void {
+	const db = getDb();
+	db.exec('DROP TABLE IF EXISTS rules_cursor');
+	db.exec('DROP TABLE IF EXISTS jev_rule_feedback');
+	const columns = db.prepare('PRAGMA table_info(jev_decisions)').all() as { name: string }[];
+	if (columns.some((c) => c.name === 'rules_json')) db.exec('ALTER TABLE jev_decisions DROP COLUMN rules_json');
+}
 
 /** A migration that did not apply. The server refuses requests until it does. */
 export class MigrationError extends Error {

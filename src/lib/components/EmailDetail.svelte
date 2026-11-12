@@ -184,8 +184,6 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	);
 	const backLabel = $derived(sourceMailbox?.name ?? 'Inbox');
 
-	// Jev's spam verdict for this email (from the "Why is this here?" chip).
-
 	// --- Spam classifier output (read-only for display + contextual button) ---
 	const spamScore = $derived.by<number | null>(() => {
 		const raw = email['header:x-spam-score:asText'];

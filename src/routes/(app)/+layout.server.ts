@@ -177,9 +177,6 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			// Settings → Messages → "Mark as read after", in milliseconds: how
 			// long an open message waits before the reading view marks it read.
 			markReadDelay: parseMarkReadDelay(prefs.mark_read_delay),
-			// Whether Jev reads this account's mail — the message view then
-			// offers its "Why is this here?" chip.
-			jevReads: activeAccount ? getJevSettings(activeAccount.id).jevEnabled : false,
 			// Whether this account's Inbox is split into tabs — the message view
 			// then names the tab a message is in, beside its labels. Not
 			// `inboxTabs`: the Inbox page's own data has that name, for its tabs.

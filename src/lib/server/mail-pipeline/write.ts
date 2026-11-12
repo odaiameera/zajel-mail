@@ -131,7 +131,7 @@ export async function flush(ctx: WriteContext, changes: Map<string, Change>): Pr
 type Placement = Pick<Email, 'mailboxIds' | 'keywords'>;
 
 /** Where each message is, and which tab it has, right now; one the server no longer has is absent. */
-export async function currentPlacement(client: JMAPClient, accountId: string, ids: string[]): Promise<Map<string, Placement>> {
+async function currentPlacement(client: JMAPClient, accountId: string, ids: string[]): Promise<Map<string, Placement>> {
 	if (ids.length === 0) return new Map();
 	const response = await client.request([
 		['Email/get', { accountId, ids, properties: ['id', 'mailboxIds', 'keywords'] }, 'p']
@@ -153,7 +153,7 @@ function refusalText(err: unknown): string {
 }
 
 /** What a pass's writes came to, for its one log line. */
-export interface WriteOutcome {
+interface WriteOutcome {
 	attempted: number;
 	refused: number;
 	/** The first refusal's reason. */
@@ -171,7 +171,7 @@ export const noWrites = (): WriteOutcome => ({ attempted: 0, refused: 0, refusal
  * gone, so the server's reason is kept. A write that got no answer is not a
  * refusal (after a timeout it may even have landed), and is recorded as such.
  */
-export async function writeUpdates(
+async function writeUpdates(
 	client: JMAPClient,
 	accountId: string,
 	updates: [string, Record<string, unknown>][],

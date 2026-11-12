@@ -148,12 +148,6 @@ export function queueUrgent(accountRowId: string, email: UrgentEmail): string | 
 	return queueAlert({ userId: account.user_id, accountId: account.id, emailId: email.id, html, summary }) ? account.user_id : null;
 }
 
-/** Queue an alert (queueUrgent) and send it straight away. */
-export async function notifyUrgent(accountRowId: string, email: UrgentEmail): Promise<void> {
-	const userId = queueUrgent(accountRowId, email);
-	if (userId) await flushAlerts(userId);
-}
-
 /**
  * Send the queued alerts that are due: one login's, or everyone's (the minute
  * cron). `nowMs` is for tests; otherwise each alert reads the clock afresh,

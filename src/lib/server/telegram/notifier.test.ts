@@ -43,7 +43,7 @@ import { getDb } from '../db/index';
 import { runMigrations } from '../db/migrate';
 import { addReminder, createButton, createLinkCode, getLink, queueAlert, setLinkFlags } from './store';
 import { TelegramError } from './bot';
-import { flushAlerts, handleUpdate, notifySignInLost, notifyUrgent, sendDueReminders, sendTestAlert } from './notifier';
+import { flushAlerts, handleUpdate, notifySignInLost, queueUrgent, sendDueReminders, sendTestAlert } from './notifier';
 
 const CHAT = 555;
 const start = (code: string, chatId = CHAT, type = 'private') =>
@@ -152,6 +152,12 @@ describe('buttons', () => {
 });
 
 describe('urgent alerts', () => {
+	/** What a pass does with a message Jev judged urgent: queue the alert, then send what is due. */
+	const notifyUrgent = async (accountRowId: string, email: Parameters<typeof queueUrgent>[1]) => {
+		const userId = queueUrgent(accountRowId, email);
+		if (userId) await flushAlerts(userId);
+	};
+
 	it('keeps an alert whose send fails, sends it on a later run, and never twice', async () => {
 		await start(createLinkCode('user-1'));
 		mocks.sendMessage.mockClear();

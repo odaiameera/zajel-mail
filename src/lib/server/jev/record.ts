@@ -10,7 +10,7 @@ import { isUrgent } from './urgent';
 
 /**
  * After the write: what Jev's step did with each email goes into its row
- * in jev_decisions (what the "Why is this here?" chip and Settings read),
+ * in jev_decisions (what the message view's tab chip and Settings read),
  * and urgent mail is sent to Telegram.
  */
 

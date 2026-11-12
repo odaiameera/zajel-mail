@@ -45,7 +45,7 @@ export interface JevEmailState {
 	facts: JevFacts;
 }
 
-export function formatAddress(a: EmailAddress): string {
+function formatAddress(a: EmailAddress): string {
 	return a.name ? `${a.name} <${a.email}>` : a.email;
 }
 

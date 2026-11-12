@@ -53,7 +53,6 @@ function prepareStmts() {
 	return {
 		list: db.prepare('SELECT * FROM rules WHERE account_id = ? ORDER BY position, created_at'),
 		get: db.prepare('SELECT * FROM rules WHERE account_id = ? AND id = ?'),
-		count: db.prepare('SELECT COUNT(*) AS n FROM rules WHERE account_id = ?'),
 		nextPosition: db.prepare('SELECT COALESCE(MAX(position) + 1, 0) AS p FROM rules WHERE account_id = ?'),
 		insert: db.prepare(
 			`INSERT INTO rules (account_id, id, position, enabled, name, logic, conditions_json, target_kind,
@@ -169,11 +168,6 @@ export function listRules(accountId: string): Rule[] {
 export function getRule(accountId: string, id: string): Rule | null {
 	const row = stmts().get.get(accountId, id) as RuleRow | undefined;
 	return row ? fromRow(row) : null;
-}
-
-/** How many rules an account has. */
-export function countRules(accountId: string): number {
-	return (stmts().count.get(accountId) as { n: number }).n;
 }
 
 /** A new rule, at the end of the list. */

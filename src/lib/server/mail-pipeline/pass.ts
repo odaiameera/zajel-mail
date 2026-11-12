@@ -162,18 +162,24 @@ export async function runPass(accountRowId: string, auth: AuthState, opts: PassO
 		logEvent('warn', 'mail', 'arrivals_given_up', { account: accountRowId, count: givenUp.length, email_id: givenUp[0].emailId });
 	}
 	const tried = unhandled.filter((a) => a.attempts < MAX_ARRIVAL_ATTEMPTS);
-	countAttempt(accountRowId, tried.map((a) => a.emailId), now);
 
 	// New Inbox mail as it is now, for out-of-office and the rules: only
 	// what is still in the Inbox. A message that can't be read is left for
-	// the next pass; the others go on.
+	// the next pass; the others go on. What is read is charged an attempt
+	// once it has been tried; the rest now.
 	const toRead = needs.rules.length > 0 || needs.outOfOffice ? tried.filter((a) => a.mailbox === 'inbox').map((a) => a.emailId) : [];
+	const reading = new Set(toRead);
+	countAttempt(accountRowId, tried.filter((a) => !reading.has(a.emailId)).map((a) => a.emailId), now);
 	let read: Email[] = [];
 	let unreadable = new Map<string, unknown>();
 	if (toRead.length > 0) {
 		const matcher = matcherProperties(needs.rules);
 		const properties = needs.outOfOffice ? [...new Set([...matcher.properties, ...AUTO_REPLY_PROPERTIES])] : matcher.properties;
-		({ list: read, failed: unreadable } = await readNewMail(client, accountId, toRead, properties, matcher.fetchTextBodyValues));
+		let notTried: Set<string>;
+		({ list: read, failed: unreadable, notTried } = await readNewMail(client, accountId, toRead, properties, matcher.fetchTextBodyValues));
+		countAttempt(accountRowId, toRead.filter((id) => !notTried.has(id)), now);
+		// Left unread when the server stopped answering: waits, uncharged.
+		for (const id of notTried) unreadable.set(id, null);
 		if (unreadable.size > 0) {
 			const [[emailId, err]] = unreadable;
 			noteFailure('read', accountRowId, 'arrival_read_failed', { count: unreadable.size, email_id: emailId, ...errorFields(err) }, 'mail');
@@ -393,10 +399,15 @@ export async function runPass(accountRowId: string, auth: AuthState, opts: PassO
 	noteWrites(accountRowId, write.writes);
 }
 
+/** Single reads that fail in a row before a pass stops reading: the server is down, not one message. */
+const MAX_FAILED_READS_IN_A_ROW = 3;
+
 /**
  * New Inbox mail by id, for out-of-office and the rules. If the batch
  * can't be read, each message is read on its own, so one the server can't
- * give back costs only itself. A refused password still throws.
+ * give back costs only itself. After three of those fail in a row the
+ * server itself is taken to be failing: the rest are not tried (`notTried`)
+ * and wait for the next pass. A refused password still throws.
  */
 async function readNewMail(
 	client: JMAPClient,
@@ -404,7 +415,7 @@ async function readNewMail(
 	ids: string[],
 	properties: string[],
 	fetchTextBodyValues: boolean
-): Promise<{ list: Email[]; failed: Map<string, unknown> }> {
+): Promise<{ list: Email[]; failed: Map<string, unknown>; notTried: Set<string> }> {
 	const get = async (some: string[]) => {
 		const response = await client.request([
 			['Email/get', { accountId, ids: some, properties, ...(fetchTextBodyValues && { fetchTextBodyValues: true }) }, 'g']
@@ -412,20 +423,28 @@ async function readNewMail(
 		return (response.methodResponses[0][1] as { list?: Email[] }).list ?? [];
 	};
 	const failed = new Map<string, unknown>();
+	const notTried = new Set<string>();
 	try {
-		return { list: await get(ids), failed };
+		return { list: await get(ids), failed, notTried };
 	} catch (err) {
 		if (err instanceof JMAPAuthError) throw err;
-		if (ids.length === 1) return { list: [], failed: failed.set(ids[0], err) };
+		if (ids.length === 1) return { list: [], failed: failed.set(ids[0], err), notTried };
 	}
 	const list: Email[] = [];
+	let inARow = 0;
 	for (const id of ids) {
+		if (inARow >= MAX_FAILED_READS_IN_A_ROW) {
+			notTried.add(id);
+			continue;
+		}
 		try {
 			list.push(...(await get([id])));
+			inARow = 0;
 		} catch (err) {
 			if (err instanceof JMAPAuthError) throw err;
 			failed.set(id, err);
+			inARow++;
 		}
 	}
-	return { list, failed };
+	return { list, failed, notTried };
 }

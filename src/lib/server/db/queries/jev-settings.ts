@@ -130,7 +130,3 @@ export function swapJevSince(accountId: string, from: string | null, to: string 
 	return stmts().swapSince.run(to, now.getTime(), accountId, from).changes > 0;
 }
 
-/** Is sorting into tabs live for this account: tabs shown and Jev allowed to read? */
-export function sortingEnabled(settings: JevSettings): boolean {
-	return settings.inboxTabs && settings.jevEnabled;
-}

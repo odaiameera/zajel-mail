@@ -4,8 +4,8 @@ import { emailMailboxMembership, sendEmailUpdates } from './email';
 import { LABELS_PARENT_NAME, findLabelsParentId } from '$lib/types/labels';
 import { nextMailboxIds, sameMailboxIds } from '$lib/mailboxes';
 
-export type CreateLabelResult = { id: string } | { error: string };
-export type MutateLabelResult = { success: true; id?: string } | { success: false; error: string };
+type CreateLabelResult = { id: string } | { error: string };
+type MutateLabelResult = { success: true; id?: string } | { success: false; error: string };
 
 /** Fetch every mailbox (id/name/parentId) — the shared building block. */
 async function getAllMailboxes(client: JMAPClient, accountId: string): Promise<Mailbox[]> {
@@ -27,7 +27,7 @@ async function getAllMailboxes(client: JMAPClient, accountId: string): Promise<M
  * Find or create the "Labels" container mailbox and return its id. Labels are
  * children of this mailbox, so it must exist before any label is created.
  */
-export async function ensureLabelsParent(client: JMAPClient, accountId: string): Promise<string> {
+async function ensureLabelsParent(client: JMAPClient, accountId: string): Promise<string> {
 	const mailboxes = await getAllMailboxes(client, accountId);
 	const existing = findLabelsParentId(mailboxes);
 	if (existing) return existing;

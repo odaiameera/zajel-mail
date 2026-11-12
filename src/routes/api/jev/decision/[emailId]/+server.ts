@@ -4,8 +4,7 @@ import { getDecision } from '$lib/server/db/queries/jev-decisions';
 import { CATEGORY_QUESTION_ID } from '$lib/server/jev/categorize';
 
 /**
- * What Jev decided about one email of the active account, for the "Why is
- * this here?" chip: its tab pick, how sure it was, the probabilities, and
+ * What Jev decided about one email of the active account: its tab pick, how sure it was, the probabilities, and
  * the facts that were sent with the email. `decision: null` when Jev never
  * answered for it.
  */

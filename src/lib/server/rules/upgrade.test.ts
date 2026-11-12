@@ -17,7 +17,7 @@ import { evaluateRulesForEmail } from './engine';
 import { retireStoredJevConditions, retireStoredTabActions, toTableRules } from './upgrade';
 
 // The old rules scheduler's place, which the upgrade step rewinds (the table
-// is no longer read by the app; it stays until the last stage drops it).
+// is no longer read by the app, and `data/drop_unused` drops it).
 function getRulesCursor(userEmail: string): string | null {
 	const row = getDb().prepare('SELECT last_run FROM rules_cursor WHERE user_email = ?').get(userEmail) as { last_run: string | null } | undefined;
 	return row?.last_run ?? null;
@@ -85,6 +85,13 @@ const ctx = { inboxId: 'inbox', trashId: 'trash', validMailboxIds: new Set(['inb
 
 beforeAll(() => {
 	runMigrations();
+	// The last data step drops the old scheduler's place; a database that
+	// hasn't run the rule steps yet still has it, and they rewind it.
+	getDb().exec(`CREATE TABLE IF NOT EXISTS rules_cursor (
+		user_email TEXT PRIMARY KEY,
+		last_run   TEXT,
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`);
 	getDb()
 		.prepare(`INSERT INTO app_user (id, email, password_hash) VALUES ('user-1', 'u@example.test', 'x')`)
 		.run();
