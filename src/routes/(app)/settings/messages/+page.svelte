@@ -57,8 +57,9 @@
 			otpTrashAfterCopy: data.otpTrashAfterCopy,
 			pageSize: storedPageSize($userState.settings)
 		})),
-		check: ({ markReadSeconds: s }) =>
-			s === null || s < 0 || s > MAX_MARK_READ_SECONDS
+		// Only a value typed here is held to the limits, as on Composer.
+		check: ({ markReadSeconds: s }, changed) =>
+			changed('markReadSeconds') && (s === null || s < 0 || s > MAX_MARK_READ_SECONDS)
 				? `“Mark as read after” takes 0 to ${MAX_MARK_READ_SECONDS} seconds.`
 				: '',
 		async persist(changed, _all, stored) {

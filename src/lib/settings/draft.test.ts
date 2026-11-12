@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // (jsdom, so the runes compile for the browser, as they run in the app.)
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Draft, SaveCancelled, SaveHost, type Persist } from './draft.svelte';
+import { Draft, NothingToSend, SaveCancelled, SaveHost, saveFailureReason, type Persist } from './draft.svelte';
+import { saveEach } from './send';
 
 type Values = { name: string; size: number; folders: string[] };
 
@@ -246,9 +247,79 @@ describe('Draft', () => {
 		expect(draft.baseline).toEqual({ a: '1' });
 		expect(draft.dirty).toBe(false);
 	});
+
+	it('forgets a changed setting whose subject the page’s data no longer has, and only that', () => {
+		const draft = new Draft<Record<string, string>>({ initial: { a: '1', b: '2' }, persist: async () => {} });
+		draft.present(['a', 'b']);
+		draft.value.b = '3';
+		// One just added here, not yet in a reload: left alone.
+		draft.seed({ c: '4' });
+		draft.present(['a']);
+		expect(draft.value).toEqual({ a: '1', c: '4' });
+		expect(draft.dirty).toBe(false);
+	});
+
+	it('holds only a changed value to its check, not one stored before the rules', async () => {
+		const persist = vi.fn<Persist<Values>>(async () => {});
+		const draft = new Draft<Values>({
+			initial: { ...initial(), size: 500 },
+			persist,
+			check: (v, changed) => (changed('size') && v.size > 100 ? 'Too many' : '')
+		});
+		draft.value.name = 'Grace';
+		expect(draft.problem).toBe('');
+		expect(await draft.save()).toBe(true);
+		expect(persist.mock.calls[0][0]).toEqual({ name: 'Grace' });
+
+		draft.value.size = 501;
+		expect(draft.problem).toBe('Too many');
+	});
+
+	it('says the server couldn’t be reached for a request that never got there', async () => {
+		expect(saveFailureReason(new TypeError('Failed to fetch'))).toBe('Couldn’t reach the server. Try again.');
+		expect(saveFailureReason(new Error('Quota reached'))).toBe('Quota reached');
+		const { draft } = make(async () => {
+			throw new TypeError('NetworkError when attempting to fetch resource.');
+		});
+		draft.value.size = 1;
+		expect(await draft.save()).toBe(false);
+		expect(draft.error).toBe('Couldn’t reach the server. Try again.');
+		await expect(
+			saveEach(vi.fn(), [{ label: 'A', values: {}, run: () => Promise.reject(new TypeError('Load failed')) }])
+		).rejects.toThrow(/^Couldn’t reach the server\. Try again\.$/);
+	});
 });
 
 describe('SaveHost', () => {
+	it('doesn’t say "Saved" for a save that had nothing to send, and just lets the bar go', async () => {
+		const host = new SaveHost();
+		const draft = new Draft<Values>({
+			initial: initial(),
+			persist: (_changed, _all, stored) => saveEach(stored, [])
+		});
+		host.register(draft);
+		draft.value.size = 7;
+		expect(await host.saveAll()).toBe(true);
+		expect(host.justSaved).toBe(false);
+		expect(host.visible).toBe(false);
+		expect(draft.error).toBe('');
+		expect(draft.value.size).toBe(50);
+		await expect(saveEach(vi.fn(), [])).rejects.toBeInstanceOf(NothingToSend);
+	});
+
+	it('tells a navigation waiting on a save how it went', async () => {
+		const host = new SaveHost();
+		expect(await host.settled()).toBe(true);
+		let fail!: (err: Error) => void;
+		const { draft } = make(() => new Promise<void>((_resolve, reject) => (fail = reject)));
+		host.register(draft);
+		draft.value.size = 7;
+		void host.saveAll();
+		const outcome = host.settled();
+		fail(new Error('No'));
+		expect(await outcome).toBe(false);
+	});
+
 	it('shows the bar only while something is unsaved, and briefly after a save', async () => {
 		vi.useFakeTimers();
 		const host = new SaveHost();

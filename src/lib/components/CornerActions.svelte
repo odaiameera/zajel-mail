@@ -5,6 +5,7 @@
 	import type { IconName } from '$lib/icons';
 	import { composer, openCompose, requestCloseCompose } from '$lib/stores/compose';
 	import { newRequest, type NewKind } from '$lib/stores/create';
+	import { canLeaveSettings } from '$lib/settings/leave';
 
 	/**
 	 * The two things you can start from anywhere, in the bottom-right corner:
@@ -41,12 +42,15 @@
 		menuOpen = !menuOpen;
 	}
 
-	function create(kind: 'message' | NewKind) {
+	async function create(kind: 'message' | NewKind) {
 		menuOpen = false;
 		if (kind === 'message') {
 			openCompose();
 			return;
 		}
+		// An event or contact is made on its own page: settle unsaved settings
+		// before asking for one, so a "stay" leaves no request behind.
+		if (!(await canLeaveSettings())) return;
 		newRequest.set(kind);
 		const home = kind === 'event' ? '/calendar' : '/contacts';
 		if (!page.url.pathname.startsWith(home)) void goto(home);

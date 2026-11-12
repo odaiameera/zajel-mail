@@ -4,12 +4,13 @@
 	import { pageTitle } from '$lib/utils/title';
 	import { groupedSettingsNav } from '$lib/config/settings-nav';
 	import { hostAppPanel } from '$lib/app-panel';
-	import { beforeNavigate } from '$app/navigation';
+	import { beforeNavigate, goto } from '$app/navigation';
 	import { provideSaveHost } from '$lib/settings/draft.svelte';
+	import { LEAVE_PROMPT } from '$lib/settings/leave';
 	import SaveBar from '$lib/components/settings/SaveBar.svelte';
 	import type { Snippet } from 'svelte';
 
-	let { children }: { children: Snippet } = $props();
+	let { children, data }: { children: Snippet; data?: { activeAccountId?: string | null } } = $props();
 
 	const grouped = groupedSettingsNav();
 	// /settings itself is the section list phones open on (see its page).
@@ -28,14 +29,30 @@
 	// host, and the one Save bar below stores them (see draft.svelte.ts).
 	const saveHost = provideSaveHost();
 
-	const LEAVE_PROMPT = 'You have unsaved changes. Leave without saving?';
-
 	// Leaving with changes that were never saved would lose them without a
 	// word, so it asks first: a link inside the app, the settings menu or the
 	// browser's back button here, and closing or reloading the tab below.
+	// (What changes something before it navigates, as switching the account,
+	// asks before it does anything: canLeaveSettings in leave.ts.)
 	beforeNavigate((navigation) => {
 		// The tab is going away: that is the browser's own prompt, below.
-		if (!saveHost.dirty || navigation.willUnload) return;
+		if (navigation.willUnload) return;
+		const to = navigation.to?.url;
+		// The page already open (its own entry in the menu): nothing is left.
+		if (to && to.pathname === page.url.pathname) return;
+		if (saveHost.saving) {
+			// A save under way is not "unsaved": hold the navigation until it
+			// is over. Stored, it goes on; refused, the page stays with its
+			// changes and the bar says why.
+			navigation.cancel();
+			void saveHost.settled().then((stored) => {
+				if (!stored || !to) return;
+				if (to.origin === page.url.origin) void goto(to.pathname + to.search + to.hash);
+				else location.assign(to.href);
+			});
+			return;
+		}
+		if (!saveHost.dirty) return;
 		if (confirm(LEAVE_PROMPT)) {
 			// Discarding also takes back anything previewed live (the theme).
 			saveHost.discardAll();
@@ -89,7 +106,7 @@
 	{#if !hosted}
 		<aside class="w-[224px] shrink-0 border-r border-border flex flex-col">{@render settingsNav()}</aside>
 	{/if}
-	<section class="flex-1 min-h-0 overflow-y-auto">
+	<section class="flex-1 min-h-0 overflow-y-auto" data-settings-content>
 		<!-- At least as tall as the pane, so the Save bar's strip sits at its
 		     foot on a short page and sticks there on a long one. -->
 		<div class="min-h-full flex flex-col">
@@ -105,7 +122,11 @@
 						<span>Settings</span>
 					</a>
 				{/if}
-				{@render children()}
+				<!-- A page's saved values belong to the account in use: when that
+				     changes, the page starts again from the new one's. -->
+				{#key data?.activeAccountId}
+					{@render children()}
+				{/key}
 			</div>
 			<SaveBar host={saveHost} />
 		</div>

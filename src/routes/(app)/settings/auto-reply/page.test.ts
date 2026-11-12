@@ -52,6 +52,26 @@ describe('Settings → Auto-reply', () => {
 		expect(typeof posted[0].tz).toBe('string');
 	});
 
+	it('sends the browser’s own time zone', async () => {
+		const real = Intl.DateTimeFormat;
+		vi.stubGlobal('Intl', {
+			...Intl,
+			DateTimeFormat: Object.assign(
+				(...args: ConstructorParameters<typeof Intl.DateTimeFormat>) => {
+					const format = new real(...args);
+					const resolved = format.resolvedOptions();
+					return Object.assign(format, { resolvedOptions: () => ({ ...resolved, timeZone: 'Pacific/Chatham' }) });
+				},
+				{ supportedLocalesOf: real.supportedLocalesOf }
+			)
+		});
+		page({ autoReply: { ...saved, enabled: true, body: 'Away' } });
+		await fireEvent.input(screen.getByLabelText('Until'), { target: { value: '2026-11-28' } });
+		await fireEvent.click(saveButton()!);
+		await waitFor(() => expect(posted).toHaveLength(1));
+		expect(posted[0].tz).toBe('Pacific/Chatham');
+	});
+
 	it('shows each status, and the new one after a save', async () => {
 		for (const s of ['Off', 'On', 'Starts 20 Nov', 'On until 28 Nov', 'Ended 28 Nov']) {
 			page({ status: s });

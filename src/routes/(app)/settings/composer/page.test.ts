@@ -83,6 +83,30 @@ describe('Settings → Composer', () => {
 		expect(barShown()).toBe(false);
 	});
 
+	it('saves another setting when the stored interval is outside today’s limits, leaving it as stored', async () => {
+		// Possible through Import, which stores what the file says.
+		render(Harness, { props: { page: Page, data: { ...data, autoSaveInterval: 200 } } as never });
+		await fireEvent.change(screen.getByLabelText('Default font'), { target: { value: 'Georgia' } });
+		expect(barText()).toBe('Unsaved changes');
+		expect(saveButton().disabled).toBe(false);
+		await fireEvent.click(saveButton());
+		expect(await screen.findByText('Saved')).toBeTruthy();
+		expect(sent()).toEqual([{ url: '/api/preferences/composer', body: { font: 'Georgia' } }]);
+
+		// Typed, it is held to the limits.
+		await fireEvent.input(interval(), { target: { value: '150' } });
+		expect(barText()).toBe('“Auto-save interval” takes 5 to 120 seconds.');
+	});
+
+	it('stores a decimal interval as whole seconds, rounded down, and shows it so', async () => {
+		open();
+		await fireEvent.input(interval(), { target: { value: '7.9' } });
+		await fireEvent.click(saveButton());
+		expect(await screen.findByText('Saved')).toBeTruthy();
+		expect(sent()).toEqual([{ url: '/api/preferences/composer', body: { autoSaveInterval: 7 } }]);
+		expect(interval().value).toBe('7');
+	});
+
 	it('accepts the limits themselves', async () => {
 		open();
 		await fireEvent.input(interval(), { target: { value: '120' } });

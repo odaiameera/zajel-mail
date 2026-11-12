@@ -237,7 +237,16 @@
 			deviceAllowed = true;
 		}
 		draft.value.pushHere = next;
+		pushChosen = true;
 	}
+
+	/**
+	 * "This device" as it was when the main switch left its saved value, so
+	 * that switching it back puts the device back too; and whether the
+	 * person set "This device" themselves since, which then stands.
+	 */
+	let pushBeforeMain: boolean | undefined;
+	let pushChosen = false;
 
 	/**
 	 * The main switch waits for Save like the rest. Turning it on asks the
@@ -248,6 +257,9 @@
 	 */
 	async function toggleEnabled(next: boolean) {
 		permissionError = '';
+		// On for the account but never allowed here, the switch reads off on
+		// this device, and turning it on is turning it on here.
+		const onHereAlready = deviceAllowed;
 		if (next) {
 			const problem = await askPermission();
 			if (problem) {
@@ -256,8 +268,18 @@
 			}
 			deviceAllowed = true;
 		}
+		// This device goes along only while the main switch differs from what
+		// is saved: off to on subscribes it, on to off stops it. Back where it
+		// was saved, the device is back to how it was before (or how the
+		// person has since set it), so there is nothing to save.
+		if (draft.value.enabled === draft.baseline.enabled) {
+			pushBeforeMain = draft.value.pushHere;
+			pushChosen = false;
+		}
 		draft.value.enabled = next;
-		draft.value.pushHere = next;
+		if (next !== draft.baseline.enabled || (next && !onHereAlready)) draft.value.pushHere = next;
+		// (Not known yet when the main switch moved: as saved, once it is.)
+		else if (!pushChosen) draft.value.pushHere = pushBeforeMain ?? draft.baseline.pushHere;
 	}
 
 	function toggleFolder(id: string, checked: boolean) {

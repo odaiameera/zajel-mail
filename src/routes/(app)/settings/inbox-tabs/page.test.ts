@@ -256,6 +256,35 @@ describe('Settings → Inbox tabs → Pinned senders', () => {
 		]);
 	});
 
+	it('forgets a tab change for a pin removed elsewhere, keeping one for a pin still there', async () => {
+		const { rerender } = page('off', pinned());
+		await fireEvent.change(screen.getByRole('combobox', { name: 'Tab for @shop.example' }), { target: { value: 'updates' } });
+		await fireEvent.change(screen.getByRole('combobox', { name: 'Tab for boss@example.test' }), { target: { value: 'updates' } });
+		// Removed in another tab: new mail reruns the load, and it isn't there.
+		const [a1, a2] = pinned();
+		const data = (accounts: unknown[]) => ({
+			page: Page,
+			data: { jev: { mode: 'off', model: '', pricePerMillion: 0, excerptChars: 2000, previewLimit: 200 }, jevAccounts: accounts }
+		});
+		await rerender(data([a1, { ...a2, pins: [] }]) as never);
+		expect(barShown()).toBe(true);
+		await fireEvent.click(saveButton()!);
+		await screen.findByText('Saved');
+		expect(writes()).toEqual([
+			{ method: 'POST', url: '/api/jev/pins', body: { accountId: 'a1', sender: 'boss@example.test', category: 'updates' } }
+		]);
+
+		// The only change was to the pin that went: nothing to save, no bar.
+		calls.length = 0;
+		await fireEvent.change(screen.getByRole('combobox', { name: 'Tab for boss@example.test' }), { target: { value: 'important' } });
+		expect(saveButton()).not.toBeNull();
+		await rerender(data([{ ...a1, pins: [] }, { ...a2, pins: [] }]) as never);
+		// (The bar may still be saying "Saved" from before; nothing is unsaved.)
+		expect(saveButton()).toBeNull();
+		expect(discardButton()).toBeNull();
+		expect(writes()).toEqual([]);
+	});
+
 	it('warns that pins do nothing while tabs are off for their account', () => {
 		page('off', pinned());
 		expect(region('Pinned senders').getByText('These pins do nothing until Inbox tabs are on for work@example.test.')).toBeTruthy();

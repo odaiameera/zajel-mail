@@ -88,16 +88,16 @@
 	});
 
 	// Pins that arrive with a reload (one pinned from a message elsewhere)
-	// come in as saved; a pin already on the page keeps its choice.
+	// come in as saved; a pin already on the page keeps its choice. One the
+	// reload no longer has (removed in another tab) goes, with any unsaved
+	// change to its tab: there is no pin left to store it for.
 	$effect(() => {
-		const fresh: Values = {};
-		for (const a of data.jevAccounts) {
-			for (const pin of a.pins) {
-				const key = pinKey(a.id, pin.sender);
-				if (!(key in untrack(() => draft.baseline))) fresh[key] = pin.category;
-			}
-		}
-		if (Object.keys(fresh).length > 0) untrack(() => draft.seed(fresh));
+		const saved = savedValues(data.jevAccounts);
+		untrack(() => {
+			draft.present(Object.keys(saved));
+			const fresh = Object.fromEntries(Object.entries(saved).filter(([key]) => !(key in draft.baseline)));
+			if (Object.keys(fresh).length > 0) draft.seed(fresh);
+		});
 	});
 
 	function current(account: Account, key: 'inboxTabs' | 'jevEnabled'): boolean {

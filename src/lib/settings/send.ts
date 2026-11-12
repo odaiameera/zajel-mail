@@ -1,5 +1,5 @@
 import { fetchWithStepUp } from '$lib/auth/step-up';
-import { SaveCancelled } from './draft.svelte';
+import { NETWORK_ERROR, NothingToSend, SaveCancelled, saveFailureReason } from './draft.svelte';
 
 /**
  * Sends a settings change as JSON and returns the reply's body.
@@ -24,7 +24,7 @@ export async function sendJson(
 	try {
 		res = stepUp ? await fetchWithStepUp(url, init) : await fetch(url, init);
 	} catch {
-		throw new Error('Couldn’t reach the server. Try again.');
+		throw new Error(NETWORK_ERROR);
 	}
 	const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
 	if (!res.ok) {
@@ -48,9 +48,11 @@ export interface SaveStep<T> {
  * For a page that saves in more than one request. Sends each in turn; the
  * ones that go through are reported to `stored` (so they are no longer
  * unsaved), and a failure doesn't stop the others. Throws when any failed,
- * naming which, since some may have saved.
+ * naming which, since some may have saved. With no requests to make at
+ * all, throws `NothingToSend`, so the bar doesn't say "Saved".
  */
 export async function saveEach<T>(stored: (values: Partial<T>) => void, steps: SaveStep<T>[]): Promise<void> {
+	if (steps.length === 0) throw new NothingToSend();
 	const failed: { label: string; reason: string }[] = [];
 	let cancelled = false;
 	for (const step of steps) {
@@ -62,7 +64,7 @@ export async function saveEach<T>(stored: (values: Partial<T>) => void, steps: S
 				cancelled = true;
 				continue;
 			}
-			const reason = err instanceof Error && err.message ? err.message : 'Couldn’t save. Try again.';
+			const reason = saveFailureReason(err);
 			failed.push({ label: step.label, reason });
 		}
 	}

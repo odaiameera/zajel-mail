@@ -26,11 +26,23 @@
 						: null
 	);
 
+	/**
+	 * Whether a key pressed with focus here is the settings page's: on the
+	 * page itself, or nowhere in particular. Not in a dialog, nor in
+	 * something with a Save of its own (the signature editor), nor outside
+	 * the settings content (a message being written, the assistant).
+	 */
+	function onThePage(target: EventTarget | null): boolean {
+		if (!(target instanceof Element) || target === document.body || target === document.documentElement) return true;
+		if (target.closest('[role="dialog"], [role="alertdialog"], dialog, [data-own-save]')) return false;
+		return target.closest('[data-settings-content]') !== null;
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 's') return;
 		// With the bar showing, Cmd/Ctrl+S is ours: the browser's "save this
 		// page" dialog is never what someone pressing it here wants.
-		if (!host.visible) return;
+		if (!host.visible || !onThePage(e.target)) return;
 		e.preventDefault();
 		void host.saveAll();
 	}
@@ -40,31 +52,43 @@
 
 <!-- Sticks to the foot of the scrolling pane, so the rows scroll under it.
      It is in the page's flow after the content, and keeps its height while
-     hidden, so the last row ends above it rather than behind it. -->
+     hidden, so the last row ends above it rather than behind it. A long
+     message wraps and the bar grows upward to show all of it; the rows
+     still end above it, as it is in the flow.
+     Hidden, it is only see-through and lets clicks pass: its status line
+     stays a live region all along, so a screen reader hears "Unsaved
+     changes" or the reason a save failed as the text changes, and with
+     nothing changed it holds no text and no buttons. -->
 <div
-	class="save-bar sticky bottom-0 z-10 h-14 max-md:h-11 transition-[opacity,visibility] duration-150 ease-out motion-reduce:transition-none
-		{host.visible ? 'opacity-100 visible' : 'opacity-0 invisible'}"
-	aria-hidden={!host.visible}
+	class="save-bar sticky bottom-0 z-10 transition-opacity duration-150 ease-out motion-reduce:transition-none
+		{host.visible ? 'opacity-100' : 'opacity-0 pointer-events-none'}"
+	data-shown={host.visible}
 	data-testid="save-bar"
 >
-	<div class="h-full bg-bg">
-		<div class="save-bar-inner h-full max-w-3xl px-8 max-md:px-4">
-			<div class="h-full flex items-center gap-2 border-t border-border">
-				<p class="flex-1 min-w-0 text-xs line-clamp-2 {message?.tone ?? ''}" role="status" title={message?.text}>
+	<div class="bg-bg">
+		<div class="save-bar-inner max-w-3xl px-8 max-md:px-4">
+			<!-- The padding fits the buttons inside the strip's height, so a
+			     bar showing them is exactly as tall as the hidden one. -->
+			<div class="min-h-14 max-md:min-h-11 py-2.5 max-md:py-1 flex items-center gap-2 border-t border-border">
+				<p class="flex-1 min-w-0 py-1 text-xs break-words {message?.tone ?? ''}" role="status">
 					{message?.text ?? ''}
 				</p>
 				{#if host.dirty || host.saving}
-					<button type="button" class="btn btn-ghost" disabled={host.saving} onclick={() => host.discardAll()}>
-						Discard
-					</button>
-					<button
-						type="button"
-						class="btn btn-primary"
-						disabled={host.saving || !!host.problem}
-						onclick={() => host.saveAll()}
-					>
-						{host.saving ? 'Saving…' : 'Save'}
-					</button>
+					<!-- Under a message of several lines they keep to the foot on a
+					     phone, clear of the round corner buttons above it. -->
+					<div class="flex items-center gap-2 shrink-0 max-md:self-end">
+						<button type="button" class="btn btn-ghost" disabled={host.saving} onclick={() => host.discardAll()}>
+							Discard
+						</button>
+						<button
+							type="button"
+							class="btn btn-primary"
+							disabled={host.saving || !!host.problem}
+							onclick={() => host.saveAll()}
+						>
+							{host.saving ? 'Saving…' : 'Save'}
+						</button>
+					</div>
 				{/if}
 			</div>
 		</div>

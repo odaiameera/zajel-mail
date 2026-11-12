@@ -5,6 +5,7 @@
 	import { profilePhoto } from '$lib/stores/profilePhoto';
 	import type { LinkedAccount } from '$lib/types/accounts';
 	import { resizeImage } from '$lib/utils/image';
+	import { canLeaveSettings } from '$lib/settings/leave';
 
 	let { displayName, email, accounts = [], activeAccountId = null, accountUnread = {}, onClose }: {
 		displayName: string;
@@ -27,6 +28,9 @@
 		if (switching) return;
 		switching = id;
 		try {
+			// Unsaved settings belong to the account in use: settle them before
+			// it changes, not after (Save would then store them for the new one).
+			if (!(await canLeaveSettings())) return;
 			const res = await fetch('/api/accounts/switch', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },

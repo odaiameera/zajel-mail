@@ -50,6 +50,24 @@
 		}
 	});
 
+	// What the pickers point at can go while a choice waits for Save: a
+	// signature deleted with the editor above, or an address no longer on
+	// the account. A choice of either is dropped, so Save can't store it.
+	$effect(() => {
+		const ids = identities.map((identity) => identity.jmapId);
+		const existing = new Set(signatures.map((sig) => sig.id.toString()));
+		untrack(() => {
+			draft.present(ids);
+			const gone = (value: unknown) => typeof value === 'string' && value !== '' && !existing.has(value);
+			// A saved choice of a deleted signature went with it on the server.
+			const cleared = Object.keys(draft.baseline).filter((id) => gone(draft.baseline[id]));
+			if (cleared.length > 0) draft.seed(Object.fromEntries(cleared.map((id) => [id, ''])));
+			for (const [id, value] of Object.entries(draft.value)) {
+				if (gone(value)) draft.value[id] = draft.baseline[id] ?? '';
+			}
+		});
+	});
+
 	function pick(identityId: string, raw: string) {
 		// An address fetched since the page opened starts from what is saved for it.
 		if (!(identityId in draft.baseline)) draft.seed({ [identityId]: savedFor(identityId) });

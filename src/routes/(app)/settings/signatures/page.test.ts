@@ -114,6 +114,43 @@ describe('Settings → Signatures', () => {
 		expect(mocks.clearIdentitySignature.mock.calls).toEqual([['id-2'], ['id-2']]);
 	});
 
+	it('drops a choice of a signature deleted before Save, so it is never stored', async () => {
+		open();
+		await fireEvent.change(picker('me@example.test'), { target: { value: '2' } });
+		await fireEvent.change(picker('alias@example.test'), { target: { value: '2' } });
+		expect(barShown()).toBe(true);
+		// "Home" is deleted with the editor's Delete (what deleteSignature does to the store).
+		(userState as unknown as { update(fn: (s: typeof state) => typeof state): void }).update((s) => ({
+			...s,
+			signatures: s.signatures.filter((sig) => sig.id !== 2)
+		}));
+		await vi.waitFor(() => expect(barShown()).toBe(false));
+		expect(picker('me@example.test').value).toBe('');
+		expect(picker('alias@example.test').value).toBe('1');
+		expect(mocks.setIdentitySignature).not.toHaveBeenCalled();
+	});
+
+	it('says the server couldn’t be reached when the request never got there', async () => {
+		mocks.setIdentitySignature.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+		open();
+		await fireEvent.change(picker('me@example.test'), { target: { value: '2' } });
+		await fireEvent.click(saveButton());
+		expect(await screen.findByText('Couldn’t reach the server. Try again.')).toBeTruthy();
+	});
+
+	it('forgets a choice for an address no longer on the account', async () => {
+		open();
+		await fireEvent.change(picker('alias@example.test'), { target: { value: '2' } });
+		(userState as unknown as { update(fn: (s: typeof state) => typeof state): void }).update((s) => ({
+			...s,
+			identities: [...s.identities, { jmapId: 'id-3', email: 'third@example.test', name: null, replyTo: null, isPrimary: false }].filter(
+				(identity) => identity.jmapId !== 'id-2'
+			)
+		}));
+		await vi.waitFor(() => expect(barShown()).toBe(false));
+		expect(mocks.setIdentitySignature).not.toHaveBeenCalled();
+	});
+
 	it('has no Save bar for someone with a single address, who has no pickers', () => {
 		(userState as unknown as { set(value: typeof state): void }).set({ ...state, identities: [state.identities[0]] });
 		open();

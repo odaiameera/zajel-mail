@@ -4,11 +4,15 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 
 const mocks = vi.hoisted(() => ({
 	invalidateAll: vi.fn(async () => {}),
-	leaveGuard: null as ((navigation: { willUnload: boolean; cancel: () => void }) => void) | null
+	goto: vi.fn(async () => {}),
+	leaveGuard: null as
+		| ((navigation: { willUnload: boolean; cancel: () => void; to?: { url: URL } | null }) => void)
+		| null
 }));
 
 vi.mock('$app/navigation', () => ({
 	invalidateAll: mocks.invalidateAll,
+	goto: mocks.goto,
 	beforeNavigate: (guard: typeof mocks.leaveGuard) => {
 		mocks.leaveGuard = guard;
 	}
@@ -87,6 +91,49 @@ describe('Settings → Appearance', () => {
 
 		expect(cancel).toHaveBeenCalled();
 		expect(isLight()).toBe(true);
+	});
+
+	describe('leaving while Save is under way', () => {
+		/** Save pressed for Light, and a link followed before the server answers. */
+		async function leaveWhileSaving() {
+			let answer!: (res: Response) => void;
+			fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => (answer = resolve)));
+			const confirm = vi.fn(() => true);
+			vi.stubGlobal('confirm', confirm);
+			mocks.goto.mockClear();
+			open();
+			await fireEvent.change(select('Theme'), { target: { value: 'light' } });
+			await fireEvent.click(saveButton());
+			expect(sent()).toEqual([{ url: '/api/preferences/theme', body: { value: 'light' } }]);
+
+			const cancel = vi.fn();
+			mocks.leaveGuard!({ willUnload: false, cancel, to: { url: new URL('http://localhost/inbox?x=1') } });
+			// Held, without asking: the change isn't unsaved, it is being saved.
+			expect(confirm).not.toHaveBeenCalled();
+			expect(cancel).toHaveBeenCalled();
+			expect(mocks.goto).not.toHaveBeenCalled();
+			return { answer, confirm };
+		}
+
+		it('waits for the save, then follows the link, keeping the look that was stored', async () => {
+			const { answer, confirm } = await leaveWhileSaving();
+			answer(Response.json({ success: true }));
+			await vi.waitFor(() => expect(mocks.goto).toHaveBeenCalledWith('/inbox?x=1'));
+			expect(isLight()).toBe(true);
+			expect(confirm).not.toHaveBeenCalled();
+		});
+
+		it('stays on the page with the change and the reason when the save fails', async () => {
+			const { answer, confirm } = await leaveWhileSaving();
+			answer(Response.json({ error: 'Disk full' }, { status: 500 }));
+			expect(await screen.findByText('Disk full')).toBeTruthy();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(mocks.goto).not.toHaveBeenCalled();
+			expect(confirm).not.toHaveBeenCalled();
+			expect(select('Theme').value).toBe('light');
+			expect(isLight()).toBe(true);
+			expect(barShown()).toBe(true);
+		});
 	});
 
 	it('previews density on the app shell and takes it back on Discard', async () => {

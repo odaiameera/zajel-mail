@@ -10,6 +10,8 @@
 	let { page: Page, data }: { page: Component<{ data?: unknown }>; data?: unknown } = $props();
 </script>
 
-<Layout>
+<!-- The layout gets the page's data too, as SvelteKit gives a layout its
+     own and its parents' (the account in use among them). -->
+<Layout data={data as { activeAccountId?: string | null }}>
 	<Page {data} />
 </Layout>

@@ -32,8 +32,10 @@
 			fontSize: data.composerFontSize,
 			autoSaveInterval: data.autoSaveInterval
 		})),
-		check: ({ autoSaveInterval: n }) =>
-			n === null || n < AUTO_SAVE_MIN || n > AUTO_SAVE_MAX
+		// Only a value typed here is held to the limits: one stored before them
+		// (or brought in by Import) doesn't stop the rest of the page saving.
+		check: ({ autoSaveInterval: n }, changed) =>
+			changed('autoSaveInterval') && (n === null || n < AUTO_SAVE_MIN || n > AUTO_SAVE_MAX)
 				? `“Auto-save interval” takes ${AUTO_SAVE_MIN} to ${AUTO_SAVE_MAX} seconds.`
 				: '',
 		async persist(changed) {

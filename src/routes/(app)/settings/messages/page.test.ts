@@ -210,6 +210,15 @@ describe('Settings → Messages', () => {
 		expect(select('Default sort').value).toBe('from');
 	});
 
+	it('saves another setting when the stored delay is outside today’s limits', async () => {
+		open({ markReadDelay: 30_000 });
+		await fireEvent.change(select('Default sort'), { target: { value: 'date_asc' } });
+		expect(barText()).toBe('Unsaved changes');
+		await fireEvent.click(saveButton());
+		expect(await screen.findByText('Saved')).toBeTruthy();
+		expect(sent()).toEqual([{ url: '/api/preferences/mail', body: { defaultSort: 'date_asc' } }]);
+	});
+
 	it('refuses a delay outside the server’s 0 to 10 seconds before sending it', async () => {
 		open();
 		await fireEvent.input(seconds(), { target: { value: '11' } });

@@ -7,7 +7,9 @@ const mocks = vi.hoisted(() => ({
 	// Whether this browser has already given permission.
 	canNotify: vi.fn(() => false),
 	subscribePush: vi.fn(async () => true),
-	unsubscribePush: vi.fn(async () => {})
+	unsubscribePush: vi.fn(async () => {}),
+	/** This device's push subscription, as the browser has it. */
+	currentPushSubscription: vi.fn(async (): Promise<object | null> => null)
 }));
 
 vi.mock('$app/navigation', () => ({ invalidateAll: mocks.invalidateAll, beforeNavigate: () => {} }));
@@ -15,7 +17,7 @@ vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/n
 vi.mock('$lib/notifications', () => ({
 	canNotify: mocks.canNotify,
 	notificationSupport: () => 'supported',
-	currentPushSubscription: async () => null,
+	currentPushSubscription: mocks.currentPushSubscription,
 	pushWantedHere: () => true,
 	setPushWantedHere: () => {},
 	subscribePush: mocks.subscribePush,
@@ -75,6 +77,7 @@ beforeEach(() => {
 	mocks.canNotify.mockReset().mockReturnValue(false);
 	mocks.subscribePush.mockClear();
 	mocks.unsubscribePush.mockClear();
+	mocks.currentPushSubscription.mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -187,6 +190,101 @@ describe('Settings → Notifications', () => {
 		expect(await screen.findByText('Push couldn’t be turned on for this device.')).toBeTruthy();
 		expect(device().getAttribute('aria-checked')).toBe('true');
 		expect(barShown()).toBe(true);
+	});
+
+	describe('this device and the main switch', () => {
+		const device = () => screen.getByRole('switch', { name: 'This device' });
+		const ready = () => vi.waitFor(() => expect((device() as HTMLButtonElement).disabled).toBe(false));
+
+		it('reads switching the main switch off and on again as no change, with this device stored off', async () => {
+			mocks.canNotify.mockReturnValue(true);
+			open({ notificationsEnabled: true });
+			await ready();
+			expect(device().getAttribute('aria-checked')).toBe('false');
+
+			await fireEvent.click(mainSwitch());
+			await vi.waitFor(() => expect(mainSwitch().getAttribute('aria-checked')).toBe('false'));
+			expect(barShown()).toBe(true);
+			await fireEvent.click(mainSwitch());
+			await vi.waitFor(() => expect(mainSwitch().getAttribute('aria-checked')).toBe('true'));
+
+			expect(barShown()).toBe(false);
+			expect(device().getAttribute('aria-checked')).toBe('false');
+			expect(saved()).toEqual([]);
+			expect(mocks.subscribePush).not.toHaveBeenCalled();
+			expect(mocks.unsubscribePush).not.toHaveBeenCalled();
+		});
+
+		it('takes this device along when the main switch goes from stored off to on, and subscribes it once on Save', async () => {
+			mocks.canNotify.mockReturnValue(true);
+			open();
+			await fireEvent.click(mainSwitch());
+			await vi.waitFor(() => expect(mainSwitch().getAttribute('aria-checked')).toBe('true'));
+			expect(device().getAttribute('aria-checked')).toBe('true');
+
+			await fireEvent.click(saveButton());
+			await screen.findByText('Saved');
+			expect(saved()).toEqual([{ enabled: true }]);
+			expect(mocks.subscribePush).toHaveBeenCalledTimes(1);
+		});
+
+		it('keeps this device as the person set it when the main switch goes off and back on', async () => {
+			mocks.canNotify.mockReturnValue(true);
+			open({ notificationsEnabled: true });
+			await ready();
+			await fireEvent.click(device());
+			expect(device().getAttribute('aria-checked')).toBe('true');
+
+			await fireEvent.click(mainSwitch());
+			await vi.waitFor(() => expect(mainSwitch().getAttribute('aria-checked')).toBe('false'));
+			await fireEvent.click(mainSwitch());
+			await vi.waitFor(() => expect(mainSwitch().getAttribute('aria-checked')).toBe('true'));
+			expect(device().getAttribute('aria-checked')).toBe('true');
+
+			await fireEvent.click(saveButton());
+			await screen.findByText('Saved');
+			expect(saved()).toEqual([]);
+			expect(mocks.subscribePush).toHaveBeenCalledTimes(1);
+		});
+
+		it('keeps a change the person made to this device while the main switch was changed', async () => {
+			// Off for the account, though this device still has its subscription.
+			mocks.canNotify.mockReturnValue(true);
+			mocks.currentPushSubscription.mockResolvedValue({});
+			open();
+			await fireEvent.click(mainSwitch());
+			await vi.waitFor(() => expect(mainSwitch().getAttribute('aria-checked')).toBe('true'));
+			await ready();
+			expect(device().getAttribute('aria-checked')).toBe('true');
+			await fireEvent.click(device());
+			expect(device().getAttribute('aria-checked')).toBe('false');
+
+			// Back to off as saved: this device stays as the person set it.
+			await fireEvent.click(mainSwitch());
+			await vi.waitFor(() => expect(mainSwitch().getAttribute('aria-checked')).toBe('false'));
+			expect(barShown()).toBe(true);
+			await fireEvent.click(saveButton());
+			await screen.findByText('Saved');
+			expect(saved()).toEqual([]);
+			expect(mocks.unsubscribePush).toHaveBeenCalledTimes(1);
+		});
+
+		it('saves the main switch, with this device reading off, when the device can’t take push', async () => {
+			mocks.canNotify.mockReturnValue(true);
+			mocks.subscribePush.mockResolvedValueOnce(false);
+			open();
+			await fireEvent.click(mainSwitch());
+			await vi.waitFor(() => expect(mainSwitch().getAttribute('aria-checked')).toBe('true'));
+
+			await fireEvent.click(saveButton());
+			expect(await screen.findByText('Saved')).toBeTruthy();
+			expect(saved()).toEqual([{ enabled: true }]);
+			expect(mocks.subscribePush).toHaveBeenCalledTimes(1);
+			expect(device().getAttribute('aria-checked')).toBe('false');
+			// Nothing left unsaved, and no error.
+			expect(saveButton()).toBeFalsy();
+			expect(barText()).toBe('Saved');
+		});
 	});
 
 	it('keeps the changes and shows the server’s reason when the save is refused', async () => {

@@ -206,7 +206,8 @@
 				Select a signature from the list, or create a new one.
 			</div>
 		{:else}
-			<div class="flex flex-col gap-4">
+			<!-- The editor has a Save of its own, so Cmd/Ctrl+S in it isn't the bar's. -->
+			<div class="flex flex-col gap-4" data-own-save>
 				<label class="block">
 					<span class="text-xs font-medium text-text-secondary block mb-1.5">Name</span>
 					<input

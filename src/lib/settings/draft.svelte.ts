@@ -51,9 +51,12 @@ export interface DraftOptions<T> {
 	/**
 	 * Why the values on screen can't be saved as they are (an end date
 	 * before the start date), or '' when they can. While there is a reason,
-	 * Save is disabled and the bar says it.
+	 * Save is disabled and the bar says it. `changed` tells whether a key
+	 * differs from what is saved: a value stored long ago that today's
+	 * rules wouldn't take (one brought in by Import) is not the person's
+	 * doing, and shouldn't keep them from saving something else.
 	 */
-	check?: (values: T) => string;
+	check?: (values: T, changed: (key: keyof T) => boolean) => string;
 }
 
 /**
@@ -68,7 +71,31 @@ export class SaveCancelled extends Error {
 	}
 }
 
+/**
+ * Thrown by `persist` when, once it looked, there was nothing left to send:
+ * every change was to something no longer there. Nothing was stored, so the
+ * bar mustn't say "Saved"; the changes are dropped without a word.
+ */
+export class NothingToSend extends Error {
+	constructor() {
+		super('Nothing to send');
+		this.name = 'NothingToSend';
+	}
+}
+
 const FALLBACK_ERROR = 'Couldn’t save. Try again.';
+export const NETWORK_ERROR = 'Couldn’t reach the server. Try again.';
+
+/**
+ * What the Save bar says about a failed save. A request that never reached
+ * the server fails with the browser's own words ("Failed to fetch", "Load
+ * failed"), which mean nothing to the person; every page says the same
+ * plain thing instead.
+ */
+export function saveFailureReason(err: unknown): string {
+	if (err instanceof TypeError) return NETWORK_ERROR;
+	return err instanceof Error && err.message ? err.message : FALLBACK_ERROR;
+}
 
 function same(a: unknown, b: unknown): boolean {
 	return JSON.stringify(a) === JSON.stringify(b);
@@ -87,13 +114,17 @@ export class Draft<T extends Values> {
 	/** What is on screen. The page binds its controls to this. */
 	value: T;
 	saving = $state(false);
+	/** Whether the last save that went through sent anything to the server. */
+	sent = $state(false);
 	/** Why the last save failed; empty once a save is tried again or the changes are discarded. */
 	error = $state('');
 	readonly dirty: boolean = $derived.by(() =>
 		keysOf(this.value, this.#baseline).some((key) => !same(this.value[key], this.#baseline[key]))
 	);
 	/** Why the values on screen can't be saved; '' when they can, or when nothing is changed. */
-	readonly problem: string = $derived.by(() => (this.dirty ? (this.#options.check?.(this.value) ?? '') : ''));
+	readonly problem: string = $derived.by(() =>
+		this.dirty ? (this.#options.check?.(this.value, (key) => !same(this.value[key], this.#baseline[key])) ?? '') : ''
+	);
 
 	#baseline: T;
 	readonly #options: DraftOptions<T>;
@@ -135,9 +166,28 @@ export class Draft<T extends Values> {
 		this.#baseline = baseline;
 	}
 
+	#present: Set<string> | null = null;
+
+	/**
+	 * The settings the page's data has now, called whenever it reloads. A
+	 * setting that was there the last time and isn't now (a pin removed in
+	 * another tab) is forgotten, changed or not: there is nothing left to
+	 * store it for. One added since (a pin just made here, before the reload
+	 * that brings it) is left alone.
+	 */
+	present(keys: Iterable<keyof T & string>): void {
+		const now = new Set<string>(keys);
+		const before = this.#present;
+		this.#present = now;
+		if (!before) return;
+		const gone = [...before].filter((key) => !now.has(key));
+		if (gone.length > 0) this.forget(gone as (keyof T)[]);
+	}
+
 	/** Sends what changed. True once it is all stored. */
 	async save(): Promise<boolean> {
 		if (this.saving || this.problem) return false;
+		this.sent = false;
 		if (!this.dirty) return true;
 		const sent = copy($state.snapshot(this.value) as T);
 		const changed: Partial<T> = {};
@@ -165,11 +215,17 @@ export class Draft<T extends Values> {
 			// as it was, except what the page already reported as stored.
 			const rest = Object.fromEntries(Object.entries(changed).filter(([key]) => !done.has(key)));
 			take({ ...rest, ...returned } as Partial<T>);
+			this.sent = true;
 			return true;
 		} catch (err) {
-			if (!(err instanceof SaveCancelled)) {
-				this.error = err instanceof Error && err.message ? err.message : FALLBACK_ERROR;
+			if (err instanceof NothingToSend) {
+				// Whatever was changed had nothing behind it: back to as saved.
+				for (const key of Object.keys(changed) as (keyof T)[]) {
+					if (same(this.value[key], sent[key])) this.value[key] = copy(this.#baseline[key]);
+				}
+				return true;
 			}
+			if (!(err instanceof SaveCancelled)) this.error = saveFailureReason(err);
 			return false;
 		} finally {
 			this.saving = false;
@@ -188,6 +244,7 @@ export class Draft<T extends Values> {
 interface RegisteredDraft {
 	readonly dirty: boolean;
 	readonly saving: boolean;
+	readonly sent: boolean;
 	readonly error: string;
 	readonly problem: string;
 	save(): Promise<boolean>;
@@ -231,17 +288,39 @@ export class SaveHost {
 		this.#drafts = this.#drafts.filter((d) => d !== draft);
 	}
 
+	#pending: Promise<boolean> | null = null;
+
 	/** Saves every draft with changes. True when all of them were stored. */
-	async saveAll(): Promise<boolean> {
-		if (!this.dirty || this.saving || this.problem) return false;
+	saveAll(): Promise<boolean> {
+		if (!this.dirty || this.saving || this.problem) return Promise.resolve(false);
 		this.#clearSaved();
-		const results = await Promise.all(this.#drafts.filter((d) => d.dirty).map((d) => d.save()));
+		const pending = this.#saveAll();
+		this.#pending = pending;
+		void pending.finally(() => {
+			if (this.#pending === pending) this.#pending = null;
+		});
+		return pending;
+	}
+
+	async #saveAll(): Promise<boolean> {
+		const dirty = this.#drafts.filter((d) => d.dirty);
+		const results = await Promise.all(dirty.map((d) => d.save()));
 		const ok = results.every(Boolean) && !this.dirty;
-		if (ok) {
+		// "Saved" only when something was: a save that found nothing to send
+		// just lets the bar go.
+		if (ok && dirty.some((d) => d.sent)) {
 			this.justSaved = true;
 			this.#savedTimer = setTimeout(() => (this.justSaved = false), SAVED_FLASH_MS);
 		}
 		return ok;
+	}
+
+	/**
+	 * Resolves once the save under way (if any) is over: true when it
+	 * stored everything, false when it failed. With none under way, true.
+	 */
+	settled(): Promise<boolean> {
+		return this.#pending ?? Promise.resolve(true);
 	}
 
 	discardAll(): void {
@@ -257,10 +336,21 @@ export class SaveHost {
 
 const SAVE_HOST = Symbol('settings-save-host');
 
+/** The host of the settings page that is open, for the app around Settings (see leave.ts). */
+let openHost: SaveHost | null = null;
+
+export function openSaveHost(): SaveHost | null {
+	return openHost;
+}
+
 /** Called by the settings layout: the host its Save bar reads and its pages register with. */
 export function provideSaveHost(): SaveHost {
 	const host = new SaveHost();
 	setContext(SAVE_HOST, host);
+	openHost = host;
+	onDestroy(() => {
+		if (openHost === host) openHost = null;
+	});
 	return host;
 }
 
