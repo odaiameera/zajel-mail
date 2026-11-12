@@ -1,37 +1,57 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
-	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
+	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import Select from '$lib/components/settings/Select.svelte';
+	import NumberInput from '$lib/components/settings/NumberInput.svelte';
+	import { useDraft } from '$lib/settings/draft.svelte';
+	import { sendJson } from '$lib/settings/send';
 	import type { LayoutData } from '../$types';
 
 	let { data }: { data: LayoutData } = $props();
 
-	let font = $state(data.composerFont);
-	let fontSize = $state(data.composerFontSize);
-	let autoSaveInterval = $state(String(data.autoSaveInterval));
-	let undoSendSeconds = $state(String(data.undoSendSeconds));
+	// The server's own limits for how often an open draft saves itself. It
+	// would quietly clamp a number outside them; saying so is kinder.
+	const AUTO_SAVE_MIN = 5;
+	const AUTO_SAVE_MAX = 120;
 
-	const states = $state<Record<string, SaveState>>({});
-	function flash(key: string, ok: boolean) {
-		states[key] = ok ? 'saved' : 'error';
-		if (ok) setTimeout(() => { if (states[key] === 'saved') states[key] = 'idle'; }, 1800);
-	}
+	type Values = {
+		undoSendSeconds: string;
+		font: string;
+		fontSize: string;
+		autoSaveInterval: number | null;
+	};
 
-	async function save(url: string, body: unknown, key: string) {
-		states[key] = 'saving';
-		try {
-			const res = await fetch(url, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body)
-			});
-			flash(key, res.ok);
-			if (res.ok) await invalidateAll();
-		} catch {
-			flash(key, false);
+	// Stored when Save is pressed in the bar at the foot of the page.
+	const draft = useDraft<Values>({
+		// What the page opened with; later reloads of `data` leave the form alone.
+		initial: untrack(() => ({
+			undoSendSeconds: String(data.undoSendSeconds),
+			font: data.composerFont,
+			fontSize: data.composerFontSize,
+			autoSaveInterval: data.autoSaveInterval
+		})),
+		check: ({ autoSaveInterval: n }) =>
+			n === null || n < AUTO_SAVE_MIN || n > AUTO_SAVE_MAX
+				? `“Auto-save interval” takes ${AUTO_SAVE_MIN} to ${AUTO_SAVE_MAX} seconds.`
+				: '',
+		async persist(changed) {
+			const body: Record<string, unknown> = {};
+			// Whole seconds, as the server stores them.
+			let interval: number | undefined;
+			if (changed.autoSaveInterval !== undefined) {
+				interval = Math.floor(changed.autoSaveInterval ?? AUTO_SAVE_MIN);
+				body.autoSaveInterval = interval;
+			}
+			if (changed.undoSendSeconds !== undefined) body.undoSendSeconds = Number(changed.undoSendSeconds);
+			if (changed.font !== undefined) body.font = changed.font;
+			if (changed.fontSize !== undefined) body.fontSize = changed.fontSize;
+			await sendJson('/api/preferences/composer', body);
+			await invalidateAll();
+			return interval === undefined ? undefined : { autoSaveInterval: interval };
 		}
-	}
+	});
 
 	const fonts = [
 		'Calibri', 'Segoe UI', 'Arial', 'Helvetica', 'Georgia', 'Times New Roman',
@@ -47,12 +67,12 @@
 </header>
 
 <section>
-	<SettingRow title="Undo send" state={states.undoSend ?? 'idle'}>
+	<SettingRow title="Undo send">
 		{#snippet control()}
 			<Select
-				value={undoSendSeconds}
+				value={draft.value.undoSendSeconds}
 				ariaLabel="Undo send"
-				onchange={(v) => { undoSendSeconds = v; save('/api/preferences/composer', { undoSendSeconds: Number(v) }, 'undoSend'); }}
+				onchange={(v) => (draft.value.undoSendSeconds = v)}
 				options={[
 					{ value: '0', label: 'Off' },
 					{ value: '5', label: '5 seconds' },
@@ -64,23 +84,23 @@
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow title="Default font" description="Base font for outgoing HTML email." state={states.font ?? 'idle'}>
+	<SettingRow title="Default font" description="Base font for outgoing HTML email.">
 		{#snippet control()}
 			<Select
-				value={font}
+				value={draft.value.font}
 				ariaLabel="Default font"
-				onchange={(v) => { font = v; save('/api/preferences/composer', { font: v }, 'font'); }}
+				onchange={(v) => (draft.value.font = v)}
 				options={fonts.map((f) => ({ value: f, label: f }))}
 			/>
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow title="Default font size" description="Measured in pt. 12pt is typical." state={states.fontSize ?? 'idle'}>
+	<SettingRow title="Default font size" description="Measured in pt. 12pt is typical.">
 		{#snippet control()}
 			<Select
-				value={fontSize}
+				value={draft.value.fontSize}
 				ariaLabel="Default font size"
-				onchange={(v) => { fontSize = v; save('/api/preferences/composer', { fontSize: v }, 'fontSize'); }}
+				onchange={(v) => (draft.value.fontSize = v)}
 				options={['8', '9', '10', '11', '12', '14', '16', '18', '20', '24'].map((v) => ({ value: v, label: `${v} pt` }))}
 			/>
 		{/snippet}
@@ -89,18 +109,13 @@
 	<SettingRow
 		title="Auto-save interval"
 		description="How often drafts are saved while typing, in seconds."
-		state={states.autoSave ?? 'idle'}
 	>
 		{#snippet control()}
-			<input
-				type="number"
-				bind:value={autoSaveInterval}
-				min={5}
-				max={120}
-				step={1}
-				onblur={() => save('/api/preferences/composer', { autoSaveInterval: parseInt(autoSaveInterval) || 10 }, 'autoSave')}
-				class="bg-surface-hover border border-border rounded-lg px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent w-[110px]"
-				aria-label="Auto-save interval"
+			<NumberInput
+				bind:value={draft.value.autoSaveInterval}
+				min={AUTO_SAVE_MIN}
+				max={AUTO_SAVE_MAX}
+				ariaLabel="Auto-save interval"
 			/>
 		{/snippet}
 	</SettingRow>

@@ -4,7 +4,8 @@
 	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import Select from '$lib/components/settings/Select.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
-	import { fetchWithStepUp } from '$lib/auth/step-up';
+	import { useDraft } from '$lib/settings/draft.svelte';
+	import { sendJson } from '$lib/settings/send';
 
 	interface Job {
 		id: string;
@@ -24,7 +25,6 @@
 		writerModel: string | null;
 		agentEffort: 'low' | 'medium' | 'high' | null;
 	}
-	type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 	interface Activity {
 		tool: string;
 		tier: string;
@@ -36,11 +36,6 @@
 
 	let assistant = $state<Assistant | null>(null);
 	let models = $state<{ id: string; name: string }[]>([]);
-	// Which setting is saving, so its own row shows it.
-	let saving = $state<{ key: string; state: SaveState; error?: string } | null>(null);
-	// Bumped when a save doesn't happen, so the pickers redraw with the saved
-	// values instead of keeping the one that was picked.
-	let pickers = $state(0);
 	let modelsFor: Provider | null = null;
 	let checking = $state(false);
 	let check = $state<{ ok: boolean; error?: string } | null>(null);
@@ -49,12 +44,74 @@
 	let activity = $state<Activity[]>([]);
 	let loaded = $state(false);
 
+	type Choice = { provider: string; agentModel: string; writerModel: string; agentEffort: string };
+
+	/** The saved choice as the pickers hold it: '' for nothing chosen, and the effort a provider without one of its own starts from. */
+	function choiceOf(a: Assistant | null): Choice {
+		return {
+			provider: a?.provider ?? '',
+			agentModel: a?.agentModel ?? '',
+			writerModel: a?.writerModel ?? '',
+			agentEffort: a?.agentEffort ?? 'medium'
+		};
+	}
+
+	// The provider, its models and the effort wait for Save in the bar at the
+	// foot of the page. The provider decides where mail content is sent, so
+	// the server asks for a fresh sign-in check first; closing that dialog
+	// saves nothing and leaves the pickers as they were set. Jobs and the
+	// connection check below act at once.
+	const draft = useDraft<Choice>({
+		// Filled by the first load below: this page fetches its own values.
+		initial: choiceOf(null),
+		async persist(changed, all) {
+			let body: Record<string, string>;
+			if (changed.provider !== undefined) {
+				// A new provider is saved on its own. Its models are only known
+				// (and offered) once it is the one in use.
+				body = { provider: changed.provider };
+			} else if (all.provider === 'anthropic') {
+				body = { ...changed };
+			} else {
+				// OpenAI and Ollama use one model for everything, sent as `model`.
+				body = changed.agentModel !== undefined ? { model: changed.agentModel } : {};
+			}
+			const data = (await sendJson('/api/agent/assistant', body, { method: 'PUT', stepUp: true })) as Assistant;
+			const providerChanged = data.provider !== assistant?.provider;
+			assistant = data;
+			// The last check was of the old setup.
+			check = null;
+			if (providerChanged && data.provider) void loadModels(data.provider);
+			return choiceOf(data);
+		}
+	});
+
+	// Whether the provider picked is the one in use. A different one hasn't
+	// been saved yet, so there are no models of its own to choose from.
+	const providerSaved = $derived(draft.value.provider === draft.baseline.provider);
+
+	function pickProvider(next: string) {
+		draft.value.provider = next;
+		// Model choices belong to the provider they were made for.
+		draft.value.agentModel = draft.baseline.agentModel;
+		draft.value.writerModel = draft.baseline.writerModel;
+		draft.value.agentEffort = draft.baseline.agentEffort;
+	}
+
+	let seeded = false;
+
 	async function load() {
 		const res = await fetch('/api/agent');
 		if (!res.ok) return;
 		const data = await res.json();
 		const providerChanged = data.assistant?.provider !== assistant?.provider;
 		assistant = data.assistant;
+		// The pickers are filled once. This also runs after every job change,
+		// and must not put back a choice that is waiting for Save.
+		if (!seeded) {
+			seeded = true;
+			draft.seed(choiceOf(assistant));
+		}
 		if (providerChanged && assistant?.provider) void loadModels(assistant.provider);
 		paused = data.paused;
 		jobs = data.jobs;
@@ -80,39 +137,8 @@
 		if (modelsFor === provider) models = list;
 	}
 
-	async function save(key: string, value: string) {
-		saving = { key, state: 'saving' };
-		let res: Response;
-		let data: { stepUp?: boolean; message?: string; error?: string } & Assistant;
-		try {
-			res = await fetchWithStepUp('/api/agent/assistant', {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ [key]: value })
-			});
-			data = await res.json().catch(() => null);
-		} catch {
-			saving = { key, state: 'error', error: 'That didn’t save' };
-			pickers += 1;
-			return;
-		}
-		if (!res.ok) {
-			// A cancelled re-check leaves things as they were.
-			saving = data?.stepUp ? null : { key, state: 'error', error: data?.message ?? data?.error ?? 'That didn’t save' };
-			pickers += 1;
-			return;
-		}
-		const providerChanged = data.provider !== assistant?.provider;
-		assistant = data;
-		check = null;
-		saving = { key, state: 'saved' };
-		if (providerChanged && data.provider) await loadModels(data.provider);
-	}
-
-	const rowState = (key: string): SaveState => (saving?.key === key ? saving.state : 'idle');
-
-	/** The listed models, with the one in use first if the list doesn't have it. */
-	function modelOptions(current: string | null): { value: string; label: string }[] {
+	/** The listed models, with the one in use (`current`) first if the list doesn't have it. */
+	function modelOptions(current: string): { value: string; label: string }[] {
 		const options = models.map((m) => ({ value: m.id, label: m.name }));
 		if (current && !options.some((o) => o.value === current)) options.unshift({ value: current, label: modelName(current) });
 		return options;
@@ -176,44 +202,47 @@
 				{/snippet}
 			</SettingRow>
 		{:else}
-		{#key pickers}
-			<SettingRow title="Provider" state={rowState('provider')} errorMessage={saving?.error}>
+			<SettingRow
+				title="Provider"
+				description={providerSaved ? undefined : `Save to switch to ${PROVIDER[draft.value.provider] ?? draft.value.provider}. Its models can be chosen once it is the one in use.`}
+			>
 				{#snippet control()}
 					<Select
 						ariaLabel="Provider"
-						value={assistant?.provider ?? ''}
+						value={draft.value.provider}
 						options={[
-							...(assistant?.provider ? [] : [{ value: '', label: 'Off' }]),
+							...(draft.baseline.provider ? [] : [{ value: '', label: 'Off' }]),
 							...(assistant?.available ?? []).map((p) => ({ value: p, label: PROVIDER[p] }))
 						]}
-						onchange={(next) => save('provider', next)}
+						onchange={pickProvider}
 					/>
 				{/snippet}
 			</SettingRow>
-			{#if assistant.provider === 'anthropic'}
-				<SettingRow title="Agent model" state={rowState('agentModel')} errorMessage={saving?.error}>
+			<!-- The model rows are for the provider in use; a provider picked but
+			     not yet saved has none to show (see pickProvider). -->
+			{#if providerSaved && draft.baseline.provider === 'anthropic'}
+				<SettingRow title="Agent model">
 					{#snippet control()}
-						<Select ariaLabel="Agent model" value={assistant?.agentModel ?? ''} options={modelOptions(assistant?.agentModel ?? null)} onchange={(next) => save('agentModel', next)} />
+						<Select ariaLabel="Agent model" value={draft.value.agentModel} options={modelOptions(draft.baseline.agentModel)} onchange={(next) => (draft.value.agentModel = next)} />
 					{/snippet}
 				</SettingRow>
-				<SettingRow title="Writing model" state={rowState('writerModel')} errorMessage={saving?.error}>
+				<SettingRow title="Writing model">
 					{#snippet control()}
-						<Select ariaLabel="Writing model" value={assistant?.writerModel ?? ''} options={modelOptions(assistant?.writerModel ?? null)} onchange={(next) => save('writerModel', next)} />
+						<Select ariaLabel="Writing model" value={draft.value.writerModel} options={modelOptions(draft.baseline.writerModel)} onchange={(next) => (draft.value.writerModel = next)} />
 					{/snippet}
 				</SettingRow>
-				<SettingRow title="Agent effort" state={rowState('agentEffort')} errorMessage={saving?.error}>
+				<SettingRow title="Agent effort">
 					{#snippet control()}
-						<Select ariaLabel="Agent effort" value={assistant?.agentEffort ?? 'medium'} options={EFFORTS} onchange={(next) => save('agentEffort', next)} />
+						<Select ariaLabel="Agent effort" value={draft.value.agentEffort} options={EFFORTS} onchange={(next) => (draft.value.agentEffort = next)} />
 					{/snippet}
 				</SettingRow>
-			{:else if assistant.provider}
-				<SettingRow title="Model" state={rowState('model')} errorMessage={saving?.error}>
+			{:else if providerSaved && draft.baseline.provider}
+				<SettingRow title="Model">
 					{#snippet control()}
-						<Select ariaLabel="Model" value={assistant?.agentModel ?? ''} options={modelOptions(assistant?.agentModel ?? null)} onchange={(next) => save('model', next)} />
+						<Select ariaLabel="Model" value={draft.value.agentModel} options={modelOptions(draft.baseline.agentModel)} onchange={(next) => (draft.value.agentModel = next)} />
 					{/snippet}
 				</SettingRow>
 			{/if}
-		{/key}
 			<SettingRow title="Connection" state={check && !check.ok ? 'error' : 'idle'} errorMessage={check?.error}>
 				{#snippet control()}
 					{#if check?.ok}
@@ -232,7 +261,7 @@
 	<h2 class="text-sm font-medium text-text mb-1">Scheduled jobs</h2>
 	<SettingRow title="Pause all jobs">
 		{#snippet control()}
-			<Toggle checked={paused} onChange={(next) => patch({ paused: next })} />
+			<Toggle checked={paused} ariaLabel="Pause all jobs" onChange={(next) => patch({ paused: next })} />
 		{/snippet}
 	</SettingRow>
 
@@ -249,7 +278,7 @@
 					<p class="text-xs text-text-tertiary mt-0.5">Last run {when(job.lastRunAt)}{job.lastResult ? ` · ${job.lastResult}` : ''}</p>
 				{/if}
 			</div>
-			<Toggle checked={job.enabled} onChange={(next) => patch({ id: job.id, enabled: next })} />
+			<Toggle checked={job.enabled} ariaLabel="Run {job.title}" onChange={(next) => patch({ id: job.id, enabled: next })} />
 			<button type="button" onclick={() => remove(job.id)}
 				class="px-2.5 py-1.5 text-xs text-text-tertiary hover:text-danger transition-colors cursor-pointer">Delete</button>
 		</div>

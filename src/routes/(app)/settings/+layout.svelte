@@ -4,6 +4,9 @@
 	import { pageTitle } from '$lib/utils/title';
 	import { groupedSettingsNav } from '$lib/config/settings-nav';
 	import { hostAppPanel } from '$lib/app-panel';
+	import { beforeNavigate } from '$app/navigation';
+	import { provideSaveHost } from '$lib/settings/draft.svelte';
+	import SaveBar from '$lib/components/settings/SaveBar.svelte';
 	import type { Snippet } from 'svelte';
 
 	let { children }: { children: Snippet } = $props();
@@ -20,7 +23,36 @@
 	// mail folders, not beside them — and in the drawer below `lg`. Phones
 	// get it as a page of its own instead (/settings).
 	const hosted = hostAppPanel(settingsNav);
+
+	// Settings wait for Save: the open page hands its unsaved values to this
+	// host, and the one Save bar below stores them (see draft.svelte.ts).
+	const saveHost = provideSaveHost();
+
+	const LEAVE_PROMPT = 'You have unsaved changes. Leave without saving?';
+
+	// Leaving with changes that were never saved would lose them without a
+	// word, so it asks first: a link inside the app, the settings menu or the
+	// browser's back button here, and closing or reloading the tab below.
+	beforeNavigate((navigation) => {
+		// The tab is going away: that is the browser's own prompt, below.
+		if (!saveHost.dirty || navigation.willUnload) return;
+		if (confirm(LEAVE_PROMPT)) {
+			// Discarding also takes back anything previewed live (the theme).
+			saveHost.discardAll();
+		} else {
+			navigation.cancel();
+		}
+	});
+
+	// Browsers show their own wording for this; the text is for the few that don't.
+	function onBeforeUnload(e: BeforeUnloadEvent) {
+		if (!saveHost.dirty) return;
+		e.preventDefault();
+		e.returnValue = LEAVE_PROMPT;
+	}
 </script>
+
+<svelte:window onbeforeunload={onBeforeUnload} />
 
 <svelte:head><title>{pageTitle({ page: 'Settings' })}</title></svelte:head>
 
@@ -58,17 +90,24 @@
 		<aside class="w-[224px] shrink-0 border-r border-border flex flex-col">{@render settingsNav()}</aside>
 	{/if}
 	<section class="flex-1 min-h-0 overflow-y-auto">
-		<div class="px-8 py-6 max-md:px-4 max-md:py-4 max-md:pb-28 max-w-3xl">
-			{#if !onIndex}
-				<a
-					href="/settings"
-					class="md:hidden -ml-1.5 mb-2 inline-flex items-center gap-0.5 h-9 pr-2 text-sm text-accent-fg"
-				>
-					<Icon name="previous" size={20} />
-					<span>Settings</span>
-				</a>
-			{/if}
-			{@render children()}
+		<!-- At least as tall as the pane, so the Save bar's strip sits at its
+		     foot on a short page and sticks there on a long one. -->
+		<div class="min-h-full flex flex-col">
+			<!-- The bottom padding plus the bar's strip keep the last row clear
+			     of the round corner buttons on a phone, as pb-28 did alone. -->
+			<div class="flex-1 w-full max-w-3xl px-8 pt-6 pb-6 max-md:px-4 max-md:pt-4 max-md:pb-16">
+				{#if !onIndex}
+					<a
+						href="/settings"
+						class="md:hidden -ml-1.5 mb-2 inline-flex items-center gap-0.5 h-9 pr-2 text-sm text-accent-fg"
+					>
+						<Icon name="previous" size={20} />
+						<span>Settings</span>
+					</a>
+				{/if}
+				{@render children()}
+			</div>
+			<SaveBar host={saveHost} />
 		</div>
 	</section>
 </div>
