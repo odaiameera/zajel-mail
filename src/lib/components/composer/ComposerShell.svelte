@@ -891,7 +891,7 @@
 			{/if}
 			<div class="flex items-center pl-3 pr-3 py-2">
 				<span class="text-xs text-text-tertiary w-12 shrink-0">Subject</span>
-				<input bind:value={subject} type="text" aria-label="Subject" class="flex-1 bg-transparent text-sm font-medium text-text outline-none focus-visible:outline-none!" />
+				<input bind:value={subject} type="text" dir="auto" aria-label="Subject" class="flex-1 bg-transparent text-sm font-medium text-text outline-none focus-visible:outline-none!" />
 			</div>
 		</div>
 

@@ -2,19 +2,42 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
-import { BlockDirection, blockDirection } from './block-direction';
+import { BlockDirection, blockDirection, letterDirection } from './block-direction';
 import { SignatureNode } from './signature-node';
 import { applySignature } from '$lib/utils/signatures';
 
 let editor: Editor | undefined;
 afterEach(() => editor?.destroy());
 
-function make(content: string): Editor {
+function make(content: string, followKeyboard = true): Editor {
 	editor = new Editor({
-		extensions: [StarterKit.configure({ link: false, underline: false, trailingNode: false }), SignatureNode, BlockDirection],
+		extensions: [
+			StarterKit.configure({ link: false, underline: false, trailingNode: false }),
+			SignatureNode,
+			BlockDirection.configure({ followKeyboard })
+		],
 		content
 	});
 	return editor;
+}
+
+/** Type `text` at the selection the way ProseMirror does for a keystroke. */
+function type(e: Editor, text: string) {
+	for (const ch of text) {
+		const { from, to } = e.state.selection;
+		const deflt = () => e.state.tr.insertText(ch, from, to);
+		if (!e.view.someProp('handleTextInput', (f) => f(e.view, from, to, ch, deflt))) e.view.dispatch(deflt());
+	}
+}
+
+function endOf(e: Editor, text: string) {
+	cursorIn(e, text);
+	const { $from } = e.state.selection;
+	e.commands.setTextSelection($from.end());
+}
+
+function directionEvent(type: 'beforeinput' | 'input', data: string | null) {
+	return new InputEvent(type, { inputType: 'formatSetBlockTextDirection', data, bubbles: true, cancelable: true });
 }
 
 /** Put the cursor inside the first text block containing `text`. */
@@ -103,3 +126,99 @@ describe('block direction', () => {
 		);
 	});
 });
+
+describe('following the keyboard language', () => {
+	it('reads a letter’s direction, and nothing from digits or punctuation', () => {
+		expect(letterDirection('ب')).toBe('rtl');
+		expect(letterDirection('שלום')).toBe('rtl');
+		expect(letterDirection('a')).toBe('ltr');
+		expect(letterDirection('١٢ - 3. ب')).toBe('rtl');
+		expect(letterDirection('12 - .')).toBeNull();
+	});
+
+	it('turns a new line right to left when its first letter is Arabic', () => {
+		const e = make('<p>Hello</p><p></p>');
+		e.commands.setTextSelection(e.state.doc.content.size - 1);
+		type(e, 'مرحبا');
+		expect(e.getHTML()).toBe('<p>Hello</p><p dir="rtl">مرحبا</p>');
+	});
+
+	it('turns back when the next line starts in English', () => {
+		const e = make('<p dir="rtl">عربي</p>');
+		endOf(e, 'عربي');
+		e.commands.splitBlock();
+		type(e, 'Hi');
+		expect(e.getHTML()).toBe('<p dir="rtl">عربي</p><p>Hi</p>');
+	});
+
+	it('leaves a line that already has words, so an English word can sit in Arabic', () => {
+		const e = make('<p dir="rtl">اسم المنتج</p>');
+		endOf(e, 'اسم');
+		type(e, ' Zajel');
+		expect(e.getHTML()).toBe('<p dir="rtl">اسم المنتج Zajel</p>');
+	});
+
+	it('goes by the first letter of a line started with a number or a dash', () => {
+		const e = make('<p></p>');
+		e.commands.setTextSelection(1);
+		type(e, '1- بند');
+		expect(e.getHTML()).toBe('<p dir="rtl">1- بند</p>');
+	});
+
+	it('turns a list only while it has no words', () => {
+		const e = make('<ul><li><p></p></li></ul>');
+		e.commands.setTextSelection(3);
+		type(e, 'أ');
+		expect(e.getHTML()).toBe('<ul dir="rtl"><li><p>أ</p></li></ul>');
+		endOf(e, 'أ');
+		e.commands.splitListItem('listItem');
+		type(e, 'B');
+		expect(e.getHTML()).toBe('<ul dir="rtl"><li><p>أ</p></li><li><p>B</p></li></ul>');
+	});
+
+	it('undoes the letter and the turn together', () => {
+		const e = make('<p></p>');
+		e.commands.setTextSelection(1);
+		type(e, 'ب');
+		e.commands.undo();
+		expect(e.getHTML()).toBe('<p></p>');
+	});
+
+	it('can be left off', () => {
+		const e = make('<p></p>', false);
+		e.commands.setTextSelection(1);
+		type(e, 'ب');
+		expect(e.getHTML()).toBe('<p>ب</p>');
+	});
+});
+
+describe('the browser’s own direction switch', () => {
+	it('does what Safari asks, instead of letting it change the page', () => {
+		const e = make('<p>نص</p>');
+		cursorIn(e, 'نص');
+		const event = directionEvent('beforeinput', 'rtl');
+		e.view.dom.dispatchEvent(event);
+		expect(event.defaultPrevented).toBe(true);
+		expect(e.getHTML()).toBe('<p dir="rtl">نص</p>');
+		// Its Default is left to right, like the rest of the message.
+		e.view.dom.dispatchEvent(directionEvent('beforeinput', 'inherit'));
+		expect(e.getHTML()).toBe('<p>نص</p>');
+	});
+
+	it('keeps what Chrome did, once ProseMirror has put its DOM back', async () => {
+		const e = make('<p>نص</p>');
+		cursorIn(e, 'نص');
+		e.view.dom.dispatchEvent(directionEvent('input', 'direction: rtl;'));
+		await new Promise((resolve) => setTimeout(resolve));
+		expect(e.getHTML()).toBe('<p dir="rtl">نص</p>');
+	});
+
+	it('leaves other input alone', () => {
+		const e = make('<p>text</p>');
+		cursorIn(e, 'text');
+		const event = new InputEvent('beforeinput', { inputType: 'formatBold', bubbles: true, cancelable: true });
+		e.view.dom.dispatchEvent(event);
+		expect(event.defaultPrevented).toBe(false);
+	});
+});
+
