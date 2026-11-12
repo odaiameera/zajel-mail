@@ -38,6 +38,7 @@ import Folder from '@lucide/svelte/icons/folder';
 import FolderInput from '@lucide/svelte/icons/folder-input';
 import Forward from '@lucide/svelte/icons/forward';
 import Funnel from '@lucide/svelte/icons/funnel';
+import GripVertical from '@lucide/svelte/icons/grip-vertical';
 import Highlighter from '@lucide/svelte/icons/highlighter';
 import Hourglass from '@lucide/svelte/icons/hourglass';
 import Inbox from '@lucide/svelte/icons/inbox';
@@ -131,6 +132,8 @@ export const ICONS = {
 	/** Arrows, not chevrons: beside an open/close chevron, a chevron reads as a second one. */
 	'move-up': MoveUp,
 	'move-down': MoveDown,
+	/** The handle a row is dragged by. */
+	reorder: GripVertical,
 
 	// Folders and Inbox tabs
 	inbox: Inbox,

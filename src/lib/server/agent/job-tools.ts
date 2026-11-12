@@ -97,7 +97,7 @@ const listJobsTool: AgentTool = {
 const stopJob: AgentTool = {
 	name: 'stop_job',
 	tier: 'self',
-	description: 'Switch a scheduled job off. It can be switched back on in Settings → Agent.',
+	description: 'Switch a scheduled job off. It can be switched back on in Settings → Assistant.',
 	input_schema: schema({ job_id: { type: 'string' } }),
 	async run(ctx, input) {
 		const id = typeof input.job_id === 'string' ? input.job_id : '';

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { pageTitle } from '$lib/utils/title';
+	import Section from '$lib/components/settings/Section.svelte';
 	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
 	import TextInput from '$lib/components/settings/TextInput.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
@@ -96,26 +96,17 @@
 	onDestroy(() => timer && clearTimeout(timer));
 </script>
 
-<svelte:head><title>{pageTitle({ page: 'Search', subtitle: 'Settings' })}</title></svelte:head>
-
-<header class="mb-6">
-	<h1 class="text-xl font-semibold text-text">Search</h1>
-</header>
-
 {#if loaded}
-	<section class="mb-8">
-		<h2 class="text-sm font-medium text-text mb-1">Semantic search</h2>
-		<SettingRow
-			title="Ollama endpoint"
-			description="Reached from the server, not your browser. It receives the text of every message it indexes."
-		>
+	<Section title="Semantic search" id="search">
+		<!-- Kept: where the text of the mail goes is not something its name says. -->
+		<SettingRow title="Ollama endpoint" description="It receives the text of every message it indexes.">
 			{#snippet control()}
 				<TextInput bind:value={draft.value.url} ariaLabel="Ollama endpoint" width="260px" />
 			{/snippet}
 		</SettingRow>
-		<SettingRow title="Model">
+		<SettingRow title="Embedding model">
 			{#snippet control()}
-				<TextInput bind:value={draft.value.model} ariaLabel="Model" width="260px" />
+				<TextInput bind:value={draft.value.model} ariaLabel="Embedding model" width="260px" />
 			{/snippet}
 		</SettingRow>
 		{#each accounts as account (account.id)}
@@ -126,7 +117,7 @@
 			>
 				{#snippet control()}
 					<!-- An error doesn't stop the indexer: it tries again every minute. -->
-					<span class="text-xs text-text-tertiary tabular-nums">{progress(account)}{account.lastError ? ' · retrying' : ''}</span>
+					<span class="text-[0.8125rem] text-text-tertiary tabular-nums">{progress(account)}{account.lastError ? ' · retrying' : ''}</span>
 					<Toggle
 						checked={account.enabled}
 						disabled={!account.configured || states[account.id] === 'saving'}
@@ -136,5 +127,5 @@
 				{/snippet}
 			</SettingRow>
 		{/each}
-	</section>
+	</Section>
 {/if}

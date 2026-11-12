@@ -3,7 +3,7 @@ import { getDb } from '$lib/server/db/index';
 import { errorFields, logEvent } from '$lib/server/log';
 
 /**
- * Which AI the server uses, as chosen in Settings → Agent. Each value wins
+ * Which AI the server uses, as chosen in Settings → Assistant. Each value wins
  * over its environment variable, which wins over the built-in default; null
  * means "not chosen". API keys are not settings: they stay in the
  * environment, and a provider can only be chosen once its key is there.

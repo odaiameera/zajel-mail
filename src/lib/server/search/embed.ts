@@ -6,7 +6,7 @@ import { aiSettings } from '$lib/server/ai/settings';
  *
  * Deliberately separate from the chat assistant's OLLAMA_URL, which defaults
  * to Ollama Cloud: indexing sends every message's text to this endpoint, so it
- * is only ever the one Settings → Search or EMBED_URL names, and nothing is
+ * is only ever the one Settings → Assistant or EMBED_URL names, and nothing is
  * indexed until one does.
  */
 
@@ -18,7 +18,7 @@ export interface EmbedSettings {
 	model: string;
 }
 
-/** Settings → Search first, then the environment, then the built-in model. */
+/** Settings → Assistant first, then the environment, then the built-in model. */
 export function embedSettings(): EmbedSettings | null {
 	const chosen = aiSettings();
 	const url = (chosen.embedUrl || env.EMBED_URL)?.trim().replace(/\/+$/, '');

@@ -250,7 +250,17 @@ const dialog = () => screen.getByRole('dialog');
 /** The names in "All rules, in order", top first. */
 const listed = () => [...allRules().querySelectorAll('li')].map((li) => li.querySelector('.text-sm')?.textContent);
 const ruleRow = (name: string) => within(within(allRules()).getByText(name).closest('li') as HTMLElement);
-const mailboxRow = (section: string, name: string) => within(within(region(section)).getByRole('group', { name }));
+const mailboxGroup = (section: string, name: string) => within(region(section)).getByRole('group', { name });
+const mailboxRow = (section: string, name: string) => within(mailboxGroup(section, name));
+/** The button that opens a row to show its rules: not the one for its menu. Null where no rule can file. */
+const rowOpener = (section: string, name: string) =>
+	mailboxGroup(section, name).querySelector<HTMLElement>('button[aria-expanded]:not([aria-haspopup])');
+/** The handle a folder, a label, or a rule under "All rules, in order" is dragged by. */
+const handle = (section: string, name: string) => within(region(section)).getByRole('button', { name: `Reorder ${name}` });
+const ruleHandle = (name: string) => handle('All rules, in order', name);
+const optionsButton = (section: string, name: string) => mailboxRow(section, name).getByRole('button', { name: `${name} options` });
+/** The open menu: it hangs off <body>, not the row. */
+const menu = (name: string) => screen.getByRole('menu', { name: `${name} options` });
 
 async function openAllRules() {
 	await fireEvent.click(screen.getByRole('button', { name: 'All rules, in order' }));
@@ -259,8 +269,54 @@ async function openFromList(name: string) {
 	await openAllRules();
 	await fireEvent.click(within(allRules()).getByText(name));
 }
+/** The system folders are folded away until asked for. */
+async function openSystemFolders() {
+	const fold = screen.getByRole('button', { name: 'System folders' });
+	if (fold.getAttribute('aria-expanded') === 'false') await fireEvent.click(fold);
+}
 async function openRow(section: string, name: string) {
-	await fireEvent.click(mailboxRow(section, name).getByRole('button', { expanded: false }));
+	if (section === 'System folders') await openSystemFolders();
+	await fireEvent.click(rowOpener(section, name)!);
+}
+/** Open a row's menu and press View, Edit or Delete in it. */
+async function choose(section: string, name: string, item: 'View' | 'Edit' | 'Delete') {
+	await fireEvent.click(optionsButton(section, name));
+	await fireEvent.click(within(menu(name)).getByRole('menuitem', { name: item }));
+}
+/** An arrow key on a handle: how a row is moved without a pointer. */
+async function arrow(grip: HTMLElement, direction: 'up' | 'down') {
+	grip.focus();
+	await fireEvent.keyDown(grip, { key: direction === 'up' ? 'ArrowUp' : 'ArrowDown' });
+}
+/** Let what the last press started finish (a move is not sent while another is on its way). */
+const settle = () => new Promise((r) => setTimeout(r, 10));
+
+/** The height each row is given by `layOut`. */
+const ROW = 40;
+const sortRows = (section: string) => [...region(section).querySelectorAll<HTMLElement>('[data-sort-id]')];
+/** jsdom lays nothing out: stack the rows of a list from the top of the page, 40px each. */
+function layOut(section: string) {
+	sortRows(section).forEach((row, i) => {
+		const top = i * ROW;
+		row.getBoundingClientRect = () =>
+			({ top, bottom: top + ROW, left: 0, right: 300, width: 300, height: ROW, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+	});
+}
+const sortRow = (section: string, name: string) => handle(section, name).closest<HTMLElement>('[data-sort-id]')!;
+/** Press a row's handle and carry it to `ratio` of the way down another row (0 its top, 1 its bottom). */
+async function carry(section: string, name: string, onto: string, ratio: number) {
+	layOut(section);
+	const from = sortRow(section, name).getBoundingClientRect();
+	const to = sortRow(section, onto).getBoundingClientRect();
+	const y = to.top + to.height * ratio;
+	await fireEvent.pointerDown(handle(section, name), { pointerId: 1, button: 0, clientX: 10, clientY: from.top + from.height / 2 });
+	await fireEvent.pointerMove(window, { pointerId: 1, clientX: 10, clientY: y });
+	return y;
+}
+/** Drag a row by its handle and let it go on another. */
+async function drag(section: string, name: string, onto: string, ratio: number) {
+	const y = await carry(section, name, onto, ratio);
+	await fireEvent.pointerUp(window, { pointerId: 1, clientX: 10, clientY: y });
 }
 
 // Each test below that carries a "was:" note is one of the rules page's
@@ -331,14 +387,95 @@ describe('Folders & labels: the rules', () => {
 		page([a, b, c]);
 		await openAllRules();
 
-		await fireEvent.click(ruleRow('C').getByRole('button', { name: 'Move C up' }));
+		await arrow(ruleHandle('C'), 'up');
 		await waitFor(() => expect(listed()).toEqual(['A', 'C', 'B']));
 		expect(writes()).toEqual([{ method: 'POST', url: '/api/rules/reorder', body: { ids: ['a', 'c', 'b'] } }]);
 
-		await fireEvent.click(ruleRow('A').getByRole('button', { name: 'Move A down' }));
+		await arrow(ruleHandle('A'), 'down');
 		await waitFor(() => expect(listed()).toEqual(['C', 'A', 'B']));
-		expect((ruleRow('C').getByRole('button', { name: 'Move C up' }) as HTMLButtonElement).disabled).toBe(true);
-		expect((ruleRow('B').getByRole('button', { name: 'Move B down' }) as HTMLButtonElement).disabled).toBe(true);
+		expect(writes()[1]).toEqual({ method: 'POST', url: '/api/rules/reorder', body: { ids: ['c', 'a', 'b'] } });
+
+		// The first has nowhere to go up, nor the last down: nothing is sent.
+		await arrow(ruleHandle('C'), 'up');
+		await arrow(ruleHandle('B'), 'down');
+		await settle();
+		expect(writes()).toHaveLength(2);
+		expect(listed()).toEqual(['C', 'A', 'B']);
+	});
+
+	it('has a handle on each rule and no Move buttons', async () => {
+		page([base('a', 'A'), base('b', 'B'), base('', '', { id: 'u' })]);
+		await openAllRules();
+		const names = within(allRules())
+			.getAllByRole('button', { name: /^Reorder / })
+			.map((b) => b.getAttribute('aria-label'));
+		expect(names).toEqual(['Reorder A', 'Reorder B', 'Reorder Untitled rule']);
+		for (const li of allRules().querySelectorAll('li')) {
+			expect(li.hasAttribute('data-sort-id')).toBe(true);
+			expect(li.querySelector('[data-sort-handle]')).toBe(li.firstElementChild);
+			// The handle, the name and what it does, then the switch.
+			expect(li.lastElementChild?.getAttribute('role')).toBe('switch');
+		}
+		expect(screen.queryByRole('button', { name: /^Move / })).toBeNull();
+	});
+
+	it('drags a rule to a new place, leaving a rule that needs attention where it is', async () => {
+		const f = { ...flagged, id: 'f' };
+		page([base('a', 'A'), f, base('b', 'B'), base('c', 'C')]);
+		await openAllRules();
+
+		// Onto the top half of the first: before it.
+		await drag('All rules, in order', 'C', 'A', 0.25);
+		await waitFor(() => expect(listed()).toEqual(['C', 'A', 'B']));
+		expect(writes()).toEqual([{ method: 'POST', url: '/api/rules/reorder', body: { ids: ['c', 'f', 'a', 'b'] } }]);
+
+		// Onto the bottom half of the last: after it.
+		await drag('All rules, in order', 'C', 'B', 0.75);
+		await waitFor(() => expect(listed()).toEqual(['A', 'B', 'C']));
+		expect(writes()[1].body).toEqual({ ids: ['a', 'f', 'b', 'c'] });
+		expect(document.querySelector('.sort-ghost, [data-sort-dragging], [data-sort-drop]')).toBeNull();
+	});
+
+	it('sends nothing for a rule let go where it already is, or when the drag is called off with Escape', async () => {
+		page([base('a', 'A'), base('b', 'B'), base('c', 'C')]);
+		await openAllRules();
+		// After the one before it, and before the one after it: the same place.
+		await drag('All rules, in order', 'B', 'A', 0.75);
+		await drag('All rules, in order', 'B', 'C', 0.25);
+
+		await carry('All rules, in order', 'A', 'C', 0.75);
+		expect(sortRow('All rules, in order', 'A').hasAttribute('data-sort-dragging')).toBe(true);
+		expect(sortRow('All rules, in order', 'C').getAttribute('data-sort-drop')).toBe('after');
+		expect(document.querySelector('.sort-ghost')).toBeTruthy();
+		await fireEvent.keyDown(document.body, { key: 'Escape' });
+		await fireEvent.pointerUp(window, { pointerId: 1, clientX: 10, clientY: 110 });
+		await settle();
+		expect(writes()).toEqual([]);
+		expect(listed()).toEqual(['A', 'B', 'C']);
+		expect(document.querySelector('.sort-ghost, [data-sort-dragging], [data-sort-drop]')).toBeNull();
+	});
+
+	it('shows what the server refused about a new order above the list', async () => {
+		page([base('a', 'A'), base('b', 'B')]);
+		await openAllRules();
+		const realFetch = globalThis.fetch;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) =>
+				url === '/api/rules/reorder'
+					? new Response(JSON.stringify({ error: 'Those are not your rules' }), { status: 400 })
+					: realFetch(url, init)
+			)
+		);
+		await arrow(ruleHandle('B'), 'up');
+		await waitFor(() => expect(within(allRules()).getByRole('alert').textContent).toBe('Those are not your rules'));
+		expect(listed()).toEqual(['A', 'B']);
+	});
+
+	it('has nothing to drag when there is one rule', async () => {
+		page([exact]);
+		await openAllRules();
+		expect((ruleHandle('Receipts') as HTMLButtonElement).disabled).toBe(true);
 	});
 
 	// was: moves a rule past the next rule that runs, a split rule’s second half included
@@ -347,7 +484,7 @@ describe('Folders & labels: the rules', () => {
 		const a2 = base('a~2', 'A too', { target: { kind: 'folder', mailboxId: 'RCPT' }, stop: true, attention: 'split', note: { splitInto: 2 } });
 		page([a, a2, base('b', 'B')]);
 		await openAllRules();
-		await fireEvent.click(ruleRow('B').getByRole('button', { name: 'Move B up' }));
+		await arrow(ruleHandle('B'), 'up');
 		await waitFor(() => expect(writes()).toHaveLength(1));
 		expect(writes()[0].body).toEqual({ ids: ['a', 'b', 'a~2'] });
 	});
@@ -357,10 +494,14 @@ describe('Folders & labels: the rules', () => {
 		const f = { ...flagged, id: 'f' };
 		page([base('a', 'A'), f, base('b', 'B')]);
 		await openAllRules();
-		expect(within(attentionList()).queryByRole('button', { name: /Move/ })).toBeNull();
+		expect(within(attentionList()).queryByRole('button', { name: /Reorder|Move/ })).toBeNull();
+		expect(attentionList().querySelector('[data-sort-id], [data-sort-handle]')).toBeNull();
 		expect(within(allRules()).queryByText('Invoices')).toBeNull();
-		expect((ruleRow('A').getByRole('button', { name: 'Move A up' }) as HTMLButtonElement).disabled).toBe(true);
-		await fireEvent.click(ruleRow('B').getByRole('button', { name: 'Move B up' }));
+		// A is the first of the rules listed: up sends nothing.
+		await arrow(ruleHandle('A'), 'up');
+		await settle();
+		expect(writes()).toEqual([]);
+		await arrow(ruleHandle('B'), 'up');
 		await waitFor(() => expect(writes()).toHaveLength(1));
 		expect(writes()[0].body).toEqual({ ids: ['b', 'f', 'a'] });
 	});
@@ -380,7 +521,7 @@ describe('Folders & labels: the rules', () => {
 	});
 
 	// was: disables moving while a change is being saved
-	it('disables moving while a change is being saved', async () => {
+	it('moves nothing more while a change is being saved, with the handles still there to focus', async () => {
 		page([base('a', 'A'), base('b', 'B'), base('c', 'C')]);
 		await openAllRules();
 		let release!: () => void;
@@ -392,11 +533,21 @@ describe('Folders & labels: the rules', () => {
 				return realFetch(url, init);
 			})
 		);
-		await fireEvent.click(ruleRow('B').getByRole('button', { name: 'Move B up' }));
-		await waitFor(() => expect((ruleRow('C').getByRole('button', { name: 'Move C up' }) as HTMLButtonElement).disabled).toBe(true));
-		expect((ruleRow('C').getByRole('switch') as HTMLButtonElement).disabled).toBe(true);
+		const reorders = () => server.calls.filter((c) => c.url === '/api/rules/reorder');
+		await arrow(ruleHandle('B'), 'up');
+		await waitFor(() => expect((ruleRow('C').getByRole('switch') as HTMLButtonElement).disabled).toBe(true));
+		// The handles are not switched off: one that is loses the focus, and
+		// the key that moved the row couldn't be pressed again.
+		expect((ruleHandle('C') as HTMLButtonElement).disabled).toBe(false);
+		expect((ruleHandle('B') as HTMLButtonElement).disabled).toBe(false);
+		// Neither the keys nor a drag move anything meanwhile.
+		await fireEvent.keyDown(ruleHandle('C'), { key: 'ArrowUp' });
+		await drag('All rules, in order', 'C', 'A', 0.25);
+		expect(document.querySelector('.sort-ghost')).toBeNull();
 		release();
-		await waitFor(() => expect((ruleRow('C').getByRole('button', { name: 'Move C up' }) as HTMLButtonElement).disabled).toBe(false));
+		await waitFor(() => expect((ruleRow('C').getByRole('switch') as HTMLButtonElement).disabled).toBe(false));
+		expect(listed()).toEqual(['B', 'A', 'C']);
+		expect(reorders()).toHaveLength(1);
 	});
 
 	// was: saves, then applies the saved rule by its id
@@ -596,29 +747,96 @@ describe('Folders & labels: Needs your attention', () => {
 });
 
 describe('Folders & labels: folders and labels with their rules', () => {
-	it('shows the folders as a tree, the labels as a list, and the system folders apart', () => {
+	it('shows the folders as a tree, the labels as a list, and the system folders apart', async () => {
 		page([]);
+		expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Folders & labels');
 		const folders = within(region('Folders'));
 		expect(folders.getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Receipts', 'Projects', 'Clients']);
 		const indent = (name: string) => folders.getByRole('group', { name }).style.getPropertyValue('--indent');
-		expect([indent('Receipts'), indent('Projects'), indent('Clients')]).toEqual(['0px', '0px', '16px']);
-		expect(folders.getByText('2 unread')).toBeTruthy();
+		expect([indent('Receipts'), indent('Projects'), indent('Clients')]).toEqual(['0px', '0px', '24px']);
 
 		const labelRows = within(region('Labels')).getAllByRole('group').map((g) => g.getAttribute('aria-label'));
 		expect(labelRows).toEqual(['Work', 'Home']);
+
+		// Folded until asked for.
+		const fold = screen.getByRole('button', { name: 'System folders' });
+		expect(fold.closest('h2')?.id).toBe('system-heading');
+		expect(fold.getAttribute('aria-expanded')).toBe('false');
+		expect(within(region('System folders')).queryByRole('group')).toBeNull();
+		await fireEvent.click(fold);
+		expect(fold.getAttribute('aria-expanded')).toBe('true');
 		const system = within(region('System folders')).getAllByRole('group').map((g) => g.getAttribute('aria-label'));
 		expect(system).toEqual(['Inbox', 'Sent', 'Trash']);
-		// Not editable, and only Trash of these can be filed into.
-		expect(within(region('System folders')).queryByRole('button', { name: /Edit|Delete/ })).toBeNull();
-		expect(mailboxRow('System folders', 'Inbox').queryByRole('button', { expanded: false })).toBeNull();
-		expect(mailboxRow('System folders', 'Trash').getByRole('button', { expanded: false })).toBeTruthy();
+		// Not editable or movable, and only Trash of these can be filed into.
+		expect(within(region('System folders')).queryByRole('button', { name: /Edit|Delete|Reorder|options/ })).toBeNull();
+		expect(region('System folders').querySelector('[data-sort-id], [data-sort-handle], [aria-haspopup]')).toBeNull();
+		expect(rowOpener('System folders', 'Inbox')).toBeNull();
+		expect(rowOpener('System folders', 'Trash')?.getAttribute('aria-expanded')).toBe('false');
+		// The name says which it is: its role isn't spelled out beside it.
+		expect(mailboxGroup('System folders', 'Trash').textContent?.trim()).toBe('Trash');
+		await fireEvent.click(fold);
+		expect(within(region('System folders')).queryByRole('group')).toBeNull();
 	});
 
-	it('says how many rules file into a folder or label', () => {
+	it('names its sections, and what links elsewhere land on', () => {
+		page([flagged]);
+		for (const [name, id] of [
+			['Needs your attention', 'attention'],
+			['Folders', 'folders'],
+			['Labels', 'labels'],
+			['All rules, in order', 'rules'],
+			['System folders', 'system']
+		]) {
+			expect(region(name).id).toBe(id);
+			expect(region(name).getAttribute('aria-labelledby')).toBe(`${id}-heading`);
+			expect(document.getElementById(`${id}-heading`)?.tagName).toBe('H2');
+		}
+		expect(within(attentionList()).getByText('An upgrade switched these rules off.')).toBeTruthy();
+	});
+
+	it('says so when there are no folders, labels or rules', async () => {
+		stubFetch([]);
+		render(Page, { props: { data: { rules: [], labels: [], mailboxes: mailboxes.filter((m) => m.role), mailboxMeta: {} } } as never });
+		expect(within(region('Folders')).getByText('No folders')).toBeTruthy();
+		expect(within(region('Labels')).getByText('No labels')).toBeTruthy();
+		expect(document.querySelector('[data-sort-id]')).toBeNull();
+		await openAllRules();
+		expect(within(allRules()).getByText('No rules')).toBeTruthy();
+		expect(within(allRules()).getByText('Top first. Labels add up; the first rule that moves a message decides its folder.')).toBeTruthy();
+	});
+
+	it('says how many rules file into a folder or label, and nothing else beside its name', () => {
 		page([exact, base('r2', 'More receipts', { target: { kind: 'folder', mailboxId: 'RCPT' } }), splitRow]);
-		expect(mailboxRow('Folders', 'Receipts').getByText((_, el) => /^·\s?2 rules$/.test(el?.textContent ?? ''))).toBeTruthy();
+		expect(mailboxRow('Folders', 'Receipts').getByText('2 rules')).toBeTruthy();
 		expect(mailboxRow('Labels', 'Work').getByText('1 rule')).toBeTruthy();
 		expect(mailboxRow('Labels', 'Home').queryByText(/rule/)).toBeNull();
+		// Receipts has two unread: not said here, so nothing to set the count apart from.
+		expect(rowOpener('Folders', 'Receipts')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Receipts 2 rules');
+		expect(document.body.textContent).not.toContain('unread');
+		expect(document.body.textContent).not.toContain('·');
+	});
+
+	it('gives each folder and label a handle and one menu, and no Move, Edit or Delete buttons of its own', () => {
+		page([]);
+		for (const [section, names] of [
+			['Folders', ['Receipts', 'Projects', 'Clients']],
+			['Labels', ['Work', 'Home']]
+		] as const) {
+			for (const name of names) {
+				const grip = handle(section, name);
+				expect(grip.hasAttribute('data-sort-handle')).toBe(true);
+				expect(grip.closest('[data-sort-id]')?.parentElement).toBe(mailboxGroup(section, name));
+				const options = optionsButton(section, name);
+				expect(options.getAttribute('aria-haspopup')).toBe('menu');
+				expect(options.getAttribute('aria-expanded')).toBe('false');
+			}
+			expect(sortRows(section).map((row) => row.dataset.sortId)).toEqual(
+				section === 'Folders' ? ['RCPT', 'PRJ', 'CLI'] : ['WORK', 'HOME']
+			);
+			expect(within(region(section)).queryByRole('button', { name: /^(Move|Edit|Delete|View) / })).toBeNull();
+			expect(within(region(section)).queryByRole('link')).toBeNull();
+		}
+		expect(screen.queryByRole('menu')).toBeNull();
 	});
 
 	it('lists exactly the rules that file into a row when it is opened', async () => {
@@ -636,7 +854,7 @@ describe('Folders & labels: folders and labels with their rules', () => {
 		await openRow('System folders', 'Trash');
 		expect(names('System folders', 'Trash')).toEqual(['Spam words']);
 		await openRow('Labels', 'Home');
-		expect(mailboxRow('Labels', 'Home').getByText('No rules file mail here yet.')).toBeTruthy();
+		expect(mailboxRow('Labels', 'Home').getByText('No rules')).toBeTruthy();
 	});
 
 	it('opens a rule from its folder, and switches it from there', async () => {
@@ -682,9 +900,13 @@ describe('Folders & labels: folders and labels with their rules', () => {
 
 	it('shows a rule that files nowhere only under "All rules, in order"', async () => {
 		page([base('n', 'Mark shop read'), base('s', 'Stop here', { markRead: false, stop: true })]);
+		await openSystemFolders();
 		for (const section of ['Folders', 'Labels', 'System folders']) {
-			for (const button of within(region(section)).queryAllByRole('button', { expanded: false })) await fireEvent.click(button);
+			const groups = within(region(section)).getAllByRole('group');
+			for (const group of groups) await fireEvent.click(rowOpener(section, group.getAttribute('aria-label')!) ?? group);
 		}
+		// Every row that can hold rules is open: Receipts, Projects, Clients, Work, Home and Trash.
+		expect(screen.getAllByRole('button', { name: 'Add rule' })).toHaveLength(6);
 		expect(screen.queryByText('Mark shop read')).toBeNull();
 		await openAllRules();
 		expect(listed()).toEqual(['Mark shop read', 'Stop here']);
@@ -739,7 +961,7 @@ describe('Folders & labels: changing folders and labels', () => {
 
 	it('edits a folder: its name, its place, its color and its icon', async () => {
 		page([]);
-		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Edit Receipts' }));
+		await choose('Folders', 'Receipts', 'Edit');
 		await fireEvent.input(within(dialog()).getByLabelText('Folder name'), { target: { value: 'Bills' } });
 		await fireEvent.change(within(dialog()).getByRole('combobox'), { target: { value: 'PRJ' } });
 		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Teal' }));
@@ -756,7 +978,7 @@ describe('Folders & labels: changing folders and labels', () => {
 
 	it('edits a label: renamed through /api/folders, and its color cleared with "No color"', async () => {
 		page([]);
-		await fireEvent.click(mailboxRow('Labels', 'Work').getByRole('button', { name: 'Edit Work' }));
+		await choose('Labels', 'Work', 'Edit');
 		await fireEvent.input(within(dialog()).getByLabelText('Label name'), { target: { value: 'Office' } });
 		await fireEvent.click(within(dialog()).getByRole('button', { name: 'No color' }));
 		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Save' }));
@@ -769,7 +991,7 @@ describe('Folders & labels: changing folders and labels', () => {
 		const asked = vi.fn(() => true);
 		vi.stubGlobal('confirm', asked);
 		page([exact, base('kept', 'Receipts read', { target: { kind: 'folder', mailboxId: 'RCPT' }, markRead: true })]);
-		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Delete Receipts' }));
+		await choose('Folders', 'Receipts', 'Delete');
 		expect(asked).toHaveBeenCalledWith(
 			'Delete "Receipts"? Messages inside will not be deleted — move them first if you want to keep them somewhere else. ' +
 				'This also deletes 1 rule that files into it. 1 other rule will keep marking mail as read (or starring, or stopping later rules) without filing it.'
@@ -785,20 +1007,20 @@ describe('Folders & labels: changing folders and labels', () => {
 		const asked = vi.fn(() => true);
 		vi.stubGlobal('confirm', asked);
 		page([splitRow]);
-		await fireEvent.click(mailboxRow('Labels', 'Work').getByRole('button', { name: 'Delete Work' }));
+		await choose('Labels', 'Work', 'Delete');
 		expect(asked).toHaveBeenCalledWith('Delete "Work"? Emails tagged with this label will not be deleted. This also deletes 1 rule that files into it.');
 		await waitFor(() => expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'delete', id: 'WORK' } }]));
 
 		asked.mockClear();
 		server.calls = [];
-		await fireEvent.click(mailboxRow('Labels', 'Home').getByRole('button', { name: 'Delete Home' }));
+		await choose('Labels', 'Home', 'Delete');
 		expect(asked).toHaveBeenCalledWith('Delete "Home"? Emails tagged with this label will not be deleted.');
 	});
 
 	it('sends nothing when a delete is called off', async () => {
 		vi.stubGlobal('confirm', () => false);
 		page([]);
-		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Delete Receipts' }));
+		await choose('Folders', 'Receipts', 'Delete');
 		await new Promise((r) => setTimeout(r, 10));
 		expect(folderCalls()).toEqual([]);
 	});
@@ -807,27 +1029,220 @@ describe('Folders & labels: changing folders and labels', () => {
 		vi.stubGlobal('confirm', () => true);
 		app.page.url = new URL('http://localhost/folder/PRJ');
 		page([]);
-		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Delete Receipts' }));
+		await choose('Folders', 'Receipts', 'Delete');
 		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalled());
 		expect(nav.goto).not.toHaveBeenCalled();
-		await fireEvent.click(mailboxRow('Folders', 'Projects').getByRole('button', { name: 'Delete Projects' }));
+		await choose('Folders', 'Projects', 'Delete');
 		await waitFor(() => expect(nav.goto).toHaveBeenCalledWith('/inbox'));
 	});
 
 	it('moves a folder and a label one place up or down among their neighbours', async () => {
 		page([]);
-		expect((mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Move Receipts up' }) as HTMLButtonElement).disabled).toBe(true);
-		expect((mailboxRow('Folders', 'Clients').getByRole('button', { name: 'Move Clients down' }) as HTMLButtonElement).disabled).toBe(true);
-		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Move Receipts down' }));
+		// The first has nowhere to go up, nor the last of its level down: nothing is sent.
+		await arrow(handle('Folders', 'Receipts'), 'up');
+		await arrow(handle('Folders', 'Projects'), 'down');
+		await arrow(handle('Folders', 'Clients'), 'up');
+		await arrow(handle('Folders', 'Clients'), 'down');
+		await arrow(handle('Labels', 'Work'), 'up');
+		await arrow(handle('Labels', 'Home'), 'down');
+		await settle();
+		expect(server.calls).toEqual([]);
+		expect(nav.invalidateAll).not.toHaveBeenCalled();
+
+		await arrow(handle('Folders', 'Receipts'), 'down');
 		await waitFor(() =>
 			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'RCPT', parentId: null, beforeId: null } }])
 		);
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalledTimes(1));
+		await settle();
 		server.calls = [];
-		await fireEvent.click(mailboxRow('Labels', 'Home').getByRole('button', { name: 'Move Home up' }));
+		await arrow(handle('Labels', 'Home'), 'up');
 		await waitFor(() =>
 			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'HOME', parentId: 'LBLS', beforeId: 'WORK' } }])
 		);
-		expect(nav.invalidateAll).toHaveBeenCalled();
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalledTimes(2));
+		await settle();
+		server.calls = [];
+		await arrow(handle('Folders', 'Projects'), 'up');
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'PRJ', parentId: null, beforeId: 'RCPT' } }])
+		);
+	});
+
+	it('moves a folder by dragging it before or after another', async () => {
+		page([]);
+		// Onto the top quarter of Receipts: before it.
+		await drag('Folders', 'Projects', 'Receipts', 0.1);
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'PRJ', parentId: null, beforeId: 'RCPT' } }])
+		);
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalledTimes(1));
+		expect(document.querySelector('.sort-ghost, [data-sort-dragging], [data-sort-drop]')).toBeNull();
+		await settle();
+
+		// Onto the bottom quarter of Projects: after it, which is last.
+		server.calls = [];
+		await drag('Folders', 'Receipts', 'Projects', 0.9);
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'RCPT', parentId: null, beforeId: null } }])
+		);
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalledTimes(2));
+		await settle();
+
+		// Beside a folder inside another: into that one, at that place.
+		server.calls = [];
+		await drag('Folders', 'Receipts', 'Clients', 0.1);
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'RCPT', parentId: 'PRJ', beforeId: 'CLI' } }])
+		);
+	});
+
+	it('puts a folder inside another when it is let go on its middle', async () => {
+		page([]);
+		await carry('Folders', 'Receipts', 'Projects', 0.5);
+		expect(sortRow('Folders', 'Receipts').hasAttribute('data-sort-dragging')).toBe(true);
+		expect(sortRow('Folders', 'Projects').getAttribute('data-sort-drop')).toBe('into');
+		expect(writes()).toEqual([]);
+		await fireEvent.pointerUp(window, { pointerId: 1, clientX: 10, clientY: 60 });
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'RCPT', parentId: 'PRJ', beforeId: null } }])
+		);
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalledTimes(1));
+		expect(document.querySelector('.sort-ghost, [data-sort-dragging], [data-sort-drop]')).toBeNull();
+		await settle();
+
+		// A folder already inside one goes into another the same way.
+		server.calls = [];
+		await drag('Folders', 'Clients', 'Receipts', 0.5);
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'CLI', parentId: 'RCPT', beforeId: null } }])
+		);
+	});
+
+	it('takes a folder out of another when it is dragged beside a top-level one', async () => {
+		page([]);
+		await drag('Folders', 'Clients', 'Receipts', 0.1);
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'CLI', parentId: null, beforeId: 'RCPT' } }])
+		);
+	});
+
+	it('puts a folder last at the top level when it is let go under the whole list', async () => {
+		// The last row is Clients, inside Projects: under the list is not
+		// "inside Projects".
+		page([]);
+		await drag('Folders', 'Receipts', 'Clients', 2);
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'RCPT', parentId: null, beforeId: null } }])
+		);
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalledTimes(1));
+		await settle();
+
+		// The same takes a nested folder out to the top level.
+		server.calls = [];
+		await drag('Folders', 'Clients', 'Clients', 2);
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'CLI', parentId: null, beforeId: null } }])
+		);
+		await settle();
+
+		// A folder that is last at the top level already stays where it is.
+		server.calls = [];
+		await drag('Folders', 'Projects', 'Clients', 2);
+		await settle();
+		expect(folderCalls()).toEqual([]);
+	});
+
+	it('will not put a folder inside itself or one of its own', async () => {
+		page([]);
+		for (const ratio of [0.1, 0.5, 0.9]) {
+			await carry('Folders', 'Projects', 'Clients', ratio);
+			// Carried, with nowhere marked to land.
+			expect(document.querySelector('.sort-ghost')).toBeTruthy();
+			expect(document.querySelector('[data-sort-drop]')).toBeNull();
+			await fireEvent.pointerUp(window, { pointerId: 1, clientX: 10, clientY: 100 });
+		}
+		await settle();
+		expect(server.calls).toEqual([]);
+		expect(nav.invalidateAll).not.toHaveBeenCalled();
+		expect(document.querySelector('.sort-ghost, [data-sort-dragging]')).toBeNull();
+	});
+
+	it('moves a label by dragging it before or after another, never inside it', async () => {
+		page([]);
+		// The middle of a label is not a place of its own: its halves are before and after.
+		await carry('Labels', 'Home', 'Work', 0.4);
+		expect(sortRow('Labels', 'Work').getAttribute('data-sort-drop')).toBe('before');
+		await fireEvent.pointerUp(window, { pointerId: 1, clientX: 10, clientY: 16 });
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'HOME', parentId: 'LBLS', beforeId: 'WORK' } }])
+		);
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalledTimes(1));
+		await settle();
+
+		server.calls = [];
+		await carry('Labels', 'Work', 'Home', 0.6);
+		expect(sortRow('Labels', 'Home').getAttribute('data-sort-drop')).toBe('after');
+		await fireEvent.pointerUp(window, { pointerId: 1, clientX: 10, clientY: 64 });
+		await waitFor(() =>
+			expect(folderCalls()).toEqual([{ method: 'POST', url: '/api/folders', body: { action: 'reorder', id: 'WORK', parentId: 'LBLS', beforeId: null } }])
+		);
+	});
+
+	it('opens the folder from View in its menu', async () => {
+		page([]);
+		await choose('Folders', 'Clients', 'View');
+		expect(nav.goto).toHaveBeenCalledWith('/folder/CLI');
+		await choose('Labels', 'Home', 'View');
+		expect(nav.goto).toHaveBeenLastCalledWith('/folder/HOME');
+		expect(writes()).toEqual([]);
+		expect(screen.queryByRole('menu')).toBeNull();
+	});
+
+	it('offers View, Edit and Delete in a row’s menu, and closes it on Escape with focus back on its button', async () => {
+		const asked = vi.fn(() => false);
+		vi.stubGlobal('confirm', asked);
+		page([]);
+		const options = optionsButton('Folders', 'Receipts');
+		await fireEvent.click(options);
+		expect(options.getAttribute('aria-expanded')).toBe('true');
+		const list = menu('Receipts');
+		expect(list.parentElement).toBe(document.body);
+		const items = within(list).getAllByRole('menuitem');
+		expect(items.map((item) => item.textContent?.trim())).toEqual(['View', 'Edit', 'Delete']);
+		await waitFor(() => expect(document.activeElement).toBe(items[0]));
+
+		// The arrows walk the menu, round and round; they move no folder.
+		await fireEvent.keyDown(items[0], { key: 'ArrowDown' });
+		expect(document.activeElement).toBe(items[1]);
+		await fireEvent.keyDown(items[1], { key: 'ArrowUp' });
+		await fireEvent.keyDown(items[0], { key: 'ArrowUp' });
+		expect(document.activeElement).toBe(items[2]);
+
+		await fireEvent.keyDown(items[2], { key: 'Escape' });
+		expect(screen.queryByRole('menu')).toBeNull();
+		expect(options.getAttribute('aria-expanded')).toBe('false');
+		expect(document.activeElement).toBe(options);
+		expect(asked).not.toHaveBeenCalled();
+		expect(server.calls).toEqual([]);
+		expect(nav.goto).not.toHaveBeenCalled();
+
+		// One menu at a time: a press elsewhere closes it.
+		await fireEvent.click(options);
+		await fireEvent.pointerDown(document.body);
+		expect(screen.queryByRole('menu')).toBeNull();
+	});
+
+	it('closes the menu once something is chosen from it, with focus back on its button', async () => {
+		vi.stubGlobal('confirm', () => false);
+		page([]);
+		await choose('Folders', 'Receipts', 'Delete');
+		expect(screen.queryByRole('menu')).toBeNull();
+		expect(optionsButton('Folders', 'Receipts').getAttribute('aria-expanded')).toBe('false');
+		expect(document.activeElement).toBe(optionsButton('Folders', 'Receipts'));
+		await choose('Labels', 'Home', 'View');
+		expect(screen.queryByRole('menu')).toBeNull();
+		expect(document.activeElement).toBe(optionsButton('Labels', 'Home'));
 	});
 
 	it('shows what the server refused in the page, never in an alert', async () => {
@@ -836,14 +1251,42 @@ describe('Folders & labels: changing folders and labels', () => {
 		vi.stubGlobal('confirm', () => true);
 		page([]);
 		server.folderError = 'Remove labels inside this folder first';
-		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Delete Receipts' }));
+		await choose('Folders', 'Receipts', 'Delete');
 		await waitFor(() => expect(within(region('Folders')).getByRole('alert').textContent).toBe('Remove labels inside this folder first'));
 
 		server.folderError = 'Labels stay under Labels';
-		await fireEvent.click(mailboxRow('Labels', 'Home').getByRole('button', { name: 'Move Home up' }));
+		await arrow(handle('Labels', 'Home'), 'up');
 		await waitFor(() => expect(within(region('Labels')).getByRole('alert').textContent).toBe('Labels stay under Labels'));
+		await settle();
+
+		// A drag that is refused says so in the same place, and the next change clears it.
+		server.folderError = 'That folder is not at the destination';
+		await drag('Folders', 'Receipts', 'Projects', 0.5);
+		await waitFor(() => expect(within(region('Folders')).getByRole('alert').textContent).toBe('That folder is not at the destination'));
 		expect(nav.invalidateAll).not.toHaveBeenCalled();
 		expect(alert).not.toHaveBeenCalled();
+		await settle();
+
+		server.folderError = null;
+		await drag('Folders', 'Receipts', 'Projects', 0.5);
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalled());
+		expect(within(region('Folders')).queryByRole('alert')).toBeNull();
+		expect(within(region('Labels')).getByRole('alert').textContent).toBe('Labels stay under Labels');
+	});
+
+	it('says the move failed when the server gives no reason', async () => {
+		page([]);
+		const realFetch = globalThis.fetch;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) => (url === '/api/folders' ? Promise.reject(new Error('offline')) : realFetch(url, init)))
+		);
+		await arrow(handle('Folders', 'Receipts'), 'down');
+		await waitFor(() => expect(within(region('Folders')).getByRole('alert').textContent).toBe('The folder couldn’t be moved. Try again.'));
+		await settle();
+		await drag('Labels', 'Home', 'Work', 0.2);
+		await waitFor(() => expect(within(region('Labels')).getByRole('alert').textContent).toBe('The label couldn’t be moved. Try again.'));
+		expect(nav.invalidateAll).not.toHaveBeenCalled();
 	});
 });
 
@@ -876,7 +1319,7 @@ const addRuleTo = async (section: string, row: string) => {
 };
 
 describe('Folders & labels: a label is shown by its name', () => {
-	it('names a label by its name, not its mailbox name, in its row, its buttons and its delete question', async () => {
+	it('names a label by its name, not its mailbox name, in its row, its handle, its menu and its delete question', async () => {
 		const asked = vi.fn(() => false);
 		vi.stubGlobal('confirm', asked);
 		stubFetch([]);
@@ -893,11 +1336,14 @@ describe('Folders & labels: a label is shown by its name', () => {
 		expect(within(region('Labels')).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Work', 'Home Stuff']);
 		const row = mailboxRow('Labels', 'Home Stuff');
 		expect(row.getByText('Home Stuff')).toBeTruthy();
-		for (const name of ['Move Home Stuff up', 'Move Home Stuff down', 'Edit Home Stuff', 'Delete Home Stuff']) {
+		for (const name of ['Reorder Home Stuff', 'Home Stuff options']) {
 			expect(row.getByRole('button', { name })).toBeTruthy();
 		}
 		await openRow('Labels', 'Home Stuff');
-		await fireEvent.click(row.getByRole('button', { name: 'Delete Home Stuff' }));
+		await fireEvent.click(optionsButton('Labels', 'Home Stuff'));
+		expect(menu('Home Stuff')).toBeTruthy();
+		expect(document.body.innerHTML).not.toContain('home-stuff');
+		await fireEvent.click(within(menu('Home Stuff')).getByRole('menuitem', { name: 'Delete' }));
 		expect(asked).toHaveBeenCalledWith('Delete "Home Stuff"? Emails tagged with this label will not be deleted.');
 		expect(document.body.innerHTML).not.toContain('home-stuff');
 	});
@@ -1102,58 +1548,58 @@ describe('Folders & labels: focus in and out of the dialogs', () => {
 });
 
 describe('Folders & labels: rows on a phone', () => {
-	it('keeps Edit and Delete in the row on a wide screen, and inside the opened row on a phone', async () => {
+	it('keeps View, Edit and Delete in the row’s one menu at every width, with nothing more inside the opened row', async () => {
 		const asked = vi.fn(() => false);
 		vi.stubGlobal('confirm', asked);
 		page([]);
-		for (const [section, row, noun] of [
-			['Folders', 'Receipts', 'folder'],
-			['Labels', 'Work', 'label']
+		for (const [section, row] of [
+			['Folders', 'Receipts'],
+			['Labels', 'Work']
 		] as const) {
-			for (const verb of ['Edit', 'Delete']) {
-				expect(mailboxRow(section, row).getByRole('button', { name: `${verb} ${row}` }).classList).toContain('max-md:hidden');
+			// Neither the handle nor the menu is hidden at any width.
+			for (const button of [handle(section, row), optionsButton(section, row)]) {
+				expect(button.className).not.toMatch(/(^|[\s:])hidden(\s|$)/);
+				expect(button.closest('.md\\:hidden, .max-md\\:hidden, .hidden')).toBeNull();
 			}
-			expect(mailboxRow(section, row).queryByRole('button', { name: `Edit ${noun}` })).toBeNull();
 			await openRow(section, row);
-			for (const verb of ['Edit', 'Delete']) {
-				const button = mailboxRow(section, row).getByRole('button', { name: `${verb} ${noun}` });
-				expect(button.closest('.md\\:hidden')).toBeTruthy();
-				// Below "Add rule".
-				const add = mailboxRow(section, row).getByRole('button', { name: 'Add rule' });
-				expect(add.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-			}
+			// Opened, the row holds its rules and "Add rule": nothing to edit or delete it by.
+			expect(mailboxRow(section, row).getByRole('button', { name: 'Add rule' })).toBeTruthy();
+			expect(mailboxRow(section, row).queryByRole('button', { name: /^(Edit|Delete)/ })).toBeNull();
+			expect(mailboxGroup(section, row).querySelector('.md\\:hidden')).toBeNull();
+
+			await fireEvent.click(optionsButton(section, row));
+			const items = within(menu(row)).getAllByRole('menuitem') as HTMLButtonElement[];
+			expect(items.map((item) => item.textContent?.trim())).toEqual(['View', 'Edit', 'Delete']);
+			expect(items.map((item) => item.disabled)).toEqual([false, false, false]);
+			await fireEvent.keyDown(items[0], { key: 'Escape' });
 		}
-		await fireEvent.click(mailboxRow('Labels', 'Work').getByRole('button', { name: 'Delete label' }));
+		await choose('Labels', 'Work', 'Delete');
 		expect(asked).toHaveBeenCalledWith('Delete "Work"? Emails tagged with this label will not be deleted.');
 		await openRow('System folders', 'Trash');
-		expect(within(region('System folders')).queryByRole('button', { name: /Edit|Delete/ })).toBeNull();
+		expect(within(region('System folders')).queryByRole('button', { name: /Edit|Delete|options/ })).toBeNull();
 	});
 
-	it('edits a folder from inside its opened row', async () => {
+	it('edits a folder from its menu while its row is open', async () => {
 		Element.prototype.scrollTo = () => {};
 		vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
 		page([]);
 		await openRow('Folders', 'Receipts');
-		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Edit folder' }));
+		await choose('Folders', 'Receipts', 'Edit');
 		expect((within(dialog()).getByLabelText('Folder name') as HTMLInputElement).value).toBe('Receipts');
+		// Still open behind the dialog.
+		expect(rowOpener('Folders', 'Receipts')?.getAttribute('aria-expanded')).toBe('true');
 	});
 
-	it('indents 12px a level on a phone, and no deeper than four levels', () => {
+	it('indents 24px a level, 14px on a phone and no deeper than four levels there', () => {
 		const deep = [1, 2, 3, 4, 5, 6].map((n) => box(`L${n}`, `Level ${n}`, { parentId: n === 1 ? null : `L${n - 1}` }));
 		stubFetch([]);
 		render(Page, { props: { data: { rules: [], labels: [], mailboxes: [...mailboxes, ...deep], mailboxMeta: {} } } as never });
 		const groups = deep.map((m) => within(region('Folders')).getByRole('group', { name: m.name }));
-		expect(groups.map((g) => g.style.getPropertyValue('--indent'))).toEqual(['0px', '16px', '32px', '48px', '64px', '80px']);
-		expect(groups.map((g) => g.style.getPropertyValue('--indent-sm'))).toEqual(['0px', '12px', '24px', '36px', '48px', '48px']);
-		expect((groups[5].firstElementChild as HTMLElement).className).toContain('max-md:pl-(--indent-sm)');
-	});
-
-	it('puts the "·" before the rule count only beside the unread count, which a phone hides', () => {
-		page([exact, splitRow]);
-		const dot = mailboxRow('Folders', 'Receipts').getByText('·', { exact: false, selector: 'span span' });
-		expect(dot.classList).toContain('max-md:hidden');
-		expect(mailboxRow('Folders', 'Receipts').getByText('2 unread').className).toContain('max-md:hidden');
-		expect(within(region('Labels')).getByRole('group', { name: 'Work' }).textContent).not.toContain('·');
+		expect(groups.map((g) => g.style.getPropertyValue('--indent'))).toEqual(['0px', '24px', '48px', '72px', '96px', '120px']);
+		expect(groups.map((g) => g.style.getPropertyValue('--indent-sm'))).toEqual(['0px', '14px', '28px', '42px', '56px', '56px']);
+		const classes = (groups[5].firstElementChild as HTMLElement).className.split(/\s+/);
+		expect(classes).toContain('pl-[calc(0.5rem+var(--indent))]');
+		expect(classes).toContain('max-md:pl-[calc(0.25rem+var(--indent-sm))]');
 	});
 });
 

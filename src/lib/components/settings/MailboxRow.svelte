@@ -2,27 +2,30 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import MailboxIcon from '$lib/components/MailboxIcon.svelte';
 	import Toggle from './Toggle.svelte';
+	import RowMenu from './RowMenu.svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { Mailbox } from '$lib/jmap/types';
 	import type { IconNode } from '$lib/types/icon-node';
 	import { mailboxDeleteRulesNote, needsRewrite, type Rule, type RuleTarget } from '$lib/types/rules';
 	import { conditionsText, hasRowNote, rowNote } from '$lib/rules/describe';
-	import { moveStep } from '$lib/utils/folder-tree';
 	import { mailboxIconName } from '$lib/icons';
 
 	/**
 	 * One folder, label or system folder in Settings, with the rules that
 	 * file mail into it. Opened, it lists those rules and offers "Add rule",
-	 * started with this as the place to file. A folder or label can be moved
-	 * one place up or down, edited and deleted from here; on a phone Edit
-	 * and Delete are inside the opened row, so the name keeps its room.
+	 * started with this as the place to file.
+	 *
+	 * A folder or label is dragged by the handle at its start to reorder it
+	 * (or, a folder, to put it inside another); the list around the rows
+	 * does the dragging (see $lib/actions/sortable), so the row only marks
+	 * what is the row and what is the handle. View, Edit and Delete are
+	 * behind the one button at its end, so the name keeps its room.
 	 */
 	let {
 		mailbox,
 		name: shownName,
 		kind,
-		mailboxes,
 		depth = 0,
 		color = null,
 		iconNode = null,
@@ -41,8 +44,6 @@
 		/** The name to show, when it isn't the mailbox's own (a label's stored display name). */
 		name?: string;
 		kind: 'folder' | 'label' | 'system';
-		/** The account's mailboxes: where this one's neighbours are. */
-		mailboxes: Mailbox[];
 		/** How deep in the folder tree, for the indent. */
 		depth?: number;
 		color?: string | null;
@@ -72,8 +73,6 @@
 	const name = $derived(shownName ?? mailbox.name);
 	const editable = $derived(kind !== 'system');
 	const noun = $derived(kind === 'label' ? 'label' : 'folder');
-	const canMoveUp = $derived(editable && !!moveStep(mailboxes, mailbox.id, 'up'));
-	const canMoveDown = $derived(editable && !!moveStep(mailboxes, mailbox.id, 'down'));
 	const rulesCount = $derived(`${rules.length} ${rules.length === 1 ? 'rule' : 'rules'}`);
 
 	async function post(body: Record<string, unknown>, failed: string): Promise<Record<string, unknown> | null> {
@@ -96,14 +95,6 @@
 		}
 	}
 
-	// One place up or down among its siblings: what a drag in the sidebar
-	// does, for keyboards and touch screens.
-	async function step(direction: 'up' | 'down') {
-		const request = moveStep(mailboxes, mailbox.id, direction);
-		if (!request) return;
-		if (await post({ action: 'reorder', ...request }, `The ${noun} couldn’t be moved. Try again.`)) await invalidateAll();
-	}
-
 	async function remove() {
 		const note = mailboxDeleteRulesNote(rules, mailbox.id);
 		const what =
@@ -118,75 +109,64 @@
 	}
 </script>
 
-<!-- The indent: 16px a level; on a phone 12px, and no deeper than four levels. -->
+<!-- The indent: 24px a level; on a phone 14px, and no deeper than four levels. -->
 <div
 	role="group"
 	aria-label={name}
 	tabindex="-1"
 	class="outline-none"
-	style="--indent: {depth * 16}px; --indent-sm: {Math.min(depth, 4) * 12}px"
+	style="--indent: {depth * 24}px; --indent-sm: {Math.min(depth, 4) * 14}px"
 >
-	<div class="flex items-center gap-1 py-1.5 pl-(--indent) max-md:pl-(--indent-sm)">
+	<!-- The row itself: what is dragged, and what a drop lands on. -->
+	<div
+		data-sort-id={editable ? mailbox.id : undefined}
+		class="flex items-center gap-1 min-h-14 pr-3 max-md:pr-2 pl-[calc(0.5rem+var(--indent))] max-md:pl-[calc(0.25rem+var(--indent-sm))]"
+	>
+		{#if editable}
+			<button
+				type="button"
+				data-sort-handle
+				aria-label="Reorder {name}"
+				disabled={working}
+				class="w-6 h-9 max-md:h-11 shrink-0 flex items-center justify-center rounded-md text-text-tertiary hover:text-text transition-colors disabled:opacity-50"
+			>
+				<Icon name="reorder" size={16} />
+			</button>
+		{:else}
+			<span class="w-6 shrink-0"></span>
+		{/if}
 		{#if target}
 			<button
 				type="button"
 				onclick={() => (open = !open)}
 				aria-expanded={open}
-				class="flex-1 min-w-0 flex items-center gap-2 h-8 pl-1 pr-2 -ml-1 rounded-md text-left cursor-pointer hover:bg-surface-hover focus-visible:bg-surface-hover transition-colors"
+				class="flex-1 min-w-0 flex items-center gap-2.5 h-9 max-md:h-11 px-1.5 rounded-md text-left cursor-pointer hover:bg-surface-hover focus-visible:bg-surface-hover transition-colors"
 			>
 				<Icon name="next" size={12} class="text-text-tertiary transition-transform duration-150 {open ? 'rotate-90' : ''}" />
 				{@render rowName()}
 			</button>
 		{:else}
-			<div class="flex-1 min-w-0 flex items-center gap-2 h-8 pl-1 pr-2 -ml-1">
+			<div class="flex-1 min-w-0 flex items-center gap-2.5 h-9 px-1.5">
 				<span class="w-3 shrink-0"></span>
 				{@render rowName()}
 			</div>
 		{/if}
-		{#if kind === 'system'}
-			<span class="text-3xs text-text-tertiary uppercase tracking-wider shrink-0 pr-1">{mailbox.role ?? ''}</span>
-		{:else}
-			<a
-				href={`/folder/${mailbox.id}`}
-				class="max-md:hidden text-xs text-text-tertiary hover:text-text px-1.5 py-1 rounded-md transition-colors"
-			>View</a>
-			<button
-				type="button"
-				onclick={() => step('up')}
-				disabled={working || !canMoveUp}
-				title="Move up"
-				aria-label="Move {name} up"
-				class="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-surface-hover transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent"
-			><Icon name="move-up" size={14} /></button>
-			<button
-				type="button"
-				onclick={() => step('down')}
-				disabled={working || !canMoveDown}
-				title="Move down"
-				aria-label="Move {name} down"
-				class="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-surface-hover transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent"
-			><Icon name="move-down" size={14} /></button>
-			<button
-				type="button"
-				onclick={() => onEdit?.()}
-				disabled={working}
-				aria-label="Edit {name}"
-				class="max-md:hidden text-xs text-text-tertiary hover:text-text px-1.5 py-1 rounded-md hover:bg-surface-hover transition-colors cursor-pointer disabled:opacity-50"
-			>Edit</button>
-			<button
-				type="button"
-				onclick={remove}
-				disabled={working}
-				aria-label="Delete {name}"
-				class="max-md:hidden text-xs text-text-tertiary hover:text-danger px-1.5 py-1 rounded-md hover:bg-surface-hover transition-colors cursor-pointer disabled:opacity-50"
-			>Delete</button>
+		{#if editable}
+			<RowMenu
+				ariaLabel="{name} options"
+				items={[
+					{ label: 'View', onSelect: () => goto(`/folder/${mailbox.id}`) },
+					{ label: 'Edit', disabled: working, onSelect: () => onEdit?.() },
+					{ label: 'Delete', danger: true, disabled: working, onSelect: remove }
+				]}
+			/>
 		{/if}
 	</div>
 
 	{#if open && target}
-		<div class="pb-3 pl-[calc(var(--indent)+20px)] max-md:pl-[calc(var(--indent-sm)+20px)]">
+		<div class="pb-3 pr-3 pl-[calc(4.25rem+var(--indent))] max-md:pl-[calc(3.75rem+var(--indent-sm))]">
 			{#if rules.length === 0}
-				<p class="text-xs text-text-tertiary py-1.5">No rules file mail here yet.</p>
+				<p class="text-[0.8125rem] text-text-tertiary py-1.5">No rules</p>
 			{:else}
 				<ul class="flex flex-col">
 					{#each rules as rule (rule.id)}
@@ -235,23 +215,6 @@
 				<Icon name="add" size={14} />
 				Add rule
 			</button>
-			{#if editable}
-				<!-- On a phone the row itself has no room for these. -->
-				<div class="md:hidden flex items-center gap-1 mt-2 -ml-1.5">
-					<button
-						type="button"
-						onclick={() => onEdit?.()}
-						disabled={working}
-						class="text-xs text-text-tertiary hover:text-text px-1.5 py-1 rounded-md hover:bg-surface-hover transition-colors cursor-pointer disabled:opacity-50"
-					>Edit {noun}</button>
-					<button
-						type="button"
-						onclick={remove}
-						disabled={working}
-						class="text-xs text-text-tertiary hover:text-danger px-1.5 py-1 rounded-md hover:bg-surface-hover transition-colors cursor-pointer disabled:opacity-50"
-					>Delete {noun}</button>
-				</div>
-			{/if}
 		</div>
 	{/if}
 </div>
@@ -262,14 +225,8 @@
 	{:else}
 		<MailboxIcon node={iconNode} fallback={kind === 'label' ? 'dot' : 'folder'} {color} />
 	{/if}
-	<span class="min-w-0 truncate text-sm {kind === 'system' ? 'text-text-secondary' : 'text-text'}">{name}</span>
-	<!-- On a phone the name comes first: the unread count gives way to it. -->
-	{#if mailbox.unreadEmails > 0}
-		<span class="max-md:hidden text-xs text-text-tertiary shrink-0 tabular-nums">{mailbox.unreadEmails} unread</span>
-	{/if}
+	<span class="flex-1 min-w-0 truncate text-sm font-medium {kind === 'system' ? 'text-text-secondary' : 'text-text'}">{name}</span>
 	{#if rules.length > 0}
-		<span class="text-xs text-text-tertiary shrink-0"
-			>{#if mailbox.unreadEmails > 0}<span class="max-md:hidden mr-2">·</span>{/if}{rulesCount}</span
-		>
+		<span class="text-[0.8125rem] text-text-tertiary shrink-0">{rulesCount}</span>
 	{/if}
 {/snippet}

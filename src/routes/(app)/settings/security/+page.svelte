@@ -1,4 +1,7 @@
 <script lang="ts">
+	import PageHeader from '$lib/components/settings/PageHeader.svelte';
+	import Section from '$lib/components/settings/Section.svelte';
+	import RowMenu from '$lib/components/settings/RowMenu.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { onMount } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
@@ -229,22 +232,16 @@
 	}
 
 	const inputClass =
-		'w-full bg-surface-hover border border-border rounded-lg px-3 py-2 text-sm text-text ' +
+		'w-full h-9 bg-transparent border border-border rounded-md px-3 text-sm text-text ' +
 		'placeholder-text-tertiary outline-none focus:border-accent transition-colors';
 </script>
 
 <svelte:head><title>{pageTitle({ page: 'Security', subtitle: 'Settings' })}</title></svelte:head>
 
-<header class="mb-6">
-	<h1 class="text-xl font-semibold text-text">Security</h1>
-	<p class="text-sm text-text-tertiary mt-1">
-		Your webmail sign-in — separate from your mail accounts' passwords.
-	</p>
-</header>
+<PageHeader title="Security" />
 
-<!-- Master password -->
-<section class="mb-8">
-	<h2 class="text-sm font-medium text-text mb-3">Master password</h2>
+<!-- The sign-in to this webmail; each mail account keeps its own password. -->
+<Section title="Password" bare>
 	<div class="max-w-sm space-y-3">
 		{#if pwError}
 			<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-3 py-2">{pwError}</div>
@@ -254,35 +251,28 @@
 				Password changed. Other devices have been signed out.
 			</div>
 		{/if}
-		<input bind:value={currentPassword} type="password" placeholder="Current password" autocomplete="current-password" class={inputClass} />
-		<input bind:value={newPassword} type="password" placeholder="New password (8+ characters)" autocomplete="new-password" class={inputClass} />
-		<input bind:value={confirmPassword} type="password" placeholder="Confirm new password" autocomplete="new-password" class={inputClass} />
+		<input bind:value={currentPassword} type="password" placeholder="Current password" aria-label="Current password" autocomplete="current-password" class={inputClass} />
+		<input bind:value={newPassword} type="password" placeholder="New password (8+ characters)" aria-label="New password" autocomplete="new-password" class={inputClass} />
+		<input bind:value={confirmPassword} type="password" placeholder="Confirm new password" aria-label="Confirm new password" autocomplete="new-password" class={inputClass} />
 		<button
 			type="button"
 			onclick={changePassword}
 			disabled={pwBusy || !currentPassword || !newPassword || !confirmPassword}
-			class="btn btn-primary"
+			class="btn btn-secondary"
 		>
 			{pwBusy ? 'Changing…' : 'Change password'}
 		</button>
 	</div>
-</section>
+</Section>
 
 <!-- Authenticator app: the second step after the password -->
-<section class="mb-8">
-	<div class="flex items-center justify-between mb-3">
-		<h2 class="text-sm font-medium text-text">Authenticator app</h2>
-		{#if totp && !totp.enabled && !setup}
-			<button type="button" onclick={beginTotp} disabled={totpBusy} class="btn btn-primary shrink-0">Set up</button>
-		{/if}
-	</div>
-
+<Section title="Authenticator app" bare>
 	{#if totpError}
 		<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-3 py-2 mb-3">{totpError}</div>
 	{/if}
 
 	{#if recoveryCodes}
-		<div class="max-w-sm border border-border rounded-lg p-4 mb-3">
+		<div class="max-w-sm border border-border rounded-xl p-4 mb-3">
 			<p class="text-sm font-medium text-text mb-2">Recovery codes</p>
 			<ul class="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-sm text-text mb-3">
 				{#each recoveryCodes as code (code)}
@@ -316,101 +306,97 @@
 				<button type="button" onclick={() => (setup = null)} class="btn btn-ghost">Cancel</button>
 			</div>
 		</div>
-	{:else if totp?.enabled}
-		<div class="flex items-center gap-3">
-			<p class="text-sm text-text flex-1">On · {totp.recoveryCodesLeft} recovery codes left</p>
-			<button type="button" onclick={newRecoveryCodes} disabled={totpBusy} class="btn btn-ghost btn-sm">New recovery codes</button>
-			<button type="button" onclick={disableTotp} disabled={totpBusy}
-				class="px-2.5 py-1.5 text-xs text-text-tertiary hover:text-danger transition-colors cursor-pointer">Turn off</button>
-		</div>
 	{:else if totp}
-		<p class="text-xs text-text-tertiary">Off</p>
-	{/if}
-</section>
-
-<!-- Passkeys -->
-<section class="mb-8">
-	<div class="flex items-center justify-between mb-3">
-		<div>
-			<h2 class="text-sm font-medium text-text">Passkeys</h2>
-			<p class="text-xs text-text-tertiary mt-0.5">Sign in with Touch ID, Face ID, or a security key — no password needed.</p>
+		<div class="rounded-xl border border-border">
+			<div class="flex flex-wrap items-center gap-x-4 gap-y-2 min-h-14 px-5 max-md:px-4 py-2.5">
+				<div class="flex-1 min-w-[9rem]">
+					<p class="text-sm font-medium text-text">{totp.enabled ? 'On' : 'Off'}</p>
+					{#if totp.enabled}
+						<p class="text-[0.8125rem] text-text-tertiary mt-0.5">{totp.recoveryCodesLeft} recovery codes left</p>
+					{/if}
+				</div>
+				{#if totp.enabled}
+					<button type="button" onclick={newRecoveryCodes} disabled={totpBusy} class="btn btn-ghost btn-sm">New recovery codes</button>
+					<button type="button" onclick={disableTotp} disabled={totpBusy} class="btn btn-ghost btn-sm hover:text-danger">Turn off</button>
+				{:else}
+					<button type="button" onclick={beginTotp} disabled={totpBusy} class="btn btn-secondary btn-sm">Set up</button>
+				{/if}
+			</div>
 		</div>
+	{/if}
+</Section>
+
+<!-- Passkeys: Touch ID, Face ID or a security key in place of the password -->
+<Section title="Passkeys" bare>
+	{#snippet action()}
 		{#if passkeySupported}
-			<button
-				type="button"
-				onclick={registerPasskey}
-				disabled={pkBusy}
-				class="btn btn-primary shrink-0"
-			>
+			<button type="button" onclick={registerPasskey} disabled={pkBusy} class="btn btn-secondary btn-sm">
+				<Icon name="add" size={14} />
 				{pkBusy ? 'Waiting…' : 'Add passkey'}
 			</button>
 		{/if}
-	</div>
+	{/snippet}
 
 	{#if pkError}
 		<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-3 py-2 mb-3">{pkError}</div>
 	{/if}
-	{#if !passkeySupported}
-		<p class="text-xs text-text-tertiary">This browser doesn't support passkeys.</p>
-	{:else if passkeys.length === 0}
-		<p class="text-xs text-text-tertiary">No passkeys yet.</p>
-	{:else}
-		{#each passkeys as pk (pk.id)}
-			<div class="flex items-center gap-3 py-3 border-b border-border last:border-b-0">
-				<Icon name="passkey" size={16} class="text-text-tertiary" />
-				<div class="flex-1 min-w-0">
+	<div class="rounded-xl border border-border divide-y divide-border">
+		{#if !passkeySupported}
+			<p class="px-5 max-md:px-4 py-4 text-sm text-text-tertiary">This browser doesn't support passkeys.</p>
+		{:else if passkeys.length === 0}
+			<p class="px-5 max-md:px-4 py-4 text-sm text-text-tertiary">No passkeys</p>
+		{:else}
+			{#each passkeys as pk (pk.id)}
+				<div class="flex items-center gap-3 min-h-14 pl-5 pr-3 max-md:pl-4 max-md:pr-2 py-2.5">
+					<Icon name="passkey" size={16} class="text-text-tertiary" />
+					<div class="flex-1 min-w-0">
+						{#if renameId === pk.id}
+							<input
+								bind:value={renameValue}
+								aria-label="Passkey name"
+								onkeydown={(e) => { if (e.key === 'Enter') renamePasskey(pk.id); if (e.key === 'Escape') renameId = null; }}
+								class="h-8 w-[200px] max-w-full bg-transparent border border-accent rounded-md px-2 text-sm text-text outline-none"
+							/>
+						{:else}
+							<p class="text-sm font-medium text-text truncate">{pk.name}</p>
+						{/if}
+						<p class="text-[0.8125rem] text-text-tertiary mt-0.5">
+							{pk.lastUsedAt ? `Last used ${relativeTime(pk.lastUsedAt)}` : 'Never used'}
+						</p>
+					</div>
 					{#if renameId === pk.id}
-						<input
-							bind:value={renameValue}
-							onkeydown={(e) => { if (e.key === 'Enter') renamePasskey(pk.id); if (e.key === 'Escape') renameId = null; }}
-							class="bg-surface-hover border border-border rounded-lg px-2 py-1 text-sm text-text outline-none focus:border-accent w-[200px]"
-						/>
+						<button type="button" onclick={() => renamePasskey(pk.id)} class="btn btn-primary btn-sm">Save</button>
+						<button type="button" onclick={() => (renameId = null)} class="btn btn-ghost btn-sm">Cancel</button>
 					{:else}
-						<p class="text-sm text-text truncate">{pk.name}</p>
+						<RowMenu
+							ariaLabel="{pk.name} options"
+							items={[
+								{ label: 'Rename', onSelect: () => { renameId = pk.id; renameValue = pk.name; } },
+								{ label: 'Remove', danger: true, onSelect: () => deletePasskey(pk.id) }
+							]}
+						/>
 					{/if}
-					<p class="text-xs text-text-tertiary mt-0.5">
-						{pk.lastUsedAt ? `Last used ${relativeTime(pk.lastUsedAt)}` : 'Never used'}
-					</p>
 				</div>
-				{#if renameId === pk.id}
-					<button type="button" onclick={() => renamePasskey(pk.id)}
-						class="btn btn-primary btn-sm">Save</button>
-					<button type="button" onclick={() => (renameId = null)}
-						class="btn btn-ghost btn-sm">Cancel</button>
-				{:else}
-					<button type="button" onclick={() => { renameId = pk.id; renameValue = pk.name; }}
-						class="btn btn-ghost btn-sm">Rename</button>
-					<button type="button" onclick={() => deletePasskey(pk.id)}
-						class="px-2.5 py-1.5 text-xs text-text-tertiary hover:text-danger transition-colors cursor-pointer">Remove</button>
-				{/if}
-			</div>
-		{/each}
-	{/if}
-</section>
+			{/each}
+		{/if}
+	</div>
+</Section>
 
-<!-- Sessions -->
-<section>
-	<h2 class="text-sm font-medium text-text mb-1">Active sessions</h2>
-	<p class="text-xs text-text-tertiary mb-3">Devices currently signed in to this webmail.</p>
+<!-- Sessions: the one in use carries a check mark -->
+<Section title="Signed-in devices">
 	{#each sessions as s (s.id)}
-		<div class="flex items-center gap-3 py-3 border-b border-border last:border-b-0">
+		<div class="flex items-center gap-3 min-h-14 pl-5 pr-3 max-md:pl-4 max-md:pr-2 py-2.5">
 			<div class="flex-1 min-w-0">
-				<p class="text-sm text-text truncate">
-					{describeDevice(s.userAgent)}
-					{#if s.current}
-						<span class="ml-2 text-3xs uppercase tracking-wide text-accent-fg font-semibold">This device</span>
-					{/if}
-				</p>
-				<p class="text-xs text-text-tertiary mt-0.5">
+				<p class="text-sm font-medium text-text truncate">{describeDevice(s.userAgent)}</p>
+				<p class="text-[0.8125rem] text-text-tertiary mt-0.5">
 					Active {relativeTime(s.lastSeenAt)}{s.ip ? ` · ${s.ip}` : ''}
 				</p>
 			</div>
-			{#if !s.current}
-				<button type="button" onclick={() => revokeSession(s.id)}
-					class="px-2.5 py-1.5 text-xs text-text-tertiary hover:text-danger transition-colors cursor-pointer">
-					Sign out
-				</button>
+			{#if s.current}
+				<Icon name="check" size={16} class="text-accent-fg mr-2" aria-label="This device" />
+			{:else}
+				<button type="button" onclick={() => revokeSession(s.id)} class="btn btn-ghost btn-sm hover:text-danger">Sign out</button>
 			{/if}
 		</div>
 	{/each}
-</section>
+</Section>

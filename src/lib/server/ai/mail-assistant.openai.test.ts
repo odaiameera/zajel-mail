@@ -88,7 +88,7 @@ describe('runAIChat with OpenAI', () => {
 			(caught) => caught
 		);
 		expect(error).toBeInstanceOf(MailAssistantError);
-		expect(error.message).toContain('choose another in Settings → Agent');
+		expect(error.message).toContain('choose another in Settings → Assistant');
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 });

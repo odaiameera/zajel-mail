@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
+	import Icon from '$lib/components/Icon.svelte';
+	import PageHeader from '$lib/components/settings/PageHeader.svelte';
+	import Section from '$lib/components/settings/Section.svelte';
 	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import { useDraft } from '$lib/settings/draft.svelte';
 	import { saveEach, sendJson, type SaveStep } from '$lib/settings/send';
@@ -307,31 +310,18 @@
 
 <svelte:head><title>{pageTitle({ page: 'Notifications', subtitle: 'Settings' })}</title></svelte:head>
 
-<header class="mb-6">
-	<h1 class="text-xl font-semibold text-text">Notifications</h1>
-	<p class="text-sm text-text-tertiary mt-1">
-		New mail and calendar activity.
-	</p>
-</header>
+<PageHeader title="Notifications" />
 
-<section>
-	<SettingRow
-		title="Enable notifications"
-		description="Request permission from your browser and show a notification when new mail arrives in the selected folders."
-		state={permissionError ? 'error' : 'idle'}
-		errorMessage={permissionError}
-	>
+<Section>
+	<SettingRow title="Notifications" state={permissionError ? 'error' : 'idle'} errorMessage={permissionError}>
 		{#snippet control()}
 			<Toggle checked={on} ariaLabel="Enable notifications" onChange={toggleEnabled} />
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow
-		title="This device"
-		description="Push reaches this device while the app is closed. Off, this device shows notifications only while the app is open, and stays off when the app opens here again."
-		state={pushError ? 'error' : 'idle'}
-		errorMessage={pushError}
-	>
+	<!-- Push reaches a device while the app is closed; without it the device
+	     only notifies while the app is open on it. -->
+	<SettingRow title="Push on this device" state={pushError ? 'error' : 'idle'} errorMessage={pushError}>
 		{#snippet control()}
 			<Toggle
 				checked={(draft.value.pushHere ?? pushHere) && on}
@@ -341,61 +331,47 @@
 			/>
 		{/snippet}
 	</SettingRow>
+</Section>
 
-	{#if devices.length > 0}
-		<div class="py-4 border-b border-border last:border-b-0">
-			<p class="text-sm font-medium text-text">Devices receiving push</p>
-			<p class="text-xs text-text-tertiary mt-1 mb-2">
-				Each browser that turned push on. Signing a device out in Settings → Security stops its push too.
-			</p>
-			{#each devices as d}
-				<div class="flex items-center gap-3 py-2 border-t border-border/60 first:border-t-0">
-					<div class="flex-1 min-w-0">
-						<p class="text-sm text-text truncate">
-							{d.label}
-							{#if d.current}
-								<span class="ml-2 text-3xs uppercase tracking-wide text-accent-fg font-semibold">This device</span>
-							{/if}
-						</p>
-						<p class="text-xs text-text-tertiary mt-0.5">
-							{d.lastSentAt ? `Last notified ${relativeTime(d.lastSentAt)}` : 'Nothing sent yet'} · added {relativeTime(d.createdAt)}
-						</p>
-					</div>
+{#if devices.length > 0}
+	<!-- Each browser that turned push on; this one carries a check mark. -->
+	<Section title="Devices receiving push">
+		{#each devices as d}
+			<div class="flex items-center gap-3 min-h-14 px-5 max-md:px-4 py-2.5">
+				<div class="flex-1 min-w-0">
+					<p class="text-sm font-medium text-text truncate">{d.label}</p>
+					<p class="text-[0.8125rem] text-text-tertiary mt-0.5">
+						{d.lastSentAt ? `Last notified ${relativeTime(d.lastSentAt)}` : 'Nothing sent yet'} · added {relativeTime(d.createdAt)}
+					</p>
 				</div>
-			{/each}
-		</div>
-	{/if}
+				{#if d.current}
+					<Icon name="check" size={16} class="text-accent-fg" aria-label="This device" />
+				{/if}
+			</div>
+		{/each}
+	</Section>
+{/if}
 
-	<div class="py-4 border-b border-border last:border-b-0">
-		<p class="text-sm font-medium text-text">Notify for folders</p>
-		<p class="text-xs text-text-tertiary mt-1 mb-3">Choose which folders should trigger a notification.</p>
-		<div class="flex flex-col gap-1.5 max-w-[420px]">
-			{#each notifiableFolders as mb (mb.id)}
-				<label class="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface-hover/50 border border-border/60 cursor-pointer hover:bg-surface-hover transition-colors">
-					<input
-						type="checkbox"
-						disabled={!on}
-						checked={draft.value.folders.includes(mb.id)}
-						onchange={(e) => toggleFolder(mb.id, (e.currentTarget as HTMLInputElement).checked)}
-						class="w-3.5 h-3.5 rounded-md border-border accent-accent cursor-pointer disabled:cursor-not-allowed"
-					/>
-					<span class="text-sm text-text flex-1 truncate">{mb.name}</span>
-					{#if mb.unreadEmails > 0}
-						<span class="text-xs text-text-tertiary">{mb.unreadEmails}</span>
-					{/if}
-				</label>
-			{/each}
-		</div>
-	</div>
+<Section title="Folders">
+	{#each notifiableFolders as mb (mb.id)}
+		<label class="flex items-center gap-3 min-h-12 px-5 max-md:px-4 py-2 cursor-pointer first:rounded-t-xl last:rounded-b-xl hover:bg-surface-hover transition-colors">
+			<span class="text-sm text-text flex-1 truncate">{mb.name}</span>
+			{#if mb.unreadEmails > 0}
+				<span class="text-[0.8125rem] text-text-tertiary tabular-nums">{mb.unreadEmails}</span>
+			{/if}
+			<input
+				type="checkbox"
+				disabled={!on}
+				checked={draft.value.folders.includes(mb.id)}
+				onchange={(e) => toggleFolder(mb.id, (e.currentTarget as HTMLInputElement).checked)}
+				class="w-4 h-4 rounded-md border-border accent-accent cursor-pointer disabled:cursor-not-allowed"
+			/>
+		</label>
+	{/each}
+</Section>
 
-	<div class="pt-6 pb-2">
-		<p class="text-sm font-semibold text-text">Calendar</p>
-	</div>
-
-	<SettingRow
-		title="New & updated events"
-		description="Notify when an event is added or changed on one of your calendars — including from other devices and CalDAV clients."
-	>
+<Section title="Calendar" id="calendar">
+	<SettingRow title="New and updated events">
 		{#snippet control()}
 			<Toggle
 				checked={draft.value.calendarEvents && on}
@@ -406,10 +382,7 @@
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow
-		title="Event reminders"
-		description="Fire each event's reminders (e.g. 10 minutes before it starts), like Google or Apple Calendar."
-	>
+	<SettingRow title="Event reminders">
 		{#snippet control()}
 			<Toggle
 				checked={draft.value.eventReminders && on}
@@ -419,21 +392,18 @@
 			/>
 		{/snippet}
 	</SettingRow>
+</Section>
 
-	{#if telegram?.configured}
-		<div class="pt-6 pb-2">
-			<p class="text-sm font-semibold text-text">Telegram</p>
-		</div>
+{#if telegram?.configured}
+	{#if telegramError}
+		<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-3 py-2 mb-2">{telegramError}</div>
+	{/if}
 
-		{#if telegramError}
-			<div class="bg-danger/10 border border-danger/20 text-danger text-sm rounded-lg px-3 py-2 mb-2">{telegramError}</div>
-		{/if}
-
+	<Section title="Telegram" id="telegram">
 		{#if telegram.linked}
-			<SettingRow title={telegram.username ? `Linked to @${telegram.username}` : 'Linked'}>
+			<SettingRow title={telegram.username ? `@${telegram.username}` : 'Linked'}>
 				{#snippet control()}
-					<button type="button" onclick={unlinkTelegram}
-						class="px-2.5 py-1.5 text-xs text-text-tertiary hover:text-danger transition-colors cursor-pointer">Unlink</button>
+					<button type="button" onclick={unlinkTelegram} class="btn btn-ghost btn-sm hover:text-danger">Unlink</button>
 				{/snippet}
 			</SettingRow>
 			<!-- Jev decides what is urgent, so the switch is off while it reads no
@@ -465,7 +435,8 @@
 					</SettingRow>
 				{/each}
 			{/if}
-			<SettingRow title="Paused" description="Pauses urgent-mail alerts. You can still write to Zajel in the chat.">
+			<!-- Pauses the urgent-mail alerts; the chat itself stays open. -->
+			<SettingRow title="Paused">
 				{#snippet control()}
 					<Toggle
 						checked={draft.value.telegramPaused ?? telegram!.paused}
@@ -474,9 +445,10 @@
 					/>
 				{/snippet}
 			</SettingRow>
+			<!-- Kept: who can then send for you is not something its name says. -->
 			<SettingRow
 				title="Confirm from Telegram"
-				description="Emails, invitations and deletions Zajel prepares in the chat, and its drafts, come with a button to send them there. Off, you confirm them in Zajel. Anyone holding your unlocked Telegram could press it."
+				description="What Zajel prepares in the chat can be sent from there. Anyone holding your unlocked Telegram could send it."
 			>
 				{#snippet control()}
 					<Toggle
@@ -489,7 +461,7 @@
 			<SettingRow title="Test alert">
 				{#snippet control()}
 					{#if testState === 'sent'}
-						<span class="text-xs text-success">Sent</span>
+						<span class="text-[0.8125rem] text-success">Sent</span>
 					{/if}
 					<button type="button" onclick={testTelegram} disabled={testState === 'sending'} class="btn btn-secondary btn-sm">
 						{testState === 'sending' ? 'Sending…' : 'Send'}
@@ -505,9 +477,9 @@
 		{:else}
 			<SettingRow title="Link Telegram">
 				{#snippet control()}
-					<button type="button" onclick={linkTelegram} class="btn btn-primary btn-sm">Link</button>
+					<button type="button" onclick={linkTelegram} class="btn btn-secondary btn-sm">Link</button>
 				{/snippet}
 			</SettingRow>
 		{/if}
-	{/if}
-</section>
+	</Section>
+{/if}

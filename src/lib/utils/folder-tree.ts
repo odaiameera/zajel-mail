@@ -121,8 +121,8 @@ export function planReorder(
 
 /**
  * The rearrangement that moves `id` one place up or down among its
- * siblings, or null when it is already at that end. For the Move up / Move
- * down buttons, which do what a drag does without a pointer.
+ * siblings, or null when it is already at that end. For the arrow keys on
+ * a row's handle in Settings, which do what a drag does without a pointer.
  */
 export function moveStep(mailboxes: Mailbox[], id: string, direction: 'up' | 'down'): ReorderRequest | null {
 	const labelsParentId = findLabelsParentId(mailboxes);
@@ -140,4 +140,52 @@ export function moveStep(mailboxes: Mailbox[], id: string, direction: 'up' | 'do
 	if (i === siblings.length - 1) return null;
 	// After the next one: before whatever follows it, or last.
 	return { id, parentId, beforeId: siblings[i + 2] ?? null };
+}
+
+// --- Dragging a row onto another: where it may land, and what that asks for ---
+
+/** Where a dragged row lands relative to the row it is let go on. */
+export type DropWhere = 'before' | 'after' | 'into';
+
+/**
+ * Can `dragId` land on `targetId` at all? Labels move among labels and
+ * folders among folders, nothing lands on itself, and a folder can't go
+ * inside itself or one of its own children.
+ */
+export function canDropMailbox(mailboxes: Mailbox[], dragId: string, targetId: string): boolean {
+	if (dragId === targetId) return false;
+	const labelsParentId = findLabelsParentId(mailboxes);
+	const drag = mailboxes.find((m) => m.id === dragId);
+	const target = mailboxes.find((m) => m.id === targetId);
+	if (!drag || !target) return false;
+	const dragIsLabel = isLabelMailbox(drag, labelsParentId);
+	if (dragIsLabel !== isLabelMailbox(target, labelsParentId)) return false;
+	if (!dragIsLabel && descendantIds(mailboxes, dragId).has(targetId)) return false;
+	return true;
+}
+
+/**
+ * The rearrangement a drop asks for, or null when it can't land there. Onto
+ * a folder's middle it goes inside it, last; before or after a row it joins
+ * that row's level. A label has no inside: "into" one counts as after it.
+ */
+export function dropRequest(
+	mailboxes: Mailbox[],
+	dragId: string,
+	targetId: string,
+	where: DropWhere
+): ReorderRequest | null {
+	if (!canDropMailbox(mailboxes, dragId, targetId)) return null;
+	const labelsParentId = findLabelsParentId(mailboxes);
+	const target = mailboxes.find((m) => m.id === targetId)!;
+	const isLabel = isLabelMailbox(target, labelsParentId);
+	if (where === 'into' && !isLabel) return { id: dragId, parentId: targetId, beforeId: null };
+
+	const parentId = isLabel ? labelsParentId : (target.parentId ?? null);
+	const siblings = orderedSiblings(mailboxes, parentId, isLabel)
+		.map((m) => m.id)
+		.filter((id) => id !== dragId);
+	const at = siblings.indexOf(targetId);
+	if (at < 0) return null;
+	return { id: dragId, parentId, beforeId: where === 'before' ? targetId : (siblings[at + 1] ?? null) };
 }

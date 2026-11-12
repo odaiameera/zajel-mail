@@ -206,7 +206,7 @@ export async function runJob(job: AgentJob, nowMs = Date.now()): Promise<JobOutc
 		}
 	};
 	// The agent was told it could stay quiet (stay_quiet): a watch that found
-	// nothing sends nothing. What it found is kept for Settings → Agent.
+	// nothing sends nothing. What it found is kept for Settings → Assistant.
 	if (turn.quiet) {
 		await followUps();
 		return { status: 'ok', result: `Nothing sent: ${turn.message}`.slice(0, 300) };
@@ -217,7 +217,7 @@ export async function runJob(job: AgentJob, nowMs = Date.now()): Promise<JobOutc
 	if (turn.done.length > MAX_CHANGES) changes.push(plainPiece(`…and ${turn.done.length - MAX_CHANGES} more`, true));
 	const report = [...markdownPieces(turn.message), ...changes];
 	// The work is done by now, so a report that can't go out isn't a failed
-	// run: the answer is kept where Settings → Agent shows it.
+	// run: the answer is kept where Settings → Assistant shows it.
 	let sent = false;
 	try {
 		sent = await tellUser(job, report);

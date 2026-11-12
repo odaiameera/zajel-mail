@@ -2,6 +2,9 @@
 	import { untrack } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
+	import PageHeader from '$lib/components/settings/PageHeader.svelte';
+	import Section from '$lib/components/settings/Section.svelte';
+	import LinkRow from '$lib/components/settings/LinkRow.svelte';
 	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
 	import Select from '$lib/components/settings/Select.svelte';
@@ -10,6 +13,7 @@
 	import { useDraft } from '$lib/settings/draft.svelte';
 	import { saveEach, sendJson, type SaveStep } from '$lib/settings/send';
 	import { MAX_MARK_READ_DELAY } from '$lib/mail-prefs';
+	import ComposerSection from './ComposerSection.svelte';
 	import type { LayoutData } from '../$types';
 
 	let { data }: { data: LayoutData } = $props();
@@ -38,11 +42,11 @@
 
 	// The rows' titles, to say which of them didn't save.
 	const TITLES: Record<keyof Values, string> = {
-		defaultSort: 'Default sort',
+		defaultSort: 'Sort',
 		markReadSeconds: 'Mark as read after',
-		autoLoadImages: 'Auto-load remote images',
-		trashRetentionDays: 'Empty Trash automatically',
-		otpTrashAfterCopy: 'Trash sign-in code emails after copying',
+		autoLoadImages: 'Remote images',
+		trashRetentionDays: 'Empty Trash',
+		otpTrashAfterCopy: 'Trash sign-in codes after copying',
 		pageSize: 'Messages per page'
 	};
 
@@ -57,7 +61,7 @@
 			otpTrashAfterCopy: data.otpTrashAfterCopy,
 			pageSize: storedPageSize($userState.settings)
 		})),
-		// Only a value typed here is held to the limits, as on Composer.
+		// Only a value typed here is held to the limits, as for the composer below.
 		check: ({ markReadSeconds: s }, changed) =>
 			changed('markReadSeconds') && (s === null || s < 0 || s > MAX_MARK_READ_SECONDS)
 				? `“Mark as read after” takes 0 to ${MAX_MARK_READ_SECONDS} seconds.`
@@ -117,15 +121,12 @@
 	});
 </script>
 
-<svelte:head><title>{pageTitle({ page: 'Messages', subtitle: 'Settings' })}</title></svelte:head>
+<svelte:head><title>{pageTitle({ page: 'Messages & composer', subtitle: 'Settings' })}</title></svelte:head>
 
-<header class="mb-6">
-	<h1 class="text-xl font-semibold text-text">Messages</h1>
-	<p class="text-sm text-text-tertiary mt-1">How messages are displayed and treated.</p>
-</header>
+<PageHeader title="Messages & composer" />
 
-<section>
-	<SettingRow title="Default sort" description="Order of the Inbox, folders and Starred.">
+<Section title="Inbox" id="inbox">
+	<SettingRow title="Sort">
 		{#snippet control()}
 			<Select
 				value={draft.value.defaultSort}
@@ -141,10 +142,20 @@
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow
-		title="Mark as read after"
-		description="Seconds to wait before marking an open email as read. 0 = instantly."
-	>
+	<SettingRow title="Messages per page">
+		{#snippet control()}
+			<Select
+				value={draft.value.pageSize}
+				ariaLabel="Messages per page"
+				onchange={(v) => (draft.value.pageSize = v)}
+				options={PAGE_SIZES.map((n) => ({ value: String(n), label: String(n) }))}
+			/>
+		{/snippet}
+	</SettingRow>
+</Section>
+
+<Section title="Opening mail" id="opening-mail">
+	<SettingRow title="Mark as read after">
 		{#snippet control()}
 			<NumberInput
 				bind:value={draft.value.markReadSeconds}
@@ -152,14 +163,13 @@
 				max={MAX_MARK_READ_SECONDS}
 				step={0.1}
 				ariaLabel="Mark as read after (seconds)"
+				width="80px"
 			/>
+			<span class="text-sm text-text-tertiary">seconds</span>
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow
-		title="Auto-load remote images"
-		description="Remote images can track whether you opened the message. Choose your comfort level."
-	>
+	<SettingRow title="Remote images">
 		{#snippet control()}
 			<Select
 				value={draft.value.autoLoadImages}
@@ -173,11 +183,10 @@
 			/>
 		{/snippet}
 	</SettingRow>
+</Section>
 
-	<SettingRow
-		title="Empty Trash automatically"
-		description="Permanently delete messages once they have been in Trash this long, in every linked account. Messages already in Trash when you turn this on get the full period."
-	>
+<Section title="Trash" id="trash">
+	<SettingRow title="Empty Trash">
 		{#snippet control()}
 			<Select
 				value={draft.value.trashRetentionDays}
@@ -192,35 +201,25 @@
 		{/snippet}
 	</SettingRow>
 
-	<SettingRow
-		title="Trash sign-in code emails after copying"
-		description="When an email contains a verification code, a Copy button appears above it. With this on, copying the code also moves the email to Trash."
-	>
+	<SettingRow title="Trash sign-in codes after copying">
 		{#snippet control()}
 			<Toggle
 				checked={draft.value.otpTrashAfterCopy}
-				ariaLabel="Trash sign-in code emails after copying"
+				ariaLabel="Trash sign-in codes after copying"
 				onChange={(v) => (draft.value.otpTrashAfterCopy = v)}
 			/>
 		{/snippet}
 	</SettingRow>
+</Section>
 
-	<SettingRow
-		title="Messages per page"
-		description="How many messages to show per page in the inbox, folders, and search. Follows you across browsers."
-	>
-		{#snippet control()}
-			<Select
-				value={draft.value.pageSize}
-				ariaLabel="Messages per page"
-				onchange={(v) => (draft.value.pageSize = v)}
-				options={[
-					{ value: '10', label: '10 per page' },
-					{ value: '25', label: '25 per page' },
-					{ value: '50', label: '50 per page' },
-					{ value: '100', label: '100 per page' }
-				]}
-			/>
-		{/snippet}
-	</SettingRow>
-</section>
+<ComposerSection {data} />
+
+<!-- Each opens a page of its own, under this one. -->
+<Section title="More" id="more">
+	<LinkRow
+		title="Signatures"
+		href="/settings/messages/signatures"
+		value={$userState.loaded ? ($userState.signatures?.length ?? 0) : undefined}
+	/>
+	<LinkRow title="Out of office" href="/settings/messages/out-of-office" value={data.autoReplyEnabled ? 'On' : 'Off'} />
+</Section>

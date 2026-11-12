@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Section from '$lib/components/settings/Section.svelte';
 	import { untrack } from 'svelte';
 	import {
 		userState,
@@ -89,51 +90,34 @@
 	}
 </script>
 
-<section class="mt-10 pt-6 border-t border-border">
-	<header class="mb-4 flex items-start justify-between gap-4">
-		<div>
-			<h2 class="text-base font-semibold text-text">Default signatures per identity</h2>
-			<p class="text-sm text-text-tertiary mt-1 max-w-prose">
-				For each address, pick the signature that auto-applies when you compose from it. Anything
-				left on "Use global default" follows the default chosen above.
-			</p>
-		</div>
-		<button
-			type="button"
-			onclick={refreshIdentitiesNow}
-			disabled={refreshing}
-			class="btn btn-secondary shrink-0"
-		>
-			{refreshing ? 'Refreshing…' : 'Refresh from server'}
+<!-- Which signature a new message starts with, by the address it is
+     written from. "Default" follows the one marked in the list above. -->
+<Section title="Default signature" id="default-signature">
+	{#snippet action()}
+		<button type="button" onclick={refreshIdentitiesNow} disabled={refreshing} class="btn btn-ghost btn-sm">
+			{refreshing ? 'Refreshing…' : 'Refresh addresses'}
 		</button>
-	</header>
+	{/snippet}
 
-	<div class="flex flex-col gap-2">
-		{#each identities as identity (identity.jmapId)}
-			<div class="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-hover/50 border border-border/60">
-				<div class="flex-1 min-w-0">
-					<div class="text-sm text-text truncate">{identity.email}</div>
-					{#if identity.name}
-						<div class="text-xs text-text-tertiary truncate">{identity.name}</div>
-					{/if}
-				</div>
-				{#if identity.isPrimary}
-					<span class="text-3xs uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent/15 text-accent-fg shrink-0">
-						Primary
-					</span>
+	{#each identities as identity (identity.jmapId)}
+		<div class="flex flex-wrap items-center gap-x-4 gap-y-2 min-h-14 px-5 py-2.5 max-md:px-4">
+			<div class="flex-1 min-w-[9rem]">
+				<p class="text-sm font-medium text-text truncate">{identity.email}</p>
+				{#if identity.name}
+					<p class="text-[0.8125rem] text-text-tertiary truncate">{identity.name}</p>
 				{/if}
-				<select
-					value={draft.value[identity.jmapId] ?? savedFor(identity.jmapId)}
-					onchange={(e) => pick(identity.jmapId, (e.target as HTMLSelectElement).value)}
-					aria-label="Default signature for {identity.email}"
-					class="bg-surface border border-border rounded-md px-2 py-1 text-sm text-text outline-none focus:border-accent transition-colors cursor-pointer max-w-[220px]"
-				>
-					<option value="">— Use global default —</option>
-					{#each signatures as sig (sig.id)}
-						<option value={sig.id.toString()}>{sig.name}</option>
-					{/each}
-				</select>
 			</div>
-		{/each}
-	</div>
-</section>
+			<select
+				value={draft.value[identity.jmapId] ?? savedFor(identity.jmapId)}
+				onchange={(e) => pick(identity.jmapId, (e.target as HTMLSelectElement).value)}
+				aria-label="Default signature for {identity.email}"
+				class="h-8 max-w-[220px] pl-2.5 -mr-2 bg-transparent border-0 rounded-md text-sm text-text [text-align-last:right] cursor-pointer hover:bg-surface-hover transition-colors"
+			>
+				<option value="">Default</option>
+				{#each signatures as sig (sig.id)}
+					<option value={sig.id.toString()}>{sig.name}</option>
+				{/each}
+			</select>
+		</div>
+	{/each}
+</Section>

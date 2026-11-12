@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => {
 const state = mocks.state;
 
 vi.mock('$app/navigation', () => ({ invalidateAll: vi.fn(), beforeNavigate: () => {} }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/signatures') } }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/messages/signatures') } }));
 
 vi.mock('$lib/stores/userState', () => ({
 	userState: writable(mocks.state),
@@ -37,7 +37,7 @@ vi.mock('$lib/stores/userState', () => ({
 }));
 
 import Page from './+page.svelte';
-import Harness from '../SettingsHarness.svelte';
+import Harness from '../../SettingsHarness.svelte';
 import { barShown, discardButton, saveButton as barSave } from '$lib/settings/save-bar.testing';
 import { userState } from '$lib/stores/userState';
 

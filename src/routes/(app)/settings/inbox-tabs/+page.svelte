@@ -3,6 +3,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
+	import PageHeader from '$lib/components/settings/PageHeader.svelte';
+	import Section from '$lib/components/settings/Section.svelte';
 	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import { useDraft } from '$lib/settings/draft.svelte';
 	import { saveEach, sendJson, type SaveStep } from '$lib/settings/send';
@@ -216,41 +218,11 @@
 
 <svelte:head><title>{pageTitle({ page: 'Inbox tabs', subtitle: 'Settings' })}</title></svelte:head>
 
-<header class="mb-6">
-	<h1 class="text-xl font-semibold text-text">Inbox tabs</h1>
-	<p class="text-sm text-text-tertiary mt-1">
-		Split the Inbox into four tabs, and choose what puts mail in them: senders you pin, and Jev,
-		TypeSafe’s decision model, for the accounts you allow.
-	</p>
-</header>
+<PageHeader title="Inbox tabs" />
 
-<section class="mb-10" aria-labelledby="tabs-heading">
-	<h2 id="tabs-heading" class="text-sm font-semibold text-text mb-1">The four tabs</h2>
-	<p class="text-xs text-text-tertiary mb-3">
-		Messages stay in the Inbox — a tab only decides where you see
-		them — and anything not sorted into one of the other three stays in Important. Drag a message
-		onto a tab, or use <span class="text-text-secondary">Move to tab</span>, to sort it yourself.
-	</p>
-
-	<ul class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
-		{#each INBOX_CATEGORIES as c (c.key)}
-			<li class="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-hover/50 border border-border/60">
-				<span class="mt-0.5 shrink-0 text-text-secondary"><Icon name={CATEGORY_ICON[c.key]} size={14} /></span>
-				<span class="min-w-0">
-					<span class="block text-sm text-text">{c.label}</span>
-					<span class="block text-xs text-text-tertiary">{c.description}</span>
-				</span>
-			</li>
-		{/each}
-	</ul>
-
+<Section title="Show tabs" id="tabs" headingId="tabs-heading">
 	{#each data.jevAccounts as account (account.id)}
-		<SettingRow
-			title={account.displayName ? `${account.displayName} · ${account.email}` : account.email}
-			description={account.isActive
-				? 'Show tabs in this account’s Inbox. This is the account you’re using now.'
-				: 'Show tabs in this account’s Inbox.'}
-		>
+		<SettingRow title={account.displayName ? `${account.displayName} · ${account.email}` : account.email}>
 			{#snippet control()}
 				<Toggle
 					checked={current(account, 'inboxTabs')}
@@ -260,50 +232,32 @@
 			{/snippet}
 		</SettingRow>
 	{/each}
-</section>
+</Section>
 
-<section class="mb-10" aria-labelledby="jev-heading">
-	<h2 id="jev-heading" class="text-sm font-semibold text-text mb-1 scroll-mt-6">Let Jev sort new mail</h2>
+<Section title="Let Jev sort new mail" id="jev" headingId="jev-heading">
+	<!-- Where Jev's answers come from just now. -->
 	{#if data.jev.mode === 'live'}
-		<p class="text-xs text-text-tertiary mb-3">
-			Connected to TypeSafe with model <span class="font-mono text-text-secondary">{data.jev.model}</span>,
-			at ${data.jev.pricePerMillion} per million input tokens (output is free).
-		</p>
+		<SettingRow title="Connected to TypeSafe">
+			{#snippet control()}
+				<span class="text-[0.8125rem] text-text-tertiary">
+					<span class="font-mono text-text-secondary">{data.jev.model}</span>
+					· ${data.jev.pricePerMillion} per million input tokens
+				</span>
+			{/snippet}
+		</SettingRow>
 	{:else if data.jev.mode === 'mock'}
-		<p class="text-xs text-warning mb-3">
-			Mock mode (JEV_MOCK): answers are worked out on this server from the facts below, and nothing
-			is sent to TypeSafe. Picks are a rule of thumb, not Jev.
-		</p>
+		<div class="px-5 max-md:px-4 py-3 text-[0.8125rem] text-warning">
+			Mock mode (JEV_MOCK): answers are worked out on this server and nothing is sent to TypeSafe.
+		</div>
 	{:else}
-		<p class="text-xs text-text-tertiary mb-3">
-			Not configured. Set <span class="font-mono text-text-secondary">TYPESAFE_API_KEY</span> on the
-			server to let Jev sort mail.
-		</p>
+		<div class="px-5 max-md:px-4 py-3 text-[0.8125rem] text-text-tertiary">
+			Not configured. Set <span class="font-mono text-text-secondary">TYPESAFE_API_KEY</span> on the server.
+		</div>
 	{/if}
 
-	<div class="rounded-xl border border-border bg-surface-hover/40 p-4 mb-4">
-		<p class="text-sm font-medium text-text">What Jev is sent</p>
-		<p class="text-xs text-text-tertiary mt-1">
-			For each new email in an account you switch on: the sender, every To and Cc address, the subject,
-			and the first {data.jev.excerptChars.toLocaleString()} characters of the body as text, with quoted
-			replies removed. With them, facts this app works out: whether the sender is in your contacts,
-			whether you’ve written to them or in the conversation, whether the email was addressed to you
-			directly, its mailing-list, bulk and auto-submitted markers, whether it comes from a no-reply
-			address, whether it carries a sign-in code, and where you moved this sender’s mail before. Also,
-			while Telegram alerts are on, the question of whether it’s urgent. With spam checks on, for new mail: its authentication results, whether its Reply-To or
-			display name points at another domain, up to five domains the body links to (read from its first
-			16 KB), and Stalwart’s spam score and rule names. Jev returns only probabilities; the app keeps
-			those and the facts, never the email text. TypeSafe says it doesn’t train on customer data; its
-			documentation doesn’t say how long requests are kept.
-		</p>
-	</div>
-
 	{#each data.jevAccounts as account (account.id)}
-		{@const tabsOn = current(account, 'inboxTabs')}
-		<SettingRow
-			title={`Let Jev read new mail · ${account.email}`}
-			description={`${tabsOn ? 'Sorts it into tabs' : 'Would sort it into tabs (they’re off)'}. Starts with mail that arrives from now on; Jev never moves mail you’ve put in a tab. ${monthLine(account.month)}`}
-		>
+		<!-- The line under the address is this month's use, not an explanation. -->
+		<SettingRow title={account.email} description={monthLine(account.month)}>
 			{#snippet control()}
 				<Toggle
 					checked={current(account, 'jevEnabled')}
@@ -314,97 +268,102 @@
 			{/snippet}
 		</SettingRow>
 	{/each}
-</section>
+</Section>
 
-<section id="pinned-senders" class="mb-10 scroll-mt-6" aria-labelledby="pins-heading">
-	<h2 id="pins-heading" class="text-sm font-semibold text-text mb-1">Pinned senders</h2>
-	<p class="text-xs text-text-tertiary mb-3">
-		Mail from a pinned sender always goes to its tab — Jev isn’t asked. Pin one from the message
-		that appears after you move an email, or add it here; <span class="font-mono">@domain</span> pins
-		everyone at a domain, and an address pin wins over its domain’s. Pins are yours, not Jev’s: they
-		act on new mail whenever Inbox tabs are on for the account, with “Let Jev read new mail” on or
-		off, and nothing is sent anywhere for them.
+<!-- Kept, folded away: what leaves this server is not something a switch's
+     name says. -->
+<details class="-mt-4 mb-8 text-[0.8125rem] text-text-tertiary">
+	<summary class="cursor-pointer font-semibold hover:text-text transition-colors select-none">What Jev is sent</summary>
+	<p class="mt-2 leading-relaxed max-w-prose">
+		For each new email in an account you switch on: the sender, every To and Cc address, the subject,
+		and the first {data.jev.excerptChars.toLocaleString()} characters of the body as text, with quoted
+		replies removed. With them, facts this app works out: whether the sender is in your contacts,
+		whether you’ve written to them or in the conversation, whether the email was addressed to you
+		directly, its mailing-list, bulk and auto-submitted markers, whether it comes from a no-reply
+		address, whether it carries a sign-in code, and where you moved this sender’s mail before. Also,
+		while Telegram alerts are on, the question of whether it’s urgent. With spam checks on, for new mail: its authentication results, whether its Reply-To or
+		display name points at another domain, up to five domains the body links to (read from its first
+		16 KB), and Stalwart’s spam score and rule names. Jev returns only probabilities; the app keeps
+		those and the facts, never the email text. TypeSafe says it doesn’t train on customer data; its
+		documentation doesn’t say how long requests are kept. Jev starts with mail that arrives from now
+		on, and never moves mail you’ve put in a tab.
 	</p>
+</details>
+
+<Section title="Pinned senders" id="pinned-senders" headingId="pins-heading" bare>
 	{#each data.jevAccounts as account (account.id)}
 		{#if data.jevAccounts.length > 1}
-			<p class="text-xs font-medium text-text-secondary mt-3 mb-1.5">{account.email}</p>
+			<p class="text-[0.8125rem] font-medium text-text-secondary mt-3 mb-1.5">{account.email}</p>
 		{/if}
 		{#if account.pins.length > 0 && !current(account, 'inboxTabs')}
-			<p class="text-xs text-warning mb-1.5">
+			<p class="text-[0.8125rem] text-warning mb-1.5">
 				These pins do nothing until Inbox tabs are on for {account.email}.
 			</p>
 		{/if}
-		{#if account.pins.length > 0}
-			<ul class="rounded-lg border border-border divide-y divide-border mb-2">
-				{#each account.pins as pin (pin.sender)}
-					<li class="flex items-center gap-3 px-3 py-2">
-						<span class="flex-1 min-w-0 truncate text-sm text-text font-mono">{pin.sender}</span>
-						<select
-							value={draft.value[pinKey(account.id, pin.sender)] ?? pin.category}
-							aria-label="Tab for {pin.sender}"
-							onchange={(e) => (draft.value[pinKey(account.id, pin.sender)] = e.currentTarget.value)}
-							class="bg-surface-hover border border-border rounded-lg px-2 py-1 text-xs text-text outline-none focus:border-accent"
-						>
-							{#each INBOX_CATEGORIES as c (c.key)}
-								<option value={c.key}>{c.label}</option>
-							{/each}
-						</select>
-						<button
-							type="button"
-							onclick={() => removePin(account.id, pin.sender)}
-							title="Remove pin"
-							aria-label="Remove pin for {pin.sender}"
-							class="p-1 rounded-md text-text-tertiary hover:text-danger cursor-pointer"
-						>
-							<Icon name="close" size={14} />
-						</button>
-					</li>
-				{/each}
-			</ul>
-		{/if}
-		<form class="flex items-center gap-2" onsubmit={(e) => { e.preventDefault(); addPin(account.id); }}>
-			<input
-				bind:value={newPinSender[account.id]}
-				placeholder="sender@example.com or @example.com"
-				aria-label="Sender to pin"
-				class="flex-1 min-w-0 bg-surface-hover border border-border rounded-lg px-2.5 py-1.5 text-sm text-text outline-none focus:border-accent"
-			/>
-			<select
-				value={newPinTab[account.id] ?? 'updates'}
-				aria-label="Tab"
-				onchange={(e) => (newPinTab[account.id] = e.currentTarget.value as InboxCategory)}
-				class="bg-surface-hover border border-border rounded-lg px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
-			>
-				{#each INBOX_CATEGORIES as c (c.key)}
-					<option value={c.key}>{c.label}</option>
-				{/each}
-			</select>
-			<button
-				type="submit"
-				class="btn btn-secondary"
-			>
-				Pin
-			</button>
-		</form>
+		<div class="rounded-xl border border-border divide-y divide-border mb-2">
+			{#each account.pins as pin (pin.sender)}
+				<div class="flex items-center gap-2 min-h-12 pl-5 pr-3 max-md:pl-4 max-md:pr-2 py-1.5">
+					<span class="flex-1 min-w-0 truncate text-sm text-text">{pin.sender}</span>
+					<select
+						value={draft.value[pinKey(account.id, pin.sender)] ?? pin.category}
+						aria-label="Tab for {pin.sender}"
+						onchange={(e) => (draft.value[pinKey(account.id, pin.sender)] = e.currentTarget.value)}
+						class="h-8 pl-2.5 bg-transparent border-0 rounded-md text-sm text-text [text-align-last:right] cursor-pointer hover:bg-surface-hover transition-colors"
+					>
+						{#each INBOX_CATEGORIES as c (c.key)}
+							<option value={c.key}>{c.label}</option>
+						{/each}
+					</select>
+					<button
+						type="button"
+						onclick={() => removePin(account.id, pin.sender)}
+						title="Remove pin"
+						aria-label="Remove pin for {pin.sender}"
+						class="w-8 h-8 flex items-center justify-center rounded-md text-text-tertiary hover:text-danger hover:bg-surface-hover transition-colors cursor-pointer"
+					>
+						<Icon name="close" size={14} />
+					</button>
+				</div>
+			{/each}
+			<!-- A whole address, or @domain for everyone at one. -->
+			<form class="flex flex-wrap items-center gap-2 min-h-14 pl-5 pr-3 max-md:pl-4 max-md:pr-2 py-2" onsubmit={(e) => { e.preventDefault(); addPin(account.id); }}>
+				<input
+					bind:value={newPinSender[account.id]}
+					placeholder="sender@example.com or @example.com"
+					aria-label="Sender to pin"
+					class="flex-1 min-w-[12rem] h-8.5 bg-transparent border border-border rounded-md px-2.5 text-sm text-text placeholder-text-tertiary outline-none focus:border-accent transition-colors"
+				/>
+				<select
+					value={newPinTab[account.id] ?? 'updates'}
+					aria-label="Tab"
+					onchange={(e) => (newPinTab[account.id] = e.currentTarget.value as InboxCategory)}
+					class="h-8 pl-2.5 bg-transparent border-0 rounded-md text-sm text-text cursor-pointer hover:bg-surface-hover transition-colors"
+				>
+					{#each INBOX_CATEGORIES as c (c.key)}
+						<option value={c.key}>{c.label}</option>
+					{/each}
+				</select>
+				<button type="submit" class="btn btn-secondary btn-sm">Pin</button>
+			</form>
+		</div>
 		{#if pinError[account.id]}
-			<p class="text-xs text-danger mt-1">{pinError[account.id]}</p>
+			<p class="text-[0.8125rem] text-danger mt-1">{pinError[account.id]}</p>
 		{/if}
 	{/each}
-</section>
+</Section>
 
 {#if configured && activeAccount}
-	<section class="mb-10">
+	<section class="mb-8">
 		<JevBackfill accountEmail={activeAccount.email} />
 
 		<div class="mt-4 rounded-xl border border-border p-4">
 			<div class="flex flex-wrap items-start gap-x-4 gap-y-3">
 				<div class="flex-1 min-w-[12rem]">
 					<p class="text-sm font-medium text-text">Try Jev on your last {data.jev.previewLimit} emails</p>
-					<p class="text-xs text-text-tertiary mt-1">
-						Shows where Jev would put the newest {data.jev.previewLimit} emails in
-						{activeAccount.email}’s Inbox. Nothing is moved.
+					<p class="text-[0.8125rem] text-text-tertiary mt-0.5">
+						Nothing is moved.
 						{#if data.jev.mode === 'live'}
-							It sends those emails to TypeSafe once, as described above.
+							The emails are sent to TypeSafe once.
 						{/if}
 					</p>
 				</div>
@@ -412,7 +371,7 @@
 					type="button"
 					onclick={runPreview}
 					disabled={previewing}
-					class="btn btn-primary shrink-0"
+					class="btn btn-secondary btn-sm shrink-0"
 				>
 					{previewing ? 'Asking Jev…' : preview ? 'Run again' : 'Try it'}
 				</button>
@@ -476,26 +435,12 @@
 	</section>
 {/if}
 
-<section id="add-ons" class="scroll-mt-6" aria-labelledby="add-ons-heading">
-	<h2 id="add-ons-heading" class="text-sm font-semibold text-text mb-1">Add-ons</h2>
-	<h3 class="text-sm font-medium text-text mt-3 mb-1">Spam checks</h3>
-	<p class="text-xs text-text-tertiary mb-1">
-		A second opinion beside Stalwart’s filter, which keeps running. Jev is asked two narrow questions about
-		each new email — is it spam, is it phishing — with its authentication results, its Reply-To and links,
-		and Stalwart’s own score. Mail in Junk is checked too.
-	</p>
-	<ul class="text-xs text-text-tertiary mb-3 list-disc pl-5 space-y-0.5">
-		<li><span class="text-text-secondary">Watch only</span> records Jev’s verdict and shows it beside Stalwart’s; nothing moves. Start here.</li>
-		<li>
-			<span class="text-text-secondary">Active</span> moves mail Jev is at least 90% sure is spam or phishing to Junk — never from
-			your contacts or people you’ve written to — warns on anything from 60%, and brings mail back from Junk
-			when Jev is very sure it’s fine and its sender passed DMARC. Jev’s moves don’t train Stalwart.
-		</li>
-	</ul>
+<Section title="Spam checks" id="spam-checks" headingId="spam-heading">
 	{#each data.jevAccounts as account (account.id)}
+		<!-- Said only while it can't be switched on: what has to happen first. -->
 		<SettingRow
-			title={`Spam checks · ${account.email}`}
-			description={current(account, 'jevEnabled') ? 'Applies to mail that arrives from now on.' : 'Let Jev read this account’s new mail first.'}
+			title={account.email}
+			description={current(account, 'jevEnabled') ? undefined : 'Let Jev read this account’s new mail first.'}
 		>
 			{#snippet control()}
 				<Select
@@ -511,11 +456,26 @@
 				/>
 			{/snippet}
 		</SettingRow>
-		{#if account.isActive && account.spamMode !== 'off'}
-			<JevSpamReport />
-		{/if}
 	{/each}
-	<p class="text-xs text-text-tertiary mt-4">
-		Alerts for urgent mail are under <a href="/settings/notifications" class="underline">Settings → Notifications</a>.
-	</p>
-</section>
+</Section>
+
+<!-- Kept, folded away: Active moves mail, and when it does is the whole
+     difference between the two. -->
+<details class="-mt-4 mb-8 text-[0.8125rem] text-text-tertiary">
+	<summary class="cursor-pointer font-semibold hover:text-text transition-colors select-none">Watch only and Active</summary>
+	<ul class="mt-2 list-disc pl-5 space-y-1 leading-relaxed max-w-prose">
+		<li>Stalwart’s own filter keeps running; Jev is a second opinion on whether each new email is spam or phishing. Mail in Junk is checked too.</li>
+		<li><span class="text-text-secondary">Watch only</span> records Jev’s verdict and shows it beside Stalwart’s; nothing moves.</li>
+		<li>
+			<span class="text-text-secondary">Active</span> moves mail Jev is at least 90% sure is spam or phishing to Junk — never from
+			your contacts or people you’ve written to — warns on anything from 60%, and brings mail back from Junk
+			when Jev is very sure it’s fine and its sender passed DMARC. Jev’s moves don’t train Stalwart.
+		</li>
+	</ul>
+</details>
+
+{#each data.jevAccounts as account (account.id)}
+	{#if account.isActive && account.spamMode !== 'off'}
+		<JevSpamReport />
+	{/if}
+{/each}

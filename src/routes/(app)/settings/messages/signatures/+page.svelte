@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import PageHeader from '$lib/components/settings/PageHeader.svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import {
 		userState,
@@ -148,78 +149,63 @@
 
 <svelte:head><title>{pageTitle({ page: 'Signatures', subtitle: 'Settings' })}</title></svelte:head>
 
-<header class="mb-6 flex items-start justify-between gap-4">
-	<div>
-		<h1 class="text-xl font-semibold text-text">Signatures</h1>
-		<p class="text-sm text-text-tertiary mt-1 max-w-prose">
-			Create one or more signatures and pick a default. The default is auto-inserted into new
-			messages; you can switch signatures from the composer at any time.
-		</p>
-	</div>
-	<button
-		type="button"
-		onclick={startNew}
-		class="btn btn-primary shrink-0"
-	>
-		<Icon name="add" size={14} />
-		New signature
-	</button>
-</header>
+<PageHeader title="Signatures">
+	{#snippet actions()}
+		<button type="button" onclick={startNew} class="btn btn-secondary">
+			<Icon name="add" size={14} />
+			New signature
+		</button>
+	{/snippet}
+</PageHeader>
 
-<div class="grid grid-cols-[220px_1fr] max-md:grid-cols-1 gap-6">
-	<!-- List -->
-	<aside class="flex flex-col gap-1">
+<div class="grid grid-cols-[220px_1fr] max-md:grid-cols-1 gap-6 mb-8">
+	<!-- List: the default one carries a check mark -->
+	<aside class="flex flex-col gap-0.5">
 		{#if signatures.length === 0 && !isNew}
-			<p class="text-xs text-text-tertiary px-2 py-3">No signatures yet. Create your first one.</p>
+			<p class="text-sm text-text-tertiary px-3 py-2">No signatures</p>
 		{:else}
 			{#each signatures as sig (sig.id)}
 				<button
 					type="button"
 					onclick={() => selectExisting(sig.id)}
-					class="text-left px-3 py-2 rounded-lg border-l-2 transition-colors cursor-pointer
+					class="flex items-center gap-2 text-left h-[34px] px-3 rounded-lg text-sm transition-colors cursor-pointer
 						{selection?.kind === 'existing' && selection.id === sig.id
-							? 'bg-accent/10 border-l-accent text-text'
-							: 'border-l-transparent text-text-secondary hover:bg-surface-hover hover:text-text'}"
+							? 'bg-accent/10 text-accent-fg font-medium'
+							: 'text-text-secondary hover:bg-surface-hover hover:text-text'}"
 				>
-					<div class="flex items-center gap-2">
-						<span class="flex-1 truncate text-sm">{sig.name}</span>
-						{#if sig.isDefault}
-							<span class="text-3xs uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent/15 text-accent-fg shrink-0">
-								Default
-							</span>
-						{/if}
-					</div>
+					<span class="flex-1 truncate">{sig.name}</span>
+					{#if sig.isDefault}
+						<Icon name="check" size={14} aria-label="Default" />
+					{/if}
 				</button>
 			{/each}
 		{/if}
 		{#if isNew}
-			<div class="px-3 py-2 rounded-lg border-l-2 border-l-accent bg-accent/10 text-sm text-text">
-				New signature
-			</div>
+			<div class="flex items-center h-[34px] px-3 rounded-lg bg-accent/10 text-sm font-medium text-accent-fg">New signature</div>
 		{/if}
 	</aside>
 
 	<!-- Editor pane -->
 	<section>
 		{#if !selection}
-			<div class="rounded-xl border border-dashed border-border bg-surface-hover/20 p-10 text-center text-sm text-text-tertiary">
-				Select a signature from the list, or create a new one.
+			<div class="rounded-xl border border-dashed border-border p-10 text-center text-sm text-text-tertiary">
+				No signature selected
 			</div>
 		{:else}
 			<!-- The editor has a Save of its own, so Cmd/Ctrl+S in it isn't the bar's. -->
 			<div class="flex flex-col gap-4" data-own-save>
 				<label class="block">
-					<span class="text-xs font-medium text-text-secondary block mb-1.5">Name</span>
+					<span class="text-[0.8125rem] font-semibold text-text-tertiary block mb-1.5">Name</span>
 					<input
 						bind:value={draftName}
 						placeholder="Signature name"
 						maxlength="80"
-						class="w-full bg-surface-hover border border-border rounded-lg px-2.5 py-1.5 text-sm text-text placeholder-text-tertiary outline-none focus:border-accent transition-colors"
+						class="w-full h-8.5 bg-transparent border border-border rounded-md px-2.5 text-sm text-text placeholder-text-tertiary outline-none focus:border-accent transition-colors"
 					/>
 				</label>
 
 				<div>
-					<span class="text-xs font-medium text-text-secondary block mb-1.5">Content</span>
+					<span class="text-[0.8125rem] font-semibold text-text-tertiary block mb-1.5">Content</span>
 					<SignatureEditor bind:html={draftHtml} disabled={saving} />
 					{#if overLimit}
 						<p class="text-xs text-danger mt-1.5">
@@ -238,11 +224,7 @@
 						{saving ? 'Saving…' : isNew ? 'Create' : 'Save'}
 					</button>
 					{#if selection?.kind === 'existing'}
-						{#if selectedSignature?.isDefault}
-							<span class="text-xs uppercase tracking-wider px-2.5 py-1.5 rounded-lg bg-accent/10 text-accent-fg">
-								Default
-							</span>
-						{:else}
+						{#if !selectedSignature?.isDefault}
 							<button
 								type="button"
 								onclick={setDefault}
@@ -279,10 +261,4 @@
 
 {#if identities.length > 1 && signatures.length > 0}
 	<IdentityDefaults />
-{:else if identities.length > 1 && signatures.length === 0}
-	<section class="mt-10 pt-6 border-t border-border">
-		<p class="text-sm text-text-tertiary">
-			Create a signature above before assigning per-identity defaults.
-		</p>
-	</section>
 {/if}

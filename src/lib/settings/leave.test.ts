@@ -36,7 +36,7 @@ vi.mock('$app/navigation', () => ({
 		mocks.leaveGuard = guard;
 	}
 }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/signatures') } }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/settings/messages/signatures') } }));
 vi.mock('$lib/stores/userState', () => ({
 	userState: writable(mocks.state),
 	setIdentitySignature: mocks.setIdentitySignature,
@@ -50,7 +50,7 @@ vi.mock('$lib/stores/profilePhoto', () => ({
 	profilePhoto: { ...writable({ url: null, zoom: 1, offsetX: 0, offsetY: 0 }), hydrate: () => {}, save: vi.fn(), clear: vi.fn() }
 }));
 
-import Signatures from '../../routes/(app)/settings/signatures/+page.svelte';
+import Signatures from '../../routes/(app)/settings/messages/signatures/+page.svelte';
 import Harness from '../../routes/(app)/settings/SettingsHarness.svelte';
 import ProfileCard from '$lib/components/ProfileCard.svelte';
 import CornerActions from '$lib/components/CornerActions.svelte';
