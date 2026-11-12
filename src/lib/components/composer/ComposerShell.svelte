@@ -20,6 +20,8 @@
 	import TableHeader from '@tiptap/extension-table-header';
 	import Image from '@tiptap/extension-image';
 	import { SignatureNode } from '$lib/tiptap/signature-node';
+	import { BlockDirection, blockDirection } from '$lib/tiptap/block-direction';
+	import type { IconName } from '$lib/icons';
 
 	import {
 		composer,
@@ -111,6 +113,10 @@
 
 	let editorEl = $state<HTMLDivElement | undefined>();
 	let editor: Editor | null = $state(null);
+	// Bumped on every editor transaction; the toolbar reads it so its pressed
+	// states follow the cursor. Reassigning `editor` to itself used to stand
+	// in for this, but to Svelte 5 that is no change, so nothing re-ran.
+	let editorVersion = $state(0);
 	let lastMode: 'popup' | 'fullscreen' | 'minimized' | 'closed' = 'closed';
 	let lastAppliedSignatureId: number | null | 'unset' = 'unset';
 
@@ -150,11 +156,12 @@
 				TableCell,
 				TableHeader,
 				Image.configure({ inline: false, allowBase64: true }),
-				SignatureNode
+				SignatureNode,
+				BlockDirection
 			],
 			content: initialContent,
 			onTransaction: () => {
-				editor = editor;
+				editorVersion++;
 			},
 			onUpdate: ({ editor: e }) => {
 				body = e.getHTML();
@@ -196,7 +203,27 @@
 	}
 
 	function isActive(name: string, attrs?: Record<string, unknown>) {
+		void editorVersion;
 		return editor?.isActive(name, attrs) ?? false;
+	}
+
+	function textColor(): string | undefined {
+		void editorVersion;
+		return editor?.getAttributes('textStyle').color as string | undefined;
+	}
+
+	// The direction of the paragraph at the cursor: what the direction button
+	// shows, and which side a paragraph with no alignment of its own sits on.
+	const isRtl = $derived.by(() => {
+		void editorVersion;
+		return !!editor && blockDirection(editor.state) === 'rtl';
+	});
+
+	function alignIcon(): IconName {
+		if (isActive('', { textAlign: 'center' })) return 'align-center';
+		if (isActive('', { textAlign: 'right' })) return 'align-right';
+		if (isActive('', { textAlign: 'left' })) return 'align-left';
+		return isRtl ? 'align-right' : 'align-left';
 	}
 
 	function openLinkPopover() {
@@ -970,7 +997,7 @@
 				<button type="button" onclick={() => toggleMenu('color')} class="fc-btn {openMenu === 'color' ? 'fc-active' : ''}" title="Text color" aria-label="Text color" aria-haspopup="menu" aria-expanded={openMenu === 'color'}>
 					<span class="flex flex-col items-center leading-none">
 						<Icon name="text-color" size={14} />
-						<span class="mt-0.5 h-0.5 w-3.5 rounded-full" style="background: {(editor?.getAttributes('textStyle').color as string) ?? 'currentColor'}"></span>
+						<span class="mt-0.5 h-0.5 w-3.5 rounded-full" style="background: {textColor() ?? 'currentColor'}"></span>
 					</span>
 				</button>
 				{#if openMenu === 'color'}
@@ -999,13 +1026,7 @@
 			</button>
 			<div class="relative" data-menu-root>
 				<button type="button" onclick={() => toggleMenu('align')} class="fc-btn {openMenu === 'align' ? 'fc-active' : ''}" title="Align" aria-label="Align" aria-haspopup="menu" aria-expanded={openMenu === 'align'}>
-					{#if isActive('', { textAlign: 'center' })}
-						<Icon name="align-center" size={16} />
-					{:else if isActive('', { textAlign: 'right' })}
-						<Icon name="align-right" size={16} />
-					{:else}
-						<Icon name="align-left" size={16} />
-					{/if}
+					<Icon name={alignIcon()} size={16} />
 				</button>
 				{#if openMenu === 'align'}
 					<div class="absolute bottom-full mb-1 left-0 z-50 flex gap-0.5 p-1 rounded-lg border border-border bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.35)]" role="menu" aria-label="Align">
@@ -1015,6 +1036,9 @@
 					</div>
 				{/if}
 			</div>
+			<button type="button" onclick={() => run((c) => c.toggleBlockDirection())} class="fc-btn {isRtl ? 'fc-active' : ''}" title="Right to left" aria-label="Right to left" aria-pressed={isRtl}>
+				<Icon name="direction-rtl" size={16} />
+			</button>
 			<div class="fc-sep"></div>
 			<button type="button" onclick={() => run((c) => c.clearNodes().unsetAllMarks())} class="fc-btn" title="Clear formatting" aria-label="Clear formatting">
 				<Icon name="clear-formatting" size={16} />
