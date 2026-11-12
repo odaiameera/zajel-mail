@@ -4,7 +4,7 @@ Jev is TypeSafe's decision model. Zajel Mail uses it to sort the Inbox into tabs
 
 This page keeps what is not built yet, and the rules any new Jev work has to keep.
 
-A redesign of how rules, folders, labels and Jev fit together is under way, staged in [organising-mail-plan.md](organising-mail-plan.md): Jev keeps the four tabs, and rules go back to exact matches that file into folders and labels. Its first stages are done: rules are exact-match only, and Jev no longer judges rule conditions or runs rules at all; a rule can no longer put mail in a tab, which is now a sender pin's job, with Jev on or off; and (stage 7) new mail goes through one pipeline, a pass per account that runs out-of-office, then rules, then Jev ([mail-pipeline](../src/lib/server/mail-pipeline/)).
+How rules, folders, labels and Jev fit together was redesigned in stages, recorded in [organising-mail-plan.md](organising-mail-plan.md), and every stage is done: Jev keeps the four tabs, and rules are exact matches that file into folders and labels. Jev no longer judges rule conditions or runs rules at all; a rule can't put mail in a tab, which is a sender pin's job, with Jev on or off; new mail goes through one pipeline, a pass per account that runs out-of-office, then rules, then Jev ([mail-pipeline](../src/lib/server/mail-pipeline/)); and the tab chip on an open message says why the message is in its tab.
 
 ---
 

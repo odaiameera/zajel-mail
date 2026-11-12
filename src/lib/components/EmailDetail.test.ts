@@ -464,6 +464,7 @@ describe('EmailDetail mark as read', () => {
 
 describe('EmailDetail Inbox tab', () => {
 	const data = mocks.page.data as Record<string, unknown>;
+	const reasonCalls = () => fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith('/api/jev/decision/'));
 	const inTab = (keywords: Record<string, boolean>, mailboxIds: Record<string, boolean> = { inbox: true }) =>
 		({ ...email(), keywords: { $seen: true, ...keywords }, mailboxIds }) as Email;
 
@@ -482,8 +483,91 @@ describe('EmailDetail Inbox tab', () => {
 
 	it('shows the tab a sorted message is in beside its labels', () => {
 		render(EmailDetail, { email: inTab({ $cat_updates: true }) });
-		// Said in words, not only in a tooltip, so it can't pass for a label.
-		expect(screen.getByTitle('In the Updates tab').textContent?.replace(/\s+/g, ' ').trim()).toBe('In the Updates tab');
+		const chip = screen.getByTitle('In the Updates tab');
+		expect(chip.textContent?.trim()).toBe('Updates');
+		// Named as a tab, not only in a tooltip, so it can't pass for a label.
+		expect(screen.getByRole('button', { name: 'In the Updates tab' })).toBe(chip);
+		// Nothing is asked until the chip is.
+		expect(reasonCalls()).toEqual([]);
+	});
+
+	describe('why it is in that tab', () => {
+		let reply: unknown;
+		beforeEach(() => {
+			reply = { why: { kind: 'none' }, rules: [] };
+			fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+				String(input).startsWith('/api/jev/decision/') ? new Response(JSON.stringify(reply), { status: 200 }) : new Response('{}', { status: 200 })
+			);
+		});
+		afterEach(async () => {
+			fetchMock.mockReset();
+			const { toasts } = await import('$lib/stores/toast');
+			toasts.set([]);
+		});
+		const chip = () => screen.getByRole('button', { name: /Updates/ });
+		/** The chip's hover text and name, once hovered. */
+		async function reasonShown(): Promise<string> {
+			await fireEvent.pointerEnter(chip());
+			await waitFor(() => expect(chip().getAttribute('title')).not.toBe('In the Updates tab'));
+			expect(chip().getAttribute('aria-label')).toBe(chip().getAttribute('title'));
+			return chip().getAttribute('title')!;
+		}
+
+		it('says what put it there, for each case', async () => {
+			const cases: [unknown, string][] = [
+				[{ why: { kind: 'chosen' }, rules: [] }, 'You moved this to Updates.'],
+				[{ why: { kind: 'pin', sender: 'news@example.com' }, rules: [] }, 'Mail from news@example.com is pinned to Updates.'],
+				[{ why: { kind: 'pin', sender: '@shop.example' }, rules: [] }, 'Mail from anyone at shop.example is pinned to Updates.'],
+				[{ why: { kind: 'jev', confidence: 0.917 }, rules: [] }, 'Jev put this in Updates (92% sure).'],
+				[{ why: { kind: 'none' }, rules: [] }, 'In the Updates tab.'],
+				[{ why: { kind: 'jev', confidence: 0.92 }, rules: ['Receipts'] }, 'Jev put this in Updates (92% sure). Rule “Receipts” also matched.'],
+				[{ why: { kind: 'none' }, rules: ['A', 'B'] }, 'In the Updates tab. Rules “A” and “B” also matched.'],
+				[{ why: { kind: 'chosen' }, rules: ['A', 'B', 'C'] }, 'You moved this to Updates. Rules “A”, “B” and “C” also matched.'],
+				// A rule split in two keeps one name; a rule with no name isn't named.
+				[{ why: { kind: 'none' }, rules: ['Receipts', 'Receipts', ''] }, 'In the Updates tab. Rule “Receipts” also matched.']
+			];
+			for (const [answer, text] of cases) {
+				reply = answer;
+				render(EmailDetail, { email: inTab({ $cat_updates: true }) });
+				expect(await reasonShown()).toBe(text);
+				cleanup();
+			}
+		});
+
+		it('asks once, however often the chip is hovered or focused, and for the tab it is in', async () => {
+			reply = { why: { kind: 'jev', confidence: 0.92 }, rules: [] };
+			render(EmailDetail, { email: inTab({ $cat_updates: true }) });
+			await reasonShown();
+			for (let i = 0; i < 3; i++) {
+				await fireEvent.pointerEnter(chip());
+				await fireEvent.focus(chip());
+			}
+			await tick();
+			expect(reasonCalls()).toEqual(['/api/jev/decision/M1?tab=updates']);
+		});
+
+		it('shows the same words in a toast when tapped, with one request', async () => {
+			reply = { why: { kind: 'pin', sender: 'news@example.com' }, rules: [] };
+			render(EmailDetail, { email: inTab({ $cat_updates: true }) });
+			await fireEvent.pointerEnter(chip());
+			await fireEvent.click(chip());
+			const { toasts } = await import('$lib/stores/toast');
+			const { get } = await import('svelte/store');
+			await waitFor(() => expect(get(toasts).map((t) => t.message)).toEqual(['Mail from news@example.com is pinned to Updates.']));
+			expect(reasonCalls()).toHaveLength(1);
+		});
+
+		it('says only which tab when the reason can’t be had, and asks again later', async () => {
+			fetchMock.mockImplementation(async () => new Response('{}', { status: 500 }));
+			render(EmailDetail, { email: inTab({ $cat_updates: true }) });
+			await fireEvent.click(chip());
+			const { toasts } = await import('$lib/stores/toast');
+			const { get } = await import('svelte/store');
+			await waitFor(() => expect(get(toasts).map((t) => t.message)).toEqual(['In the Updates tab.']));
+			expect(chip().getAttribute('title')).toBe('In the Updates tab');
+			await fireEvent.pointerEnter(chip());
+			await waitFor(() => expect(reasonCalls()).toHaveLength(2));
+		});
 	});
 
 	it('shows none for Important, outside the Inbox, or while tabs are off', () => {

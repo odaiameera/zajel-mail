@@ -4,6 +4,8 @@
  * reliably render it back as a pill at the right place in the input.
  */
 
+import { isInboxCategory } from '$lib/types/categories';
+
 export type FieldOp =
 	| 'from'
 	| 'to'
@@ -13,7 +15,8 @@ export type FieldOp =
 	| 'in'
 	| 'label'
 	| 'before'
-	| 'after';
+	| 'after'
+	| 'tab';
 
 export type FlagOp = 'is' | 'has';
 
@@ -32,7 +35,8 @@ const FIELD_OPS: FieldOp[] = [
 	'in',
 	'label',
 	'before',
-	'after'
+	'after',
+	'tab'
 ];
 const FLAG_OPS: FlagOp[] = ['is', 'has'];
 
@@ -117,6 +121,11 @@ function classifyChunk(chunk: RawChunk): Token {
 		}
 		if ((field === 'before' || field === 'after') && !DATE_RE.test(value)) {
 			return { kind: 'error', raw, reason: 'invalid date', start, end };
+		}
+		if (field === 'tab') {
+			const tab = value.toLowerCase();
+			if (!isInboxCategory(tab)) return { kind: 'error', raw, reason: `unknown tab: value "${tab}"`, start, end };
+			return { kind: 'field', field, value: tab, raw, start, end };
 		}
 		return {
 			kind: 'field',

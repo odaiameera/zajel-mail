@@ -79,6 +79,7 @@ function prepareStmts() {
 			`UPDATE mail_arrivals SET handled_at = ?, rules_json = ? WHERE account_id = ? AND email_id = ? AND handled_at IS NULL`
 		),
 		prune: db.prepare('DELETE FROM mail_arrivals WHERE seen_at < ?'),
+		matched: db.prepare('SELECT rules_json FROM mail_arrivals WHERE account_id = ? AND email_id = ?'),
 		getHoldSince: db.prepare('SELECT hold_since FROM mail_pipeline WHERE account_id = ?'),
 		holdOn: db.prepare(
 			`INSERT INTO mail_pipeline (account_id, cursor, hold_since, updated_at) VALUES (?, NULL, ?, ?)
@@ -244,6 +245,22 @@ export function markHandled(
 			s.handle.run(now.getTime(), h.rules?.length ? JSON.stringify(h.rules) : null, accountRowId, h.emailId);
 		}
 	})();
+}
+
+/**
+ * The ids of the rules that matched a message when it arrived, as the pass
+ * recorded them. Empty once the arrival is pruned (after a week), and for
+ * mail the pass never saw.
+ */
+export function matchedRuleIds(accountRowId: string, emailId: string): string[] {
+	const row = stmts().matched.get(accountRowId, emailId) as { rules_json: string | null } | undefined;
+	if (!row?.rules_json) return [];
+	try {
+		const ids: unknown = JSON.parse(row.rules_json);
+		return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+	} catch {
+		return [];
+	}
 }
 
 /**

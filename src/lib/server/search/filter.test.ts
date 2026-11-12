@@ -58,6 +58,21 @@ describe('matchesFilter', () => {
 	});
 });
 
+describe('a tab: search with free text', () => {
+	it('still asks the vectors, and keeps only their hits in that tab of the Inbox', () => {
+		const query = splitSemantic(fromSearchBox('tab:updates statement'));
+		expect(query).toEqual({ text: 'statement', rest: { operator: 'AND', conditions: [{ inMailbox: 'IN' }, { hasKeyword: '$cat_updates' }] } });
+		const hit = (id: string, mailboxIds: string[], keywords: Record<string, boolean>) =>
+			fakeEmail({ id, receivedAt: '2026-04-10T08:00:00Z', subject: 'Your statement', mailboxIds, keywords });
+		expect(matchesFilter(hit('in-tab', ['IN'], { $cat_updates: true }), query!.rest)).toBe(true);
+		// In the Inbox, but in another tab.
+		expect(matchesFilter(hit('other-tab', ['IN'], { $cat_promotions: true }), query!.rest)).toBe(false);
+		expect(matchesFilter(hit('important', ['IN'], {}), query!.rest)).toBe(false);
+		// The tab's keyword, but no longer in the Inbox.
+		expect(matchesFilter(hit('archived', ['AR'], { $cat_updates: true }), query!.rest)).toBe(false);
+	});
+});
+
 describe('indexPrefilter', () => {
 	it('applies top-level mailbox and date conditions to what the index stores', () => {
 		const allow = indexPrefilter({
