@@ -5,6 +5,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { IDLE_PROGRESS, streamApply, type ApplyProgress } from '$lib/rules/apply';
 	import type { Rule } from '$lib/types/rules';
+	import { trapFocus } from '$lib/utils/trap-focus';
 
 	/**
 	 * "Save & apply": the saved rule run over the Inbox now, with its
@@ -43,10 +44,12 @@
 
 <div class="fixed inset-0 z-[80] flex items-center justify-center bg-black/50" transition:fade={{ duration: 150 }}>
 	<div
-		class="w-full max-w-[420px] mx-4 bg-surface border border-border rounded-2xl p-5 shadow-[0_16px_64px_rgba(0,0,0,0.5)]"
+		class="w-full max-w-[420px] mx-4 bg-surface border border-border rounded-2xl p-5 shadow-[0_16px_64px_rgba(0,0,0,0.5)] outline-none"
 		role="dialog"
 		aria-modal="true"
 		aria-labelledby="rule-apply-title"
+		tabindex="-1"
+		use:trapFocus
 		transition:fly={{ y: 16, duration: 200 }}
 	>
 		<div class="flex items-center gap-2 mb-3">

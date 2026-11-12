@@ -17,10 +17,14 @@ async function whereTo(load: (event: never) => unknown): Promise<{ status: numbe
 }
 
 describe('settings pages that moved', () => {
-	it('send Folders, Labels and Filters & Rules to Folders & labels, for good', async () => {
-		for (const load of [folders, labels, rules]) {
+	it('send Folders and Labels to Folders & labels, for good', async () => {
+		for (const load of [folders, labels]) {
 			expect(await whereTo(load as never)).toEqual({ status: 308, location: '/settings/folders-labels' });
 		}
+	});
+
+	it('sends Filters & Rules to the list of all rules on Folders & labels, for good', async () => {
+		expect(await whereTo(rules as never)).toEqual({ status: 308, location: '/settings/folders-labels#rules' });
 	});
 
 	it('sends Jev to Inbox tabs, for good', async () => {

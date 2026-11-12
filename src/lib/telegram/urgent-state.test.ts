@@ -24,9 +24,10 @@ describe('urgentState', () => {
 });
 
 describe('fixFor', () => {
-	it('sends a lost sign-in to Accounts and everything else to Inbox tabs, where Jev is switched on', () => {
+	it('sends a lost sign-in to Accounts and everything else to "Let Jev sort new mail" on Inbox tabs, where Jev is switched on', () => {
 		expect(fixFor('sign-in')).toEqual({ href: '/settings/accounts', label: 'Sign in' });
-		expect(fixFor('account')).toEqual({ href: '/settings/inbox-tabs', label: 'Inbox tabs' });
-		expect(fixFor('server')).toEqual({ href: '/settings/inbox-tabs', label: 'Inbox tabs' });
+		const jev = { href: '/settings/inbox-tabs#jev-heading', label: 'Let Jev sort new mail' };
+		expect(fixFor('account')).toEqual(jev);
+		expect(fixFor('server')).toEqual(jev);
 	});
 });

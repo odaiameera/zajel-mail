@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { needsRewrite, type Rule } from '$lib/types/rules';
+	import type { Rule } from '$lib/types/rules';
 	import { conditionText, legacyTab, pinDifference, pinReach, tabName, whyNotPinned } from '$lib/rules/describe';
 
 	/**
@@ -138,8 +138,10 @@
 			put mail in a tab, so that part was removed; the rest of the rule runs as before. To
 			keep a sender’s mail in that tab, pin the sender under
 			{@render pinnedSenders()}.
-			“Got it” beside it in the list clears this note.
 		</p>
+		<button onclick={() => onDismiss(rule.id)} disabled={busy} class="btn btn-secondary self-start">
+			Got it
+		</button>
 	</div>
 {/if}
 {#if rule.note?.splitInto}
@@ -148,15 +150,12 @@
 			This rule filed mail in several places, so it is now {rule.note.splitInto} rules.
 		</p>
 		<p class="text-xs text-text-secondary">
-			A rule files into one place now. The rules it became sit side by side in the list and
+			A rule files into one place now. The rules it became run one after the other and
 			together do what it did, except that where it moved mail to two folders, the first one
 			decides.
 		</p>
-		<!-- A rule that runs has its "Got it" on its row in the list. -->
-		{#if needsRewrite(rule)}
-			<button onclick={() => onDismiss(rule.id)} disabled={busy} class="btn btn-secondary self-start">
-				Got it
-			</button>
-		{/if}
+		<button onclick={() => onDismiss(rule.id)} disabled={busy} class="btn btn-secondary self-start">
+			Got it
+		</button>
 	</div>
 {/if}

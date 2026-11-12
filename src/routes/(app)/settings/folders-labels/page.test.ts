@@ -600,7 +600,7 @@ describe('Folders & labels: folders and labels with their rules', () => {
 		page([]);
 		const folders = within(region('Folders'));
 		expect(folders.getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Receipts', 'Projects', 'Clients']);
-		const indent = (name: string) => (folders.getByRole('group', { name }).firstElementChild as HTMLElement).style.paddingLeft;
+		const indent = (name: string) => folders.getByRole('group', { name }).style.getPropertyValue('--indent');
 		expect([indent('Receipts'), indent('Projects'), indent('Clients')]).toEqual(['0px', '0px', '16px']);
 		expect(folders.getByText('2 unread')).toBeTruthy();
 
@@ -616,7 +616,7 @@ describe('Folders & labels: folders and labels with their rules', () => {
 
 	it('says how many rules file into a folder or label', () => {
 		page([exact, base('r2', 'More receipts', { target: { kind: 'folder', mailboxId: 'RCPT' } }), splitRow]);
-		expect(mailboxRow('Folders', 'Receipts').getByText('· 2 rules')).toBeTruthy();
+		expect(mailboxRow('Folders', 'Receipts').getByText((_, el) => /^·\s?2 rules$/.test(el?.textContent ?? ''))).toBeTruthy();
 		expect(mailboxRow('Labels', 'Work').getByText('1 rule')).toBeTruthy();
 		expect(mailboxRow('Labels', 'Home').queryByText(/rule/)).toBeNull();
 	});
@@ -844,5 +844,434 @@ describe('Folders & labels: changing folders and labels', () => {
 		await waitFor(() => expect(within(region('Labels')).getByRole('alert').textContent).toBe('Labels stay under Labels'));
 		expect(nav.invalidateAll).not.toHaveBeenCalled();
 		expect(alert).not.toHaveBeenCalled();
+	});
+});
+
+/** Hold back the requests `match` picks until the returned function is called. */
+function hold(match: (url: string, init?: RequestInit) => boolean): (() => void) & { reached: () => boolean } {
+	let release: (() => void) | undefined;
+	let reached = false;
+	const gate = new Promise<void>((r) => (release = r));
+	const realFetch = globalThis.fetch;
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (url: string, init?: RequestInit) => {
+			if (match(url, init)) {
+				reached = true;
+				await gate;
+			}
+			return realFetch(url, init);
+		})
+	);
+	return Object.assign(() => release?.(), { reached: () => reached });
+}
+const backdrop = () => dialog().parentElement as HTMLElement;
+const typeRule = async () => {
+	await fireEvent.input(within(dialog()).getByLabelText('Name'), { target: { value: 'Boss mail' } });
+	await fireEvent.input(within(dialog()).getByLabelText('Value'), { target: { value: 'boss@' } });
+};
+const addRuleTo = async (section: string, row: string) => {
+	await openRow(section, row);
+	await fireEvent.click(mailboxRow(section, row).getByRole('button', { name: 'Add rule' }));
+};
+
+describe('Folders & labels: a label is shown by its name', () => {
+	it('names a label by its name, not its mailbox name, in its row, its buttons and its delete question', async () => {
+		const asked = vi.fn(() => false);
+		vi.stubGlobal('confirm', asked);
+		stubFetch([]);
+		render(Page, {
+			props: {
+				data: {
+					rules: [],
+					labels: labels.map((l) => (l.id === 'HOME' ? { ...l, name: 'Home Stuff' } : l)),
+					mailboxes: mailboxes.map((m) => (m.id === 'HOME' ? { ...m, name: 'home-stuff' } : m)),
+					mailboxMeta: {}
+				}
+			} as never
+		});
+		expect(within(region('Labels')).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Work', 'Home Stuff']);
+		const row = mailboxRow('Labels', 'Home Stuff');
+		expect(row.getByText('Home Stuff')).toBeTruthy();
+		for (const name of ['Move Home Stuff up', 'Move Home Stuff down', 'Edit Home Stuff', 'Delete Home Stuff']) {
+			expect(row.getByRole('button', { name })).toBeTruthy();
+		}
+		await openRow('Labels', 'Home Stuff');
+		await fireEvent.click(row.getByRole('button', { name: 'Delete Home Stuff' }));
+		expect(asked).toHaveBeenCalledWith('Delete "Home Stuff"? Emails tagged with this label will not be deleted.');
+		expect(document.body.innerHTML).not.toContain('home-stuff');
+	});
+});
+
+describe('Folders & labels: a half-written rule is kept', () => {
+	it('asks before Escape or the X throws a changed rule away, keeps it on "no", and ignores a click outside', async () => {
+		const asked = vi.fn(() => false);
+		vi.stubGlobal('confirm', asked);
+		page([]);
+		await addRuleTo('Folders', 'Projects');
+		await typeRule();
+
+		await fireEvent.keyDown(dialog(), { key: 'Escape' });
+		expect(asked).toHaveBeenCalledWith('Discard your changes to this rule?');
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Close' }));
+		expect(asked).toHaveBeenCalledTimes(2);
+		await fireEvent.click(backdrop());
+		expect(asked).toHaveBeenCalledTimes(2);
+		expect((within(dialog()).getByLabelText('Name') as HTMLInputElement).value).toBe('Boss mail');
+		expect((within(dialog()).getByLabelText('Value') as HTMLInputElement).value).toBe('boss@');
+
+		asked.mockReturnValue(true);
+		await fireEvent.keyDown(dialog(), { key: 'Escape' });
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(writes()).toEqual([]);
+	});
+
+	it('closes an unchanged rule at once on Escape, a click outside or the X', async () => {
+		const asked = vi.fn(() => false);
+		vi.stubGlobal('confirm', asked);
+		page([exact]);
+		await openRow('Folders', 'Receipts');
+		const line = () => mailboxRow('Folders', 'Receipts').getByText('From contains “shop.example”');
+		await fireEvent.click(line());
+		await fireEvent.keyDown(dialog(), { key: 'Escape' });
+		expect(screen.queryByRole('dialog')).toBeNull();
+		await fireEvent.click(line());
+		await fireEvent.click(backdrop());
+		expect(screen.queryByRole('dialog')).toBeNull();
+		await fireEvent.click(line());
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Close' }));
+		expect(screen.queryByRole('dialog')).toBeNull();
+		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Add rule' }));
+		await fireEvent.keyDown(dialog(), { key: 'Escape' });
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(asked).not.toHaveBeenCalled();
+	});
+
+	it('closes a changed rule on Cancel without asking', async () => {
+		const asked = vi.fn(() => false);
+		vi.stubGlobal('confirm', asked);
+		page([]);
+		await addRuleTo('Folders', 'Projects');
+		await typeRule();
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Cancel' }));
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(asked).not.toHaveBeenCalled();
+	});
+
+	it('cannot be closed while its save is on its way, and applies only once it has saved', async () => {
+		const asked = vi.fn(() => true);
+		vi.stubGlobal('confirm', asked);
+		page([exact]);
+		await openFromList('Receipts');
+		const release = hold((url, init) => init?.method === 'PATCH');
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Save & apply' }));
+		await waitFor(() => expect(within(dialog()).getByRole('button', { name: 'Saving…' })).toBeTruthy());
+
+		await fireEvent.keyDown(dialog(), { key: 'Escape' });
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Close' }));
+		await fireEvent.click(backdrop());
+		expect(screen.getByRole('dialog', { name: 'Receipts' })).toBeTruthy();
+		expect(asked).not.toHaveBeenCalled();
+		await new Promise((r) => setTimeout(r, 20));
+		expect(server.calls.some((c) => c.url === '/api/rules/apply')).toBe(false);
+
+		release();
+		await waitFor(() => expect(writes().map((c) => c.url)).toEqual(['/api/rules/exact', '/api/rules/apply']));
+		expect(screen.queryByRole('dialog', { name: 'Receipts' })).toBeNull();
+	});
+});
+
+describe('Folders & labels: a save ends in its dialog', () => {
+	it('stays open while the saved rule is read back, and only then applies it', async () => {
+		vi.stubGlobal('confirm', () => true);
+		page([exact]);
+		await openFromList('Receipts');
+		await fireEvent.input(within(dialog()).getByLabelText('Name'), { target: { value: 'Renamed' } });
+		const release = hold((url, init) => url === '/api/rules' && (init?.method ?? 'GET') === 'GET');
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Save & apply' }));
+		await waitFor(() => expect(release.reached()).toBe(true));
+		await fireEvent.keyDown(dialog(), { key: 'Escape' });
+		expect(screen.getByRole('dialog', { name: 'Receipts' })).toBeTruthy();
+		release();
+		await waitFor(() => expect(writes().map((c) => c.url)).toEqual(['/api/rules/exact', '/api/rules/apply']));
+	});
+});
+
+describe('Folders & labels: notes on a rule where the rule is', () => {
+	it('shows a running rule’s note and "Got it" in its row, and clears it there and under "All rules"', async () => {
+		page([{ ...tabRemoved, target: { kind: 'label', mailboxId: 'WORK' } }]);
+		await openRow('Labels', 'Work');
+		await openAllRules();
+		const note = 'No longer puts mail in the Newsletters tab.';
+		expect(mailboxRow('Labels', 'Work').getByText(note)).toBeTruthy();
+		expect(ruleRow('Work mail').getByText(note)).toBeTruthy();
+		await fireEvent.click(mailboxRow('Labels', 'Work').getByRole('button', { name: 'Got it' }));
+		await waitFor(() => expect(writes()).toEqual([{ method: 'POST', url: '/api/rules/tab-removed/dismiss', body: undefined }]));
+		await waitFor(() => expect(screen.queryByText(note)).toBeNull());
+		expect(screen.queryByRole('button', { name: 'Got it' })).toBeNull();
+	});
+
+	it('has its own "Got it" in the dialog for a rule that lost its tab or was split', async () => {
+		page([{ ...tabRemoved, target: { kind: 'label', mailboxId: 'WORK' } }, splitRow]);
+		await openRow('Labels', 'Work');
+		await fireEvent.click(mailboxRow('Labels', 'Work').getByText('Work mail'));
+		expect(within(dialog()).queryByText(/in the list/)).toBeNull();
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Got it' }));
+		await waitFor(() => expect(writes()).toEqual([{ method: 'POST', url: '/api/rules/tab-removed/dismiss', body: undefined }]));
+		await waitFor(() => expect(within(dialog()).queryByText('This rule no longer puts mail in the Newsletters tab.')).toBeNull());
+		expect(mailboxRow('Labels', 'Work').queryByText('No longer puts mail in the Newsletters tab.')).toBeNull();
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Close' }));
+
+		server.calls = [];
+		await fireEvent.click(mailboxRow('Labels', 'Work').getByText('Shop'));
+		expect(within(dialog()).queryByText(/in the list/)).toBeNull();
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Got it' }));
+		await waitFor(() => expect(writes()).toEqual([{ method: 'POST', url: '/api/rules/split~2/dismiss', body: undefined }]));
+	});
+});
+
+describe('Folders & labels: focus in and out of the dialogs', () => {
+	it('keeps Tab inside the rule dialog', async () => {
+		page([]);
+		await addRuleTo('Folders', 'Projects');
+		const close = within(dialog()).getByRole('button', { name: 'Close' });
+		const last = within(dialog()).getByRole('button', { name: 'Save & apply' });
+		expect(document.activeElement).toBe(dialog());
+		await fireEvent.keyDown(dialog(), { key: 'Tab', shiftKey: true });
+		expect(document.activeElement).toBe(last);
+		await fireEvent.keyDown(last, { key: 'Tab' });
+		expect(document.activeElement).toBe(close);
+		await fireEvent.keyDown(close, { key: 'Tab', shiftKey: true });
+		expect(document.activeElement).toBe(last);
+	});
+
+	it('keeps Tab inside the apply progress', async () => {
+		page([exact]);
+		hold((url) => url === '/api/rules/apply');
+		await openFromList('Receipts');
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Save & apply' }));
+		await waitFor(() => expect(screen.getByRole('heading', { name: 'Applying rule…' })).toBeTruthy());
+		const progress = screen.getByRole('dialog');
+		expect(document.activeElement).toBe(progress);
+		const background = within(progress).getByRole('button', { name: 'Run in background' });
+		const cancel = within(progress).getByRole('button', { name: 'Cancel' });
+		cancel.focus();
+		await fireEvent.keyDown(cancel, { key: 'Tab' });
+		expect(document.activeElement).toBe(background);
+		await fireEvent.keyDown(background, { key: 'Tab', shiftKey: true });
+		expect(document.activeElement).toBe(cancel);
+	});
+
+	it('gives focus back to what opened the dialog after Cancel and Save', async () => {
+		page([exact]);
+		await openRow('Folders', 'Receipts');
+		const add = mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Add rule' });
+		await fireEvent.click(add);
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Cancel' }));
+		await waitFor(() => expect(document.activeElement).toBe(add));
+
+		const line = mailboxRow('Folders', 'Receipts').getByText('From contains “shop.example”').closest('button') as HTMLElement;
+		await fireEvent.click(line);
+		await fireEvent.input(within(dialog()).getByLabelText('Name'), { target: { value: 'Renamed' } });
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+		await waitFor(() => expect(document.activeElement).toBe(line));
+		expect(line.isConnected).toBe(true);
+
+		await openAllRules();
+		const newRule = within(allRules()).getByRole('button', { name: 'New rule' });
+		await fireEvent.click(newRule);
+		await fireEvent.keyDown(dialog(), { key: 'Escape' });
+		await waitFor(() => expect(document.activeElement).toBe(newRule));
+	});
+
+	it('gives focus to the row, or the section heading, when the rule that opened the dialog was deleted', async () => {
+		vi.stubGlobal('confirm', () => true);
+		page([exact, base('other', 'Other')]);
+		await openRow('Folders', 'Receipts');
+		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByText('From contains “shop.example”'));
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Delete' }));
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+		await waitFor(() => expect(document.activeElement).toBe(within(region('Folders')).getByRole('group', { name: 'Receipts' })));
+
+		await openFromList('Other');
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Delete' }));
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+		await waitFor(() => expect(document.activeElement).toBe(document.getElementById('rules-heading')));
+	});
+});
+
+describe('Folders & labels: rows on a phone', () => {
+	it('keeps Edit and Delete in the row on a wide screen, and inside the opened row on a phone', async () => {
+		const asked = vi.fn(() => false);
+		vi.stubGlobal('confirm', asked);
+		page([]);
+		for (const [section, row, noun] of [
+			['Folders', 'Receipts', 'folder'],
+			['Labels', 'Work', 'label']
+		] as const) {
+			for (const verb of ['Edit', 'Delete']) {
+				expect(mailboxRow(section, row).getByRole('button', { name: `${verb} ${row}` }).classList).toContain('max-md:hidden');
+			}
+			expect(mailboxRow(section, row).queryByRole('button', { name: `Edit ${noun}` })).toBeNull();
+			await openRow(section, row);
+			for (const verb of ['Edit', 'Delete']) {
+				const button = mailboxRow(section, row).getByRole('button', { name: `${verb} ${noun}` });
+				expect(button.closest('.md\\:hidden')).toBeTruthy();
+				// Below "Add rule".
+				const add = mailboxRow(section, row).getByRole('button', { name: 'Add rule' });
+				expect(add.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+			}
+		}
+		await fireEvent.click(mailboxRow('Labels', 'Work').getByRole('button', { name: 'Delete label' }));
+		expect(asked).toHaveBeenCalledWith('Delete "Work"? Emails tagged with this label will not be deleted.');
+		await openRow('System folders', 'Trash');
+		expect(within(region('System folders')).queryByRole('button', { name: /Edit|Delete/ })).toBeNull();
+	});
+
+	it('edits a folder from inside its opened row', async () => {
+		Element.prototype.scrollTo = () => {};
+		vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+		page([]);
+		await openRow('Folders', 'Receipts');
+		await fireEvent.click(mailboxRow('Folders', 'Receipts').getByRole('button', { name: 'Edit folder' }));
+		expect((within(dialog()).getByLabelText('Folder name') as HTMLInputElement).value).toBe('Receipts');
+	});
+
+	it('indents 12px a level on a phone, and no deeper than four levels', () => {
+		const deep = [1, 2, 3, 4, 5, 6].map((n) => box(`L${n}`, `Level ${n}`, { parentId: n === 1 ? null : `L${n - 1}` }));
+		stubFetch([]);
+		render(Page, { props: { data: { rules: [], labels: [], mailboxes: [...mailboxes, ...deep], mailboxMeta: {} } } as never });
+		const groups = deep.map((m) => within(region('Folders')).getByRole('group', { name: m.name }));
+		expect(groups.map((g) => g.style.getPropertyValue('--indent'))).toEqual(['0px', '16px', '32px', '48px', '64px', '80px']);
+		expect(groups.map((g) => g.style.getPropertyValue('--indent-sm'))).toEqual(['0px', '12px', '24px', '36px', '48px', '48px']);
+		expect((groups[5].firstElementChild as HTMLElement).className).toContain('max-md:pl-(--indent-sm)');
+	});
+
+	it('puts the "·" before the rule count only beside the unread count, which a phone hides', () => {
+		page([exact, splitRow]);
+		const dot = mailboxRow('Folders', 'Receipts').getByText('·', { exact: false, selector: 'span span' });
+		expect(dot.classList).toContain('max-md:hidden');
+		expect(mailboxRow('Folders', 'Receipts').getByText('2 unread').className).toContain('max-md:hidden');
+		expect(within(region('Labels')).getByRole('group', { name: 'Work' }).textContent).not.toContain('·');
+	});
+});
+
+describe('Folders & labels: the look of a row', () => {
+	it('uses small switches for rules, in a row and under "All rules"', async () => {
+		page([exact]);
+		await openRow('Folders', 'Receipts');
+		await openAllRules();
+		for (const s of screen.getAllByRole('switch')) expect(s.className).toContain('w-7 h-4');
+	});
+
+	it('highlights a row on hover and keyboard focus only, not for being open', async () => {
+		page([exact]);
+		const opener = () => mailboxRow('Folders', 'Receipts').getByRole('button', { expanded: true });
+		await openRow('Folders', 'Receipts');
+		const classes = opener().className.split(/\s+/);
+		expect(classes).toContain('hover:bg-surface-hover');
+		expect(classes).toContain('focus-visible:bg-surface-hover');
+		expect(classes.filter((c) => c.startsWith('bg-'))).toEqual([]);
+	});
+});
+
+describe('Folders & labels: the page follows its data', () => {
+	it('replaces the rules when the page’s data changes, keeping open rows open', async () => {
+		const { rerender } = page([exact]);
+		await openRow('Folders', 'Receipts');
+		expect(mailboxRow('Folders', 'Receipts').getByText('From contains “shop.example”')).toBeTruthy();
+		const other = base('o', 'Other account’s receipts', { target: { kind: 'folder', mailboxId: 'RCPT' }, conditions: [cond('co', 'from', 'other.example')] });
+		await rerender({ data: { rules: [other], labels, mailboxes, mailboxMeta: {} } } as never);
+		expect(mailboxRow('Folders', 'Receipts').getByRole('button', { expanded: true })).toBeTruthy();
+		expect(mailboxRow('Folders', 'Receipts').getByText('Other account’s receipts')).toBeTruthy();
+		expect(mailboxRow('Folders', 'Receipts').queryByText('From contains “shop.example”')).toBeNull();
+	});
+});
+
+describe('Folders & labels: applying a rule and pending writes', () => {
+	/** "Save & apply" on Receipts, with the apply request answered by `answer`. */
+	async function saveAndApply(answer: (init: RequestInit) => Promise<Response>) {
+		page([exact]);
+		const realFetch = globalThis.fetch;
+		const applies: RequestInit[] = [];
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) => {
+				if (url !== '/api/rules/apply') return realFetch(url, init);
+				applies.push(init!);
+				return answer(init!);
+			})
+		);
+		await openFromList('Receipts');
+		await fireEvent.click(within(dialog()).getByRole('button', { name: 'Save & apply' }));
+		await waitFor(() => expect(applies).toHaveLength(1));
+		return applies;
+	}
+	const sse = (body: string) => new Response(body);
+
+	it('Cancel stops the apply request', async () => {
+		const applies = await saveAndApply(
+			(init) =>
+				new Promise((_, reject) =>
+					init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+				)
+		);
+		expect(applies[0].signal!.aborted).toBe(false);
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		expect(applies[0].signal!.aborted).toBe(true);
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+	});
+
+	it('"Run in background" closes the progress and lets the apply finish', async () => {
+		let finish!: () => void;
+		const applies = await saveAndApply(
+			async () =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							finish = () => {
+								controller.enqueue(new TextEncoder().encode('data: {"type":"done","scanned":1,"matched":1,"applied":1,"failed":0}\n\n'));
+								controller.close();
+							};
+						}
+					})
+				)
+		);
+		await fireEvent.click(screen.getByRole('button', { name: 'Run in background' }));
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+		expect(applies[0].signal!.aborted).toBe(false);
+		expect(nav.invalidateAll).not.toHaveBeenCalled();
+		finish();
+		await waitFor(() => expect(nav.invalidateAll).toHaveBeenCalled());
+		expect(applies[0].signal!.aborted).toBe(false);
+	});
+
+	it('Retry after a failed apply sends it again', async () => {
+		let first = true;
+		const applies = await saveAndApply(async () => {
+			if (first) {
+				first = false;
+				return new Response('nope', { status: 500 });
+			}
+			return sse('data: {"type":"done","scanned":1,"matched":1,"applied":1,"failed":0}\n\n');
+		});
+		await waitFor(() => expect(screen.getByRole('heading', { name: 'Failed' })).toBeTruthy());
+		await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+		await waitFor(() => expect(screen.getByRole('heading', { name: 'Applied' })).toBeTruthy());
+		expect(applies).toHaveLength(2);
+		expect(JSON.parse(String(applies[1].body))).toEqual({ ruleIds: ['exact'] });
+	});
+
+	it('disables the switches in a row while a change is being saved', async () => {
+		page([exact, base('r2', 'More receipts', { target: { kind: 'folder', mailboxId: 'RCPT' } })]);
+		await openRow('Folders', 'Receipts');
+		const release = hold((url, init) => init?.method === 'PATCH');
+		const switches = () => mailboxRow('Folders', 'Receipts').getAllByRole('switch') as HTMLButtonElement[];
+		expect(switches().map((s) => s.disabled)).toEqual([false, false]);
+		await fireEvent.click(switches()[0]);
+		await waitFor(() => expect(switches().map((s) => s.disabled)).toEqual([true, true]));
+		release();
+		await waitFor(() => expect(switches().map((s) => s.disabled)).toEqual([false, false]));
 	});
 });

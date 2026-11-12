@@ -7,7 +7,9 @@ export interface AccountReach {
 
 /** Where the fix for a blocked account is, and the label for the link there. */
 export function fixFor(blocked: NonNullable<AccountReach['blocked']>): { href: string; label: string } {
-	return blocked === 'sign-in' ? { href: '/settings/accounts', label: 'Sign in' } : { href: '/settings/inbox-tabs', label: 'Inbox tabs' };
+	return blocked === 'sign-in'
+		? { href: '/settings/accounts', label: 'Sign in' }
+		: { href: '/settings/inbox-tabs#jev-heading', label: 'Let Jev sort new mail' };
 }
 
 /**

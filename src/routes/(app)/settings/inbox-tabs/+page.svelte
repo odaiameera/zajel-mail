@@ -225,7 +225,7 @@
 </section>
 
 <section class="mb-10" aria-labelledby="jev-heading">
-	<h2 id="jev-heading" class="text-sm font-semibold text-text mb-1">Let Jev sort new mail</h2>
+	<h2 id="jev-heading" class="text-sm font-semibold text-text mb-1 scroll-mt-6">Let Jev sort new mail</h2>
 	{#if data.jev.mode === 'live'}
 		<p class="text-xs text-text-tertiary mb-3">
 			Connected to TypeSafe with model <span class="font-mono text-text-secondary">{data.jev.model}</span>,

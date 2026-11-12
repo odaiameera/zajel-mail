@@ -29,7 +29,9 @@
 		labels,
 		onSaved,
 		onDeleted,
-		onCancel
+		onCancel,
+		changed = $bindable(false),
+		saving = $bindable(false)
 	}: {
 		/** The rule to edit, or null for a new one. */
 		rule: Rule | null;
@@ -37,10 +39,14 @@
 		initialTarget?: RuleTarget;
 		mailboxes: Mailbox[];
 		labels: Label[];
-		/** Saved; `apply` when the owner asked to apply it now as well. */
-		onSaved: (rule: Rule, apply: boolean) => void;
-		onDeleted: (id: string) => void;
+		/** Saved; `apply` when the owner asked to apply it now as well. The editor stays "saving" until this settles. */
+		onSaved: (rule: Rule, apply: boolean) => void | Promise<void>;
+		onDeleted: (id: string) => void | Promise<void>;
 		onCancel: () => void;
+		/** Out: the draft differs from what the editor opened with. */
+		changed?: boolean;
+		/** Out: a save or delete is on its way to the server. */
+		saving?: boolean;
 	} = $props();
 
 	const newCondition = (): RuleCondition => ({
@@ -73,13 +79,17 @@
 	// svelte-ignore state_referenced_locally
 	let draft = $state<RuleDraft>(draftOf(rule, initialTarget));
 	let problems = $state<RuleProblem[]>([]);
-	let saving = $state(false);
 	let error = $state('');
 
 	// svelte-ignore state_referenced_locally
 	const rewriting = rule ? needsRewrite(rule) : false;
 	/** The rule as the editor opened it, to tell a rename from an edit of what it does. */
 	const opened = JSON.stringify({ ...$state.snapshot(draft), name: '' });
+	/** The whole draft as the editor opened it, to tell whether anything was changed. */
+	const openedDraft = JSON.stringify($state.snapshot(draft));
+	$effect(() => {
+		changed = JSON.stringify(draft) !== openedDraft;
+	});
 	/** What a rule switched off for its Jev condition also required, in its owner's words: shown before it is saved without that. */
 	// svelte-ignore state_referenced_locally
 	const droppedJev = (rule?.attention === 'jev_condition' ? (rule.legacy?.conditions ?? []) : [])
@@ -181,7 +191,7 @@
 				if (problems.length === 0) error = answer.error ?? `Save failed (HTTP ${res.status})`;
 				return;
 			}
-			onSaved(answer.rule as Rule, apply);
+			await onSaved(answer.rule as Rule, apply);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Save failed';
 		} finally {
@@ -200,7 +210,7 @@
 				error = (await res.json().catch(() => ({}))).error ?? 'Delete failed';
 				return;
 			}
-			onDeleted(rule.id);
+			await onDeleted(rule.id);
 		} finally {
 			saving = false;
 		}

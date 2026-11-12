@@ -6,6 +6,7 @@
 	import RuleApplyDialog from '$lib/components/settings/RuleApplyDialog.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
 	import { page } from '$app/state';
+	import { tick } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { pageTitle } from '$lib/utils/title';
 	import { colorByHex } from '$lib/constants/colors';
@@ -20,8 +21,9 @@
 
 	// The saved rules, in the order they run, as the server last listed them.
 	// Every change is saved at once through /api/rules and the list read back.
-	// svelte-ignore state_referenced_locally
-	let rules = $state<Rule[]>(data.rules ?? []);
+	// A new load (another account, say) replaces them; which rows are open
+	// is kept by the rows themselves.
+	let rules = $derived<Rule[]>(data.rules ?? []);
 
 	// Rules an upgrade switched off until their owner deals with them are
 	// listed apart, so they aren't missed. Every rule that can run is in
@@ -121,16 +123,49 @@
 	const dialogRule = $derived(dialog?.ruleId ? (rules.find((r) => r.id === dialog?.ruleId) ?? null) : null);
 	// A rule that went away while open (it became a pin, or was dismissed) closes its dialog.
 	$effect(() => {
-		if (dialog?.ruleId && !dialogRule) dialog = null;
+		if (dialog?.ruleId && !dialogRule) closeDialog();
 	});
 
-	function openRule(rule: Rule) {
+	/**
+	 * Where focus goes when the dialog closes: the control that opened it;
+	 * if that went (its rule was deleted), the row it was in; else the
+	 * heading of its section.
+	 */
+	let returnTo: { opener: HTMLElement; row: HTMLElement | null; heading: HTMLElement | null } | null = null;
+
+	function remember(opener: HTMLElement | undefined) {
+		returnTo = opener
+			? {
+					opener,
+					row: opener.closest<HTMLElement>('[role="group"]'),
+					heading: opener.closest('section')?.querySelector<HTMLElement>('h2') ?? null
+				}
+			: null;
+	}
+
+	async function restoreFocus() {
+		const to = returnTo;
+		returnTo = null;
+		await tick();
+		const target = [to?.opener, to?.row, to?.heading].find((el) => el?.isConnected) ?? document.querySelector<HTMLElement>('h1');
+		target?.focus();
+	}
+
+	function openRule(rule: Rule, opener?: HTMLElement) {
 		errors.dialog = '';
+		remember(opener);
 		dialog = { ruleId: rule.id };
 	}
-	function newRule(target?: RuleTarget) {
+	function newRule(target?: RuleTarget, opener?: HTMLElement) {
 		errors.dialog = '';
+		remember(opener);
 		dialog = { ruleId: null, target };
+	}
+	function closeDialog() {
+		// Closed once: a rule deleted from the dialog also goes from the list.
+		if (!dialog) return;
+		dialog = null;
+		restoreFocus();
 	}
 
 	/** The rule "Save & apply" is running, while its progress shows. */
@@ -138,10 +173,12 @@
 
 	async function onSaved(rule: Rule, apply: boolean) {
 		await refresh();
-		dialog = null;
 		if (apply) {
+			// Its progress takes focus; it goes back to the opener when that closes.
+			dialog = null;
 			applying = rule;
 		} else {
+			closeDialog();
 			savedToast = true;
 			setTimeout(() => (savedToast = false), 1600);
 		}
@@ -149,7 +186,7 @@
 
 	async function onDeleted() {
 		await refresh();
-		dialog = null;
+		closeDialog();
 	}
 
 	// --- "All rules, in order" ---
@@ -195,7 +232,7 @@
 {/snippet}
 
 {#snippet sectionHeading(id: string, title: string, description?: string)}
-	<h2 {id} class="text-sm font-semibold text-text mb-1">{title}</h2>
+	<h2 {id} tabindex="-1" class="text-sm font-semibold text-text mb-1 outline-none">{title}</h2>
 	{#if description}
 		<p class="text-xs text-text-tertiary mb-2">{description}</p>
 	{/if}
@@ -203,7 +240,7 @@
 
 <header class="mb-8 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
 	<div class="min-w-0 flex-1 basis-72">
-		<h1 class="text-xl font-semibold text-text">Folders &amp; labels</h1>
+		<h1 tabindex="-1" class="text-xl font-semibold text-text outline-none">Folders &amp; labels</h1>
 		<p class="text-sm text-text-tertiary mt-1 max-w-prose">
 			A folder is where a message lives, and a label is a tag it can carry as well. Rules file new
 			mail into either.
@@ -234,7 +271,7 @@
 				<li>
 					<button
 						type="button"
-						onclick={() => openRule(rule)}
+						onclick={(e) => openRule(rule, e.currentTarget)}
 						class="w-full flex items-center gap-3 py-2.5 text-left cursor-pointer group"
 					>
 						<span class="shrink-0 text-warning" title="Switched off until you rewrite it">
@@ -276,6 +313,7 @@
 					onOpenRule={openRule}
 					onAddRule={newRule}
 					onToggleRule={(rule) => toggleRule(rule, 'folders')}
+					onDismissRule={(rule) => dismiss(rule.id, 'folders')}
 					onError={(message) => (errors.folders = message)}
 					onChanged={refresh}
 				/>
@@ -295,6 +333,7 @@
 				{@const target = { kind: 'label', mailboxId: label.id } as RuleTarget}
 				<MailboxRow
 					{mailbox}
+					name={label.name}
 					kind="label"
 					mailboxes={data.mailboxes}
 					color={label.color}
@@ -306,6 +345,7 @@
 					onOpenRule={openRule}
 					onAddRule={newRule}
 					onToggleRule={(rule) => toggleRule(rule, 'labels')}
+					onDismissRule={(rule) => dismiss(rule.id, 'labels')}
 					onError={(message) => (errors.labels = message)}
 					onChanged={refresh}
 				/>
@@ -330,6 +370,7 @@
 				onOpenRule={openRule}
 				onAddRule={newRule}
 				onToggleRule={(rule) => toggleRule(rule, 'system')}
+				onDismissRule={(rule) => dismiss(rule.id, 'system')}
 				onError={(message) => (errors.system = message)}
 			/>
 		{/each}
@@ -337,7 +378,7 @@
 </section>
 
 <section id="rules" class="mb-8 scroll-mt-6" aria-labelledby="rules-heading">
-	<h2 id="rules-heading" class="text-sm font-semibold text-text">
+	<h2 id="rules-heading" tabindex="-1" class="text-sm font-semibold text-text outline-none">
 		<button
 			type="button"
 			onclick={() => (rulesOpen = !rulesOpen)}
@@ -359,13 +400,14 @@
 				{#each mainRules as rule, index (rule.id)}
 					<li class="flex items-center gap-3 py-2">
 						<Toggle
+							size="sm"
 							checked={rule.enabled}
 							disabled={busy}
 							ariaLabel={rule.name || 'Untitled rule'}
 							onChange={() => toggleRule(rule, 'rules')}
 						/>
 						<div class="flex-1 min-w-0">
-							<button type="button" class="block w-full min-w-0 text-left cursor-pointer group" onclick={() => openRule(rule)}>
+							<button type="button" class="block w-full min-w-0 text-left cursor-pointer group" onclick={(e) => openRule(rule, e.currentTarget)}>
 								<span class="block truncate text-sm text-text group-hover:text-accent-fg transition-colors">{rule.name || 'Untitled rule'}</span>
 								<span class="block truncate text-2xs text-text-tertiary">{summary(rule)}</span>
 							</button>
@@ -404,7 +446,7 @@
 		{:else}
 			<p class="text-sm text-text-tertiary py-2">No rules yet.</p>
 		{/if}
-		<button type="button" onclick={() => newRule()} class="btn btn-secondary btn-sm mt-3">
+		<button type="button" onclick={(e) => newRule(undefined, e.currentTarget)} class="btn btn-secondary btn-sm mt-3">
 			<Icon name="add" size={14} />
 			New rule
 		</button>
@@ -424,13 +466,19 @@
 			{onDeleted}
 			onDismiss={(id) => dismiss(id, 'dialog')}
 			onPin={pinInstead}
-			onClose={() => (dialog = null)}
+			onClose={closeDialog}
 		/>
 	{/key}
 {/if}
 
 {#if applying}
-	<RuleApplyDialog rule={applying} onClose={() => (applying = null)} />
+	<RuleApplyDialog
+		rule={applying}
+		onClose={() => {
+			applying = null;
+			restoreFocus();
+		}}
+	/>
 {/if}
 
 {#if modal}
