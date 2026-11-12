@@ -324,6 +324,27 @@ describe('a pass over new mail, with Jev', () => {
 		expect(getDecision(ACCT, 'old')).toBeNull();
 	});
 
+	it('starts Jev’s clock again when its stored time isn’t a time, or is in the future', async () => {
+		for (const stored of ['nonsense', '2099-01-01T00:00:00.000Z']) {
+			getDb().prepare('UPDATE jev_settings SET jev_since = ?').run(stored);
+			getDb().prepare('DELETE FROM jev_decisions').run();
+			getDb().prepare('DELETE FROM mail_arrivals').run();
+			setCursor(ACCT, at(4).toISOString(), at(4));
+			fake = new FakeJmap();
+			jmap.client = fake;
+			fake.add('old', 4.5, { 'header:list-unsubscribe': ' <x>' });
+
+			await runPass(ACCT, auth, { now: at(5) });
+			expect(getJevSettings(ACCT).jevSince).toBe(at(5).toISOString());
+			expect(getDecision(ACCT, 'old')).toBeNull();
+
+			// From then on, Jev sorts new mail.
+			fake.add('news', 5.5, { 'header:list-unsubscribe': ' <x>' });
+			await runPass(ACCT, auth, { now: at(6) });
+			expect(getDecision(ACCT, 'news')).toMatchObject({ status: 'done', applied: 'newsletters' });
+		}
+	});
+
 	it('withdraws what was queued before it found Jev on again, so none of it is sent', async () => {
 		// Left queued from before: Jev couldn't be asked for a while, and its clock was stopped.
 		getDb().prepare('UPDATE jev_settings SET jev_since = NULL').run();
@@ -1940,6 +1961,46 @@ describe('one pass, one cursor', () => {
 		await runPass(ACCT, auth, { now: at(10) });
 
 		expect(getCursor(ACCT)).toBe(new Date(at(5).getTime() + 4000).toISOString());
+	});
+
+	it('reads new mail behind a stored place in the future, and moves the place back to the present', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false, inboxTabs: false });
+		setRules(ME, [labelRule('r', 'hello')]);
+		setCursor(ACCT, '2099-01-01T00:00:00.000Z', T0);
+		fake.add('new', JUST_NOW);
+
+		await runPass(ACCT, auth, { now: at(10) });
+
+		expect(fake.emails.get('new')!.mailboxIds).toEqual({ inbox: true, news: true });
+		expect(getCursor(ACCT)).toBe(at(9).toISOString());
+	});
+
+	it('takes a stored place that isn’t a time as none: it starts from now', async () => {
+		setRules(ME, [labelRule('r', 'hello')]);
+		setCursor(ACCT, 'not a time', T0);
+		fake.add('before', 9);
+
+		await runPass(ACCT, auth, { now: at(10) });
+		expect(getCursor(ACCT)).toBe(at(10).toISOString());
+		fake.add('after', 10.5);
+		await runPass(ACCT, auth, { now: at(11) });
+
+		expect(fake.emails.get('before')!.mailboxIds).toEqual({ inbox: true });
+		expect(fake.emails.get('after')!.mailboxIds).toEqual({ inbox: true, news: true });
+	});
+
+	it('never moves the place into the future behind a full page that ends on a message stamped there', async () => {
+		updateJevSettings(ACCT, { jevEnabled: false, inboxTabs: false });
+		setRules(ME, [labelRule('r', 'hello')]);
+		for (let i = 0; i < 99; i++) fake.add(`m${i}`, 5);
+		fake.add('ahead', 60 * 24 * 365 * 70);
+
+		await runPass(ACCT, auth, { now: at(10) });
+		expect(getCursor(ACCT)).toBe(at(9).toISOString());
+		fake.add('next', 10.5);
+		await runPass(ACCT, auth, { now: at(11) });
+
+		expect(fake.emails.get('next')!.mailboxIds).toEqual({ inbox: true, news: true });
 	});
 });
 

@@ -100,6 +100,21 @@ export function getCursor(accountRowId: string): string | null {
 	return (stmts().getCursor.get(accountRowId) as { cursor: string | null } | undefined)?.cursor ?? null;
 }
 
+/**
+ * Where a pass at `now` starts from: the stored place, read as a pass may
+ * use it. One that isn't a readable time counts as none (first sight: the
+ * pass starts from now). One later than now is taken as where a pass at
+ * `now` would leave it, a minute back: kept, it would leave the account's
+ * new mail unread until the clock caught up with it.
+ */
+export function startingCursor(accountRowId: string, now: Date): string | null {
+	const stored = getCursor(accountRowId);
+	if (stored === null) return null;
+	const at = Date.parse(stored);
+	if (Number.isNaN(at)) return null;
+	return at > now.getTime() ? new Date(now.getTime() - LOOKBACK_MS).toISOString() : stored;
+}
+
 export function setCursor(accountRowId: string, iso: string, now = new Date()): void {
 	stmts().setCursor.run(accountRowId, iso, now.getTime());
 }
@@ -169,7 +184,10 @@ export async function discover(
  * would never move it on.
  */
 export function nextCursor(cursor: string, lastSeen: string | undefined, now: Date): string {
-	if (lastSeen) {
+	// Never into the future (see startingCursor): a full page that ends on a
+	// message stamped later than now has everything before that message in
+	// it, so a minute back from now misses nothing.
+	if (lastSeen && Date.parse(lastSeen) <= now.getTime()) {
 		return Date.parse(lastSeen) - 1000 > Date.parse(cursor) ? new Date(Date.parse(lastSeen) - 1000).toISOString() : lastSeen;
 	}
 	return new Date(Math.max(Date.parse(cursor), now.getTime() - LOOKBACK_MS)).toISOString();

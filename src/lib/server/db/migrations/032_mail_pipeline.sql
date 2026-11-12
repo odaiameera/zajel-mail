@@ -45,28 +45,38 @@ CREATE INDEX IF NOT EXISTS idx_mail_arrivals_seen ON mail_arrivals (seen_at);
 -- case. An account with neither gets no row, and starts from its first pass.
 -- Timestamps are compared as times, not text: the two were written in
 -- different forms ("…:05Z" and "…:05.000Z").
+--
+-- A place that isn't a readable time is ignored. One later than now (a
+-- clock that ran ahead, or a message stamped in the future at the end of a
+-- page) becomes now: kept, it would leave the account's new mail waiting
+-- until the clock caught up.
 CREATE TEMP TABLE _cursor_032 AS
   SELECT ma.id AS account_id,
     (SELECT rc.last_run FROM rules_cursor rc
-      WHERE rc.last_run IS NOT NULL
+      WHERE julianday(rc.last_run) IS NOT NULL
         AND (rc.user_email = ma.email
              OR (lower(rc.user_email) = lower(ma.email)
                  AND NOT EXISTS (SELECT 1 FROM rules_cursor x WHERE x.user_email = ma.email)))
       ORDER BY julianday(rc.last_run) LIMIT 1) AS rules_at,
-    (SELECT js.sort_cursor FROM jev_settings js WHERE js.account_id = ma.id) AS jev_at
+    (SELECT js.sort_cursor FROM jev_settings js
+      WHERE js.account_id = ma.id AND julianday(js.sort_cursor) IS NOT NULL) AS jev_at
   FROM mail_accounts ma;
 
 INSERT INTO mail_pipeline (account_id, cursor, updated_at)
   SELECT account_id,
-    CASE
-      WHEN rules_at IS NULL THEN jev_at
-      WHEN jev_at IS NULL THEN rules_at
-      WHEN julianday(rules_at) <= julianday(jev_at) THEN rules_at
-      ELSE jev_at
-    END,
+    CASE WHEN julianday(cursor) > julianday('now') THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE cursor END,
     CAST(strftime('%s', 'now') AS INTEGER) * 1000
-  FROM _cursor_032
-  WHERE rules_at IS NOT NULL OR jev_at IS NOT NULL;
+  FROM (
+    SELECT account_id,
+      CASE
+        WHEN rules_at IS NULL THEN jev_at
+        WHEN jev_at IS NULL THEN rules_at
+        WHEN julianday(rules_at) <= julianday(jev_at) THEN rules_at
+        ELSE jev_at
+      END AS cursor
+    FROM _cursor_032
+    WHERE rules_at IS NOT NULL OR jev_at IS NOT NULL
+  );
 
 DROP TABLE _cursor_032;
 

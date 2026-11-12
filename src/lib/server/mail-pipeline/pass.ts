@@ -20,13 +20,13 @@ import { pipelineNeeds } from './needs';
 import {
 	countAttempt,
 	discover,
-	getCursor,
 	keepHoldInStep,
 	listUnhandled,
 	markHandled,
 	MAX_ARRIVAL_ATTEMPTS,
 	recordArrivals,
 	setCursor,
+	startingCursor,
 	type Arrival,
 	type ArrivalMailbox
 } from './arrivals';
@@ -93,17 +93,22 @@ export async function runPass(accountRowId: string, auth: AuthState, opts: PassO
 
 	// 1. What is on.
 	const needs = pipelineNeeds(accountRowId, now);
-	let jevSince = needs.jevSince;
+	// A stored time that isn't a readable one, or is later than now, counts
+	// as none: Jev's clock starts on this pass. Kept, a time in the future
+	// would send Jev nothing until the clock caught up with it. (Changed only
+	// from what is stored, as below.)
+	const storedSince = needs.jevSince;
+	let jevSince = storedSince !== null && Date.parse(storedSince) <= now.getTime() ? storedSince : null;
 	let jevJustOn = false;
-	if (!needs.jev && jevSince !== null) {
+	if (!needs.jev && storedSince !== null) {
 		// Jev is switched on but can't be asked (not configured on the
 		// server): what was queued for it is withdrawn, and when it can be
 		// asked again it starts from that moment, never from before.
-		if (swapJevSince(accountRowId, jevSince, null, now)) dropNewArrivals(accountRowId, now.getTime());
+		if (swapJevSince(accountRowId, storedSince, null, now)) dropNewArrivals(accountRowId, now.getTime());
 		jevSince = null;
 	} else if (needs.jev && jevSince === null) {
 		// Jev reads only what arrives from here on: nothing is judged now.
-		if (swapJevSince(accountRowId, null, now.toISOString(), now)) dropNewArrivals(accountRowId, now.getTime());
+		if (swapJevSince(accountRowId, storedSince, now.toISOString(), now)) dropNewArrivals(accountRowId, now.getTime());
 		jevSince = now.toISOString();
 		jevJustOn = true;
 	}
@@ -117,7 +122,7 @@ export async function runPass(accountRowId: string, auth: AuthState, opts: PassO
 		setCursor(accountRowId, now.toISOString(), now);
 		return;
 	}
-	const cursor = getCursor(accountRowId);
+	const cursor = startingCursor(accountRowId, now);
 	if (cursor === null) {
 		// First sight of the account: start from now, so nothing already
 		// there is filed, answered or sent to Jev.

@@ -91,6 +91,24 @@ describe('moving stored rules into the rules table', () => {
 		expect(listRules(ACCT)[0].createdAt).toBe(7);
 	});
 
+	it('keeps a rule on that was stored as on in any form the old engine ran, and off otherwise', () => {
+		// The old engine ran a rule whose enabled value was anything truthy.
+		const on = [true, 1, 'true', 'yes'];
+		const off = [false, 0, '', null, undefined];
+		store(ME, [
+			...on.map((enabled, i) => rule(`on${i}`, [label('A')], { enabled })),
+			...off.map((enabled, i) => rule(`off${i}`, [label('A')], { enabled })),
+			// Missing altogether.
+			(({ enabled: _e, ...r }) => r)(rule('missing', [label('A')]))
+		]);
+		rerun();
+		expect(said().map((r) => [r.id, r.enabled])).toEqual([
+			...on.map((_, i) => [`on${i}`, true]),
+			...off.map((_, i) => [`off${i}`, false]),
+			['missing', false]
+		]);
+	});
+
 	it('makes a rule that filed into several places one rule per place, side by side', () => {
 		store(ME, [
 			rule('before', [label('X')]),

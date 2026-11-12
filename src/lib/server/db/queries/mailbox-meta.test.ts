@@ -31,7 +31,8 @@ beforeAll(() => {
 			('acct-me', 'u1', 'me@example.test', 'https://mail.example', 'j1', 'x'),
 			('acct-mixed', 'u1', 'Mixed@Example.test', 'https://mail.example', 'j2', 'x'),
 			-- Differs from the first only in case: it gets none of the first's rows.
-			('acct-upper', 'u1', 'ME@example.test', 'https://mail.example', 'j3', 'x');
+			('acct-upper', 'u1', 'ME@example.test', 'https://mail.example', 'j3', 'x'),
+			('acct-case', 'u1', 'case@example.test', 'https://mail.example', 'j4', 'x');
 
 		-- A label and a folder of the first account, matched exactly.
 		INSERT INTO label_meta (user_email, mailbox_id, display_name, color, icon, updated_at)
@@ -60,6 +61,24 @@ beforeAll(() => {
 			VALUES ('me@example.test', 'BOTH2', 'Label, newer', '#333333', NULL, '2026-03-01 10:00:00');
 		INSERT INTO folder_meta (user_email, mailbox_id, display_name, color, icon, updated_at)
 			VALUES ('me@example.test', 'BOTH2', 'Folder, older', '#444444', NULL, '2026-02-01 10:00:00');
+
+		-- The same mailbox in both tables, the newer row saying "none" for a value.
+		INSERT INTO label_meta (user_email, mailbox_id, display_name, color, icon, updated_at) VALUES
+			('me@example.test', 'SAME', 'Lbl', '#444444', 'tag', '2026-01-01 10:00:00'),
+			('me@example.test', 'SAME2', 'Lbl2', '#555555', 'tag', '2026-01-01 10:00:00');
+		INSERT INTO folder_meta (user_email, mailbox_id, display_name, color, icon, updated_at) VALUES
+			('me@example.test', 'SAME', 'Fld', '', 'folder', '2026-02-01 10:00:00'),
+			('me@example.test', 'SAME2', 'Fld2', '#666666', '', '2026-02-01 10:00:00');
+
+		-- An account's own label row, and a newer one under another spelling
+		-- of its address (that no account has exactly): the app showed its own.
+		-- It has no folder rows of its own, so the other spelling's folder row is its.
+		INSERT INTO label_meta (user_email, mailbox_id, display_name, color, icon, updated_at) VALUES
+			('case@example.test', 'M', 'Mine', '#222222', '', '2026-01-01 00:00:00'),
+			('CASE@example.test', 'M', 'Stale', '#111111', '', '2026-02-01 00:00:00'),
+			('CASE@example.test', 'M2', 'Stale too', '#111111', '', '2026-02-01 00:00:00');
+		INSERT INTO folder_meta (user_email, mailbox_id, display_name, color, icon, updated_at) VALUES
+			('CASE@example.test', 'FC', 'Clients', '#777777', 'briefcase', '2026-02-01 00:00:00');
 	`);
 	runMigrations();
 });
@@ -80,16 +99,29 @@ describe('migration 031', () => {
 		expect(listMailboxMeta('acct-upper')).toEqual([]);
 	});
 
+	it('keeps an account’s own row over a newer one under another spelling of its address', () => {
+		expect(getMailboxMeta('acct-case', 'M')).toEqual({ mailboxId: 'M', color: '#222222', icon: null, displayName: 'Mine' });
+		// The other spelling's label rows are not the account's at all: it has label rows of its own.
+		expect(getMailboxMeta('acct-case', 'M2')).toBeNull();
+		// Its folder rows are, as it has no folder row of its own.
+		expect(getMailboxMeta('acct-case', 'FC')).toEqual({ mailboxId: 'FC', color: '#777777', icon: 'briefcase', displayName: null });
+	});
+
 	it('leaves behind rows whose address has no account, and the old tables as they were', () => {
 		const all = getDb().prepare('SELECT mailbox_id FROM mailbox_meta ORDER BY mailbox_id').all() as { mailbox_id: string }[];
-		expect(all.map((r) => r.mailbox_id)).toEqual(['BOTH', 'BOTH2', 'F1', 'L1', 'L2']);
-		expect((getDb().prepare('SELECT COUNT(*) AS n FROM folder_meta').get() as { n: number }).n).toBe(5);
-		expect((getDb().prepare('SELECT COUNT(*) AS n FROM label_meta').get() as { n: number }).n).toBe(4);
+		expect(all.map((r) => r.mailbox_id)).toEqual(['BOTH', 'BOTH2', 'F1', 'FC', 'L1', 'L2', 'M', 'SAME', 'SAME2']);
+		expect((getDb().prepare('SELECT COUNT(*) AS n FROM folder_meta').get() as { n: number }).n).toBe(8);
+		expect((getDb().prepare('SELECT COUNT(*) AS n FROM label_meta').get() as { n: number }).n).toBe(9);
 	});
 
 	it('keeps the colour and icon changed last when both tables have the same mailbox, and the label’s name', () => {
 		expect(getMailboxMeta('acct-me', 'BOTH')).toEqual({ mailboxId: 'BOTH', color: '#222222', icon: 'folder-heart', displayName: 'As a label' });
 		expect(getMailboxMeta('acct-me', 'BOTH2')).toMatchObject({ color: '#333333', displayName: 'Label, newer' });
+	});
+
+	it('never lets a newer row’s "none" replace a colour or icon the other row has', () => {
+		expect(getMailboxMeta('acct-me', 'SAME')).toEqual({ mailboxId: 'SAME', color: '#444444', icon: 'folder', displayName: 'Lbl' });
+		expect(getMailboxMeta('acct-me', 'SAME2')).toEqual({ mailboxId: 'SAME2', color: '#666666', icon: 'tag', displayName: 'Lbl2' });
 	});
 });
 

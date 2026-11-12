@@ -414,7 +414,26 @@ Or, with the `sqlite3` tool on the host: `sqlite3 /path/to/ameera.db ".backup '/
 
 ### Upgrading
 
-Pull the new version and restart. The database is brought up to date as the app starts, in one go; a start that is interrupted keeps what it finished and completes on the next one. Take a backup first (see above). What changes for what you made in an earlier version:
+Take a backup first, in one of two ways:
+- With SQLite's own backup, as under **Backups** above. This works while the app runs.
+- Or stop the app (`docker compose stop webmail`) and copy `ameera.db` together with the `ameera.db-wal` and `ameera.db-shm` files beside it, if they are there.
+
+A copy of `ameera.db` alone, taken while the app runs, can miss recent changes.
+
+Then pull the new version and start it:
+
+```sh
+git pull
+docker compose up --build -d
+```
+
+The database is brought up to date as the app starts, in one go. Before it changes anything, the app logs one line naming the database file and saying how many migrations and one-time steps it is about to apply; see it with `docker compose logs webmail`. The app takes no backup of its own.
+
+If the upgrade stops part-way, the app shows which step failed, on every page, and serves nothing else. What finished before that step is kept, and restarting the app retries from that step.
+
+**Going back.** An earlier version cannot run on an upgraded database: it shows errors on every page. So going back always means restoring the backup: stop the app, put the backup in place of `ameera.db`, delete the `ameera.db-wal` and `ameera.db-shm` files left beside it, and start the earlier version. Anything changed after the upgrade is not carried back.
+
+What changes for what you made in an earlier version:
 - **A rule with a condition Jev judged** is switched off, not rewritten (without the condition it would act on more mail than you meant). It is listed under **Needs your attention** in Settings → Folders & labels with what it said: rewrite it with exact conditions and press **Save as exact rule**, or delete it.
 - **A rule that set an Inbox tab.** One that only put one sender's mail in a tab, and was switched on, became a sender pin, and stays listed with a note until you press **Got it**. One that also moved the mail just lost the tab; one that also labelled or marked it keeps running, with a note. Any other is switched off and listed with the reason, with **Pin … to …** where it names a sender. Your own pins are never changed.
 - **A rule that filed into several places** is now that many rules side by side, the extra ones noted. In order they do what it did, except that a message two rules move goes to the first rule's folder only. "Delete" is now **Trash**, "mark important" is **star**, and a rule whose folder or label is gone is kept, marked *target missing*.

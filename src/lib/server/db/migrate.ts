@@ -75,6 +75,31 @@ function dropUnused(): void {
 	if (columns.some((c) => c.name === 'rules_json')) db.exec('ALTER TABLE jev_decisions DROP COLUMN rules_json');
 }
 
+/**
+ * Say what is about to change, once, before any of it does: the database
+ * file, and how many migrations and one-time steps are to run. Nothing when
+ * nothing is. The app takes no backup itself (see the README's Upgrading).
+ */
+function announce(file: string, pendingMigrations: string[], applied: string[]): void {
+	// The steps that will run: not done yet, and with everything they need
+	// done already or about to be.
+	const done = new Set([...applied, ...pendingMigrations]);
+	let steps = 0;
+	for (const step of DATA_STEPS) {
+		if (done.has(step.name) || !step.needs.every((name) => done.has(name))) continue;
+		done.add(step.name);
+		steps++;
+	}
+	if (pendingMigrations.length === 0 && steps === 0) return;
+	const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+	const what = [
+		...(pendingMigrations.length ? [count(pendingMigrations.length, 'migration', 'migrations')] : []),
+		...(steps ? [count(steps, 'one-time step', 'one-time steps')] : [])
+	].join(' and ');
+	console.log(`[migrate] Upgrading the database at ${file}: ${what} to apply`);
+	logEvent('info', 'db', 'upgrade_started', { file, migrations: pendingMigrations.length, steps });
+}
+
 /** A migration that did not apply. The server refuses requests until it does. */
 export class MigrationError extends Error {
 	constructor(
@@ -110,9 +135,16 @@ export function runMigrations(sources: Record<string, string> = MIGRATION_SOURCE
 	const mark = db.prepare('INSERT INTO _migrations (name) VALUES (?)');
 
 	const ordered = Object.keys(sources).sort();
+	const nameOf = (path: string) => path.split('/').pop() ?? path;
+
+	announce(
+		db.name,
+		ordered.map(nameOf).filter((name) => !seen.get(name)),
+		(db.prepare('SELECT name FROM _migrations').all() as { name: string }[]).map((r) => r.name)
+	);
 
 	for (const path of ordered) {
-		const name = path.split('/').pop() ?? path;
+		const name = nameOf(path);
 		if (seen.get(name)) continue;
 
 		const sql = sources[path];
