@@ -24,8 +24,11 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	}
 
 	const result = await decidePendingAction(locals.user.id, params.id, body.decision);
+	// A send held for Undo send: the panel shows the composer's Sending… toast with Undo.
 	return json(
-		result.status === 200 ? { success: true, message: result.message } : { error: result.message },
+		result.status === 200
+			? { success: true, message: result.message, ...(result.scheduled && { scheduled: result.scheduled, restore: result.restore }) }
+			: { error: result.message },
 		{ status: result.status }
 	);
 };

@@ -18,9 +18,12 @@ import {
 	type TelegramUpdate
 } from './bot';
 import { markdownToTelegram } from './format';
+import { chatInTelegram, pressAgentButton, startNewConversation } from './chat';
+import { claudeConfigured } from '$lib/server/ai/claude';
 import {
 	claimAlert,
 	claimReminder,
+	createAgentButton,
 	createButton,
 	dueAlerts,
 	dueReminders,
@@ -40,10 +43,10 @@ import {
 } from './store';
 
 /**
- * What the bot sends (urgent mail, reminders) and how it answers. It acts on
- * nothing typed into the chat: the only inputs are the one-time /start code,
- * /stop, and buttons it sent itself, each of which names a reversible action
- * on one email.
+ * What the bot sends (urgent mail, reminders) and how it answers. Its inputs
+ * are the one-time /start code, /stop, buttons it sent itself (a reversible
+ * action on one email, or one of Zajel's chat buttons), and, from the linked
+ * private chat only, messages for Zajel (chat.ts).
  */
 
 const MAX_PER_HOUR = 20;
@@ -111,10 +114,12 @@ function emailButtons(userId: string, accountId: string, emailId: string): Inlin
 		callback_data: createButton({ userId, accountId, emailId, action })
 	});
 	const url = openUrl(emailId);
-	return [
-		[button('Mark read', 'read'), button('Snooze 1h', 'snooze'), button('Archive', 'archive')],
-		...(url ? [[{ text: 'Open', url }]] : [])
-	];
+	// Zajel drafts the reply in this chat, saved to Drafts, with Send on it.
+	const draft: InlineButton[] = claudeConfigured()
+		? [{ text: 'Draft reply', callback_data: createAgentButton({ userId, accountId, kind: 'draft_reply', ref: emailId }) }]
+		: [];
+	const second = [...draft, ...(url ? [{ text: 'Open', url }] : [])];
+	return [[button('Mark read', 'read'), button('Snooze 1h', 'snooze'), button('Archive', 'archive')], ...(second.length ? [second] : [])];
 }
 
 export function urgentAlertsWanted(accountRowId: string): boolean {
@@ -347,6 +352,13 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
 		const chatId = query.message ? String(query.message.chat.id) : '';
 		const link = chatId ? getLinkByChat(chatId) : null;
 		const token = link && query.data ? takeButton(query.data) : null;
+		// Not an alert's button: one of Zajel's in the chat (confirm, send,
+		// undo, draft a reply), or nothing. It answers the press itself and
+		// runs off the poll loop, since sending or drafting takes a while.
+		if (link && query.data && !token) {
+			void pressAgentButton(link, query.id, query.data, query.message?.message_id);
+			return;
+		}
 		if (!link || !token || token.userId !== link.userId) {
 			await answerCallback(query.id, 'This button has expired');
 			return;
@@ -391,13 +403,30 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
 
 	if (command === '/start' && arg) {
 		const userId = linkChatWithCode(arg, chatId, message.from?.username ?? null);
-		await sendMessage(chatId, userId ? 'Linked. Urgent mail and reminders will come here. Send /stop to pause.' : 'That link has expired. Make a new one in Zajel’s settings.');
+		await sendMessage(chatId, userId ? `Linked. Urgent mail and reminders will come here, and you can write to Zajel here. ${HELP}` : 'That link has expired. Make a new one in Zajel’s settings.');
 		return;
 	}
+	const link = getLinkByChat(chatId);
 	if (command === '/stop') {
-		const link = getLinkByChat(chatId);
 		if (link) setLinkFlags(link.userId, { paused: true });
-		await sendMessage(chatId, link ? 'Paused. Turn alerts back on in Zajel’s settings.' : 'This chat isn’t linked.');
+		await sendMessage(chatId, link ? 'Urgent-mail alerts are paused. Turn them back on in Zajel’s settings. You can still write to Zajel here.' : 'This chat isn’t linked.');
+		return;
 	}
-	// Anything else is ignored: nothing typed here is acted on.
+	// A chat that isn't linked gets nothing more: it isn't anyone's Zajel.
+	if (!link) return;
+	if (command === '/new') {
+		startNewConversation(link);
+		await sendMessage(chatId, 'Started a new conversation.');
+		return;
+	}
+	if (command.startsWith('/')) {
+		await sendMessage(chatId, HELP);
+		return;
+	}
+	// A message for Zajel: an agent turn, which can take a while, so it runs
+	// off the poll loop (chat.ts answers in the chat, whatever happens).
+	void chatInTelegram(link, message.text, { replyTo: message.message_id });
 }
+
+const HELP =
+	'Write to Zajel here as you would in the app: ask about your mail and calendar, or ask it to tidy, draft or send. Nothing is sent without your tap. /new starts a new conversation; /stop pauses urgent-mail alerts.';

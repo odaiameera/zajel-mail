@@ -38,6 +38,7 @@ const result = (overrides: Partial<AgentTurnResult>): AgentTurnResult => ({
 	message: 'Done.',
 	done: [],
 	pending: [],
+	drafts: [],
 	...overrides
 });
 

@@ -61,14 +61,21 @@ export interface TelegramUpdate {
 	};
 }
 
-export function sendMessage(chatId: string, html: string, buttons: InlineButton[][] = []): Promise<unknown> {
+/** Send a message; `replyTo` threads it under one of the chat's messages (and still sends if that one's gone). */
+export function sendMessage(chatId: string, html: string, buttons: InlineButton[][] = [], replyTo?: number): Promise<{ message_id: number }> {
 	return call('sendMessage', {
 		chat_id: chatId,
 		text: html,
 		parse_mode: 'HTML',
 		link_preview_options: { is_disabled: true },
-		...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {})
+		...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}),
+		...(replyTo !== undefined ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {})
 	});
+}
+
+/** "typing…" at the top of the chat, for about five seconds or until the next message. */
+export function sendTyping(chatId: string): Promise<unknown> {
+	return call('sendChatAction', { chat_id: chatId, action: 'typing' });
 }
 
 export function answerCallback(id: string, text: string): Promise<unknown> {

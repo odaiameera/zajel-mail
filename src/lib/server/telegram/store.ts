@@ -14,6 +14,21 @@ export interface TelegramLink {
 	username: string | null;
 	urgent: boolean;
 	paused: boolean;
+	/** The chat's running conversation with Zajel; /new starts another. */
+	conversationId: string | null;
+	/** The user's clock, from the browser that linked the chat or last used Zajel. */
+	timeZone: string | null;
+	/** Emails, invitations and deletions Zajel prepares can be confirmed with a button here. */
+	confirmInChat: boolean;
+}
+
+/** What a button on one of Zajel's chat messages does, and to what. */
+export interface AgentButton {
+	userId: string;
+	accountId: string;
+	kind: 'confirm' | 'cancel' | 'undo_send' | 'send_draft' | 'draft_reply';
+	/** The pending action, scheduled message, draft or email it acts on. */
+	ref: string;
 }
 
 export interface ButtonToken {
@@ -46,8 +61,6 @@ function prepareStmts() {
 		linkDeleteChat: db.prepare(`DELETE FROM telegram_links WHERE chat_id = ? AND user_id != ?`),
 		linkDelete: db.prepare(`DELETE FROM telegram_links WHERE user_id = ?`),
 		linkSet: db.prepare(`UPDATE telegram_links SET urgent = COALESCE(?, urgent), paused = COALESCE(?, paused) WHERE user_id = ?`),
-		codeInsert: db.prepare(`INSERT INTO telegram_link_codes (code, user_id, expires_at) VALUES (?, ?, ?)`),
-		codeTake: db.prepare(`DELETE FROM telegram_link_codes WHERE code = ? RETURNING user_id, expires_at`),
 		codePrune: db.prepare(`DELETE FROM telegram_link_codes WHERE expires_at < ?`),
 		buttonInsert: db.prepare(
 			`INSERT INTO telegram_buttons (id, user_id, account_id, email_id, action) VALUES (?, ?, ?, ?, ?)`
@@ -84,6 +97,31 @@ function stmts() {
 	return (_stmts ??= prepareStmts());
 }
 
+// Chatting with Zajel (migration 033), apart from the rest like the outbox
+// below: without it, links, alert buttons and reminders still work.
+let _chat: ReturnType<typeof prepareChat> | null = null;
+function prepareChat() {
+	const db = getDb();
+	return {
+		codeInsert: db.prepare(`INSERT INTO telegram_link_codes (code, user_id, expires_at, time_zone) VALUES (?, ?, ?, ?)`),
+		codeTake: db.prepare(`DELETE FROM telegram_link_codes WHERE code = ? RETURNING user_id, expires_at, time_zone`),
+		linkTimeZone: db.prepare(`UPDATE telegram_links SET time_zone = ? WHERE user_id = ? AND time_zone IS NOT ?`),
+		linkConversation: db.prepare(`UPDATE telegram_links SET conversation_id = ? WHERE user_id = ?`),
+		linkConfirm: db.prepare(`UPDATE telegram_links SET confirm_in_chat = ? WHERE user_id = ?`),
+		buttonInsert: db.prepare(`INSERT INTO telegram_agent_buttons (id, user_id, account_id, kind, ref) VALUES (?, ?, ?, ?, ?)`),
+		buttonTake: db.prepare(
+			`UPDATE telegram_agent_buttons SET used_at = datetime('now')
+			 WHERE id = ? AND used_at IS NULL AND created_at > datetime('now', ?)
+			 RETURNING user_id, account_id, kind, ref`
+		),
+		buttonRelease: db.prepare(`UPDATE telegram_agent_buttons SET used_at = NULL WHERE id = ?`),
+		buttonPrune: db.prepare(`DELETE FROM telegram_agent_buttons WHERE created_at < datetime('now', ?)`)
+	};
+}
+function chat() {
+	return (_chat ??= prepareChat());
+}
+
 // Apart from the rest, so that if migration 025 ever failed to apply, only
 // urgent-alert queueing would break, not links, buttons or reminders.
 let _outbox: ReturnType<typeof prepareOutbox> | null = null;
@@ -115,13 +153,25 @@ function outbox() {
 	return (_outbox ??= prepareOutbox());
 }
 
-type LinkRow = { user_id: string; chat_id: string; username: string | null; urgent: number; paused: number };
+type LinkRow = {
+	user_id: string;
+	chat_id: string;
+	username: string | null;
+	urgent: number;
+	paused: number;
+	conversation_id: string | null;
+	time_zone: string | null;
+	confirm_in_chat: number;
+};
 const toLink = (row: LinkRow): TelegramLink => ({
 	userId: row.user_id,
 	chatId: row.chat_id,
 	username: row.username,
 	urgent: row.urgent === 1,
-	paused: row.paused === 1
+	paused: row.paused === 1,
+	conversationId: row.conversation_id,
+	timeZone: row.time_zone,
+	confirmInChat: row.confirm_in_chat === 1
 });
 
 export function getLink(userId: string): TelegramLink | null {
@@ -134,11 +184,14 @@ export function getLinkByChat(chatId: string): TelegramLink | null {
 	return row ? toLink(row) : null;
 }
 
-/** A fresh single-use code for the t.me link; the caller has re-checked already. */
-export function createLinkCode(userId: string, nowMs = Date.now()): string {
+/**
+ * A fresh single-use code for the t.me link; the caller has re-checked
+ * already. `timeZone` is the linking browser's, for the chat to answer in.
+ */
+export function createLinkCode(userId: string, nowMs = Date.now(), timeZone: string | null = null): string {
 	stmts().codePrune.run(new Date(nowMs).toISOString());
 	const code = randomBytes(18).toString('base64url');
-	stmts().codeInsert.run(code, userId, new Date(nowMs + CODE_TTL_MS).toISOString());
+	chat().codeInsert.run(code, userId, new Date(nowMs + CODE_TTL_MS).toISOString(), timeZone);
 	return code;
 }
 
@@ -147,11 +200,12 @@ export function createLinkCode(userId: string, nowMs = Date.now()): string {
  * happens; a chat can belong to only one login.
  */
 export function linkChatWithCode(code: string, chatId: string, username: string | null, nowMs = Date.now()): string | null {
-	const row = stmts().codeTake.get(code) as { user_id: string; expires_at: string } | undefined;
+	const row = chat().codeTake.get(code) as { user_id: string; expires_at: string; time_zone: string | null } | undefined;
 	if (!row || new Date(row.expires_at).getTime() < nowMs) return null;
 	getDb().transaction(() => {
 		stmts().linkDeleteChat.run(chatId, row.user_id);
 		stmts().linkUpsert.run(row.user_id, chatId, username);
+		if (row.time_zone) chat().linkTimeZone.run(row.time_zone, row.user_id, row.time_zone);
 	})();
 	return row.user_id;
 }
@@ -163,6 +217,39 @@ export function unlink(userId: string): void {
 export function setLinkFlags(userId: string, flags: { urgent?: boolean; paused?: boolean }): void {
 	const v = (b: boolean | undefined) => (b === undefined ? null : b ? 1 : 0);
 	stmts().linkSet.run(v(flags.urgent), v(flags.paused), userId);
+}
+
+/** The user's clock as the web app last saw it; a no-op without a link. */
+export function noteTimeZone(userId: string, timeZone: string): void {
+	chat().linkTimeZone.run(timeZone, userId, timeZone);
+}
+
+export function setLinkConversation(userId: string, conversationId: string): void {
+	chat().linkConversation.run(conversationId, userId);
+}
+
+export function setConfirmInChat(userId: string, on: boolean): void {
+	chat().linkConfirm.run(on ? 1 : 0, userId);
+}
+
+export function createAgentButton(button: AgentButton): string {
+	chat().buttonPrune.run(`-${BUTTON_TTL_DAYS} days`);
+	const id = randomBytes(12).toString('base64url');
+	chat().buttonInsert.run(id, button.userId, button.accountId, button.kind, button.ref);
+	return id;
+}
+
+/** A press on one of Zajel's chat buttons, once: null when unknown, used already, or too old. */
+export function takeAgentButton(id: string): AgentButton | null {
+	const row = chat().buttonTake.get(id, `-${BUTTON_TTL_DAYS} days`) as
+		| { user_id: string; account_id: string; kind: AgentButton['kind']; ref: string }
+		| undefined;
+	return row ? { userId: row.user_id, accountId: row.account_id, kind: row.kind, ref: row.ref } : null;
+}
+
+/** Make a button usable again: what it does didn't happen. */
+export function releaseAgentButton(id: string): void {
+	chat().buttonRelease.run(id);
 }
 
 export function createButton(token: ButtonToken): string {

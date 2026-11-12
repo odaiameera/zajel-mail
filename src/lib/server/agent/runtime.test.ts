@@ -14,7 +14,9 @@ const mocks = vi.hoisted(() => ({
 	moveToArchive: vi.fn(),
 	moveToFolder: vi.fn(),
 	searchEmails: vi.fn(async () => ({ emails: [] as Record<string, unknown>[], total: 0 })),
-	saveDraft: vi.fn(async () => ({ success: true })),
+	saveDraft: vi.fn(async () => ({ success: true, id: 'draft-1' })),
+	/** The JMAP client's own requests (the reply-draft lookup). */
+	request: vi.fn(),
 	addReminder: vi.fn(() => 'rem-1'),
 	createEvent: vi.fn(async () => ({ id: 'ev-new' })),
 	runChat: vi.fn(async () => 'Thanks, Thursday works for me.'),
@@ -41,7 +43,10 @@ vi.mock('$lib/server/log', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/server/log')>()),
 	logEvent: mocks.logEvent
 }));
-vi.mock('$lib/jmap/auth', () => ({ createClient: () => ({}) }));
+// The client is `{}` to the assertions; its request method is there but not enumerable.
+vi.mock('$lib/jmap/auth', () => ({
+	createClient: () => Object.defineProperty({}, 'request', { value: mocks.request, enumerable: false })
+}));
 vi.mock('$lib/jmap/email', () => ({
 	getEmailDetail: mocks.getEmailDetail,
 	searchEmails: mocks.searchEmails,
@@ -156,6 +161,7 @@ beforeEach(() => {
 	forgetStrictRefusals();
 	getDb().prepare('DELETE FROM agent_actions').run();
 	getDb().prepare('DELETE FROM agent_audit').run();
+	getDb().prepare('DELETE FROM agent_reply_drafts').run();
 	mocks.getEmailDetail.mockResolvedValue({
 		id: 'e2',
 		from: [{ name: 'Dana', email: 'dana@example.test' }],
@@ -199,7 +205,9 @@ describe('runAgentTurn', () => {
 				to: ['dana@example.test'],
 				subject: 'Re: Lunch?',
 				text: 'Thanks, Thursday works for me.',
-				inReplyTo: 'abc@example.test'
+				inReplyTo: 'abc@example.test',
+				// The card's message carries the original, quoted, to go out with it.
+				quoteHtml: expect.stringMatching(/^<blockquote .*Dana &lt;dana@example\.test&gt;.*Does Thursday work\?.*<\/blockquote>$/)
 			}
 		});
 		expect(result.message).toBe('Marked it read. The reply is waiting for you.');
@@ -321,6 +329,38 @@ describe('runAgentTurn', () => {
 		mocks.create.mockRejectedValueOnce(Object.assign(new Error('400 messages: roles must alternate'), { status: 400 }));
 		await expect(runAgentTurn(turn())).rejects.toBeTruthy();
 		expect(mocks.create).toHaveBeenCalledTimes(1);
+	});
+
+	it('quotes the original under a reply draft, and writes it from the whole message', async () => {
+		mocks.getEmailDetail.mockResolvedValueOnce({
+			id: 'e2',
+			from: [{ name: 'Dana', email: 'dana@example.test' }],
+			subject: 'Lunch?',
+			receivedAt: '2026-11-11T12:00:00Z',
+			messageId: ['abc@example.test'],
+			references: [],
+			preview: 'Does Thursday work?',
+			htmlBody: [{ partId: 'h', type: 'text/html' }],
+			textBody: [{ partId: 't', type: 'text/plain' }],
+			bodyValues: {
+				h: { value: '<p>Does Thursday work?</p><script>steal()</script><p onclick="x()">Also, can you bring the contract?</p>' },
+				t: { value: 'Does Thursday work?\n\nAlso, can you bring the contract?' }
+			}
+		});
+		// Addressed to the user's own address, so it is saved straight away.
+		mocks.create
+			.mockResolvedValueOnce(reply([toolUse('t1', 'save_draft', { to: ['me@example.test'], cc: [], subject: null, reply_to_email_id: 'e2', points: 'Thursday works; I will bring it', exact_body: null })]))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Saved.' }], 'end_turn'));
+		await runAgentTurn(turn());
+
+		const writer = (mocks.runChat.mock.calls[0] as unknown[])[0] as { messages: { content: string }[] };
+		expect(writer.messages[0].content).toContain('Also, can you bring the contract?');
+		const draft = (mocks.saveDraft.mock.calls[0] as unknown[])[3] as { body: string; inReplyTo: string };
+		expect(draft.inReplyTo).toBe('abc@example.test');
+		expect(draft.body).toMatch(/^<p>Thanks, Thursday works for me\.<\/p><br><blockquote /);
+		expect(draft.body).toContain('<strong>From:</strong> Dana &lt;dana@example.test&gt;');
+		expect(draft.body).toContain('<p>Also, can you bring the contract?</p></blockquote>');
+		expect(draft.body).not.toMatch(/script|steal|onclick/);
 	});
 
 	it('refuses a malformed call instead of coercing it', async () => {
@@ -473,13 +513,33 @@ describe('runAgentTurn', () => {
 	});
 
 	it('refuses a tool the source may not use, even if the model calls it', async () => {
-		mocks.create
-			.mockResolvedValueOnce(reply([toolUse('t1', 'send_email', { to: ['x@evil.example'], cc: [], subject: 's', reply_to_email_id: null, points: 'p', exact_body: null })]))
-			.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
-		const result = await runAgentTurn(turn({ source: 'telegram' }));
+		const evil = toolUse('t1', 'send_email', { to: ['x@evil.example'], cc: [], subject: 's', reply_to_email_id: null, points: 'p', exact_body: null });
+		mocks.create.mockResolvedValueOnce(reply([evil])).mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+		// A job whose cards couldn't reach anyone.
+		const result = await runAgentTurn(turn({ source: 'job' }));
 		expect(result.pending).toEqual([]);
 		const results = mocks.create.mock.calls[1][0].messages[2].content;
 		expect(results[0]).toMatchObject({ is_error: true, content: 'No such tool' });
+	});
+
+	it('prepares cards from Telegram, but leaves setting up jobs to the web app', async () => {
+		mocks.create.mockResolvedValueOnce(reply([sendToDana])).mockResolvedValueOnce(reply([{ type: 'text', text: 'Waiting for you.' }], 'end_turn'));
+		const result = await runAgentTurn(turn({ source: 'telegram', note: 'You are on Telegram.' }));
+		expect(result.pending).toHaveLength(1);
+		expect(mocks.sendEmail).not.toHaveBeenCalled();
+		const request = mocks.create.mock.calls[0][0];
+		expect(request.tools.map((t: { name: string }) => t.name)).not.toContain('schedule_job');
+		expect(request.system[1].text).toContain('You are on Telegram.');
+	});
+
+	it('lets a job prepare at most five cards a run, when they can reach the user', async () => {
+		const six = Array.from({ length: 6 }, (_, i) => ({ ...sendToDana, id: `s${i}` }));
+		mocks.create.mockResolvedValueOnce(reply(six)).mockResolvedValueOnce(reply([{ type: 'text', text: 'Five wait.' }], 'end_turn'));
+		const result = await runAgentTurn(turn({ source: 'job', outward: true }));
+		expect(result.pending).toHaveLength(5);
+		expect(mocks.create.mock.calls[0][0].system[1].text).toContain('goes to the user’s Telegram as a card');
+		const results = mocks.create.mock.calls[1][0].messages[2].content;
+		expect(results[5]).toMatchObject({ is_error: true, content: expect.stringContaining('at most 5 changes for confirmation') });
 	});
 
 	const dentist = toolUse('t1', 'create_event', {
@@ -579,30 +639,49 @@ describe('runAgentTurn', () => {
 			expect(resultsOf(1)[3]).toMatchObject({ is_error: true, content: expect.stringContaining('at most 3 reminders') });
 		});
 
-		it('saves a draft to the user straight away, but a draft to anyone else waits for a click', async () => {
+		it('saves drafts to anyone straight away, up to ten a turn', async () => {
+			const eleven = Array.from({ length: 11 }, (_, i) => draft(`t${i}`, [i === 0 ? 'me@example.test' : 'dana@example.test']));
 			mocks.create
-				.mockResolvedValueOnce(reply([draft('t1', ['Me@example.test']), draft('t2', ['alias@example.test']), draft('t3', ['dana@example.test'])]))
+				.mockResolvedValueOnce(reply(eleven))
 				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
 			const result = await runAgentTurn(turn());
-			expect(mocks.saveDraft).toHaveBeenCalledTimes(2);
-			expect(result.done).toEqual(['Saved a draft to Me@example.test: “Notes”', 'Saved a draft to alias@example.test: “Notes”']);
-			expect(result.pending).toHaveLength(1);
-			expect(result.pending[0]).toMatchObject({
-				kind: 'save_draft',
-				payload: { to: ['dana@example.test'], subject: 'Notes', text: 'Thanks, Thursday works for me.' }
-			});
-			expect(resultsOf(1)[2].content).toContain('Nothing has been saved');
-			expect(listAudit(USER).find((e) => e.outcome === 'proposed')).toMatchObject({ tool: 'save_draft', tier: 'outward' });
+			expect(mocks.saveDraft).toHaveBeenCalledTimes(10);
+			expect(result.pending).toEqual([]);
+			expect(result.done[1]).toBe('Saved a draft to dana@example.test: “Notes”');
+			expect(result.drafts).toHaveLength(10);
+			expect(result.drafts[1]).toEqual({ id: 'draft-1', to: ['dana@example.test'], subject: 'Notes', text: 'Thanks, Thursday works for me.', replyToEmailId: null });
+			expect(resultsOf(1)[10]).toMatchObject({ is_error: true, content: expect.stringContaining('at most 10 drafts') });
+			expect(listAudit(USER).filter((e) => e.tool === 'save_draft').every((e) => e.tier === 'self')).toBe(true);
 		});
 
-		it('refuses a draft to someone else from an unattended run', async () => {
+		it('saves drafts from a scheduled job too', async () => {
 			mocks.create
 				.mockResolvedValueOnce(reply([draft('t1', ['dana@example.test'])]))
 				.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
 			const result = await runAgentTurn(turn({ source: 'job' }));
-			expect(mocks.saveDraft).not.toHaveBeenCalled();
-			expect(result.pending).toEqual([]);
-			expect(resultsOf(1)[0]).toMatchObject({ is_error: true });
+			expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
+			expect(result.done).toEqual(['Saved a draft to dana@example.test: “Notes”']);
+		});
+
+		it('drafts one reply per message, while that draft is still in Drafts', async () => {
+			const replyDraft = toolUse('t1', 'save_draft', { to: [], cc: [], subject: null, reply_to_email_id: 'e2', points: 'Thursday works', exact_body: null });
+			const once = async () => {
+				mocks.create
+					.mockResolvedValueOnce(reply([replyDraft]))
+					.mockResolvedValueOnce(reply([{ type: 'text', text: 'ok' }], 'end_turn'));
+				return runAgentTurn(turn());
+			};
+			expect((await once()).done).toEqual(['Saved a draft reply to dana@example.test: “Re: Lunch?”']);
+			// Still a draft: not written again.
+			mocks.request.mockResolvedValueOnce({ methodResponses: [['Email/get', { list: [{ id: 'draft-1', subject: 'Re: Lunch?', keywords: { $draft: true } }] }, '0']] });
+			const again = await once();
+			expect(again.done).toEqual([]);
+			expect(resultsOf(3)[0].content).toContain('already in Drafts (id=draft-1');
+			expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
+			// Sent or deleted since: a new one may be written.
+			mocks.request.mockResolvedValueOnce({ methodResponses: [['Email/get', { list: [] }, '0']] });
+			expect((await once()).done).toHaveLength(1);
+			expect(mocks.saveDraft).toHaveBeenCalledTimes(2);
 		});
 
 		it('reports each change as it happens, so a restart loses none of them', async () => {

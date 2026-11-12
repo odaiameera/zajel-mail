@@ -230,3 +230,41 @@ export function listAudit(userId: string, limit = 100): AuditEntry[] {
 		created_at: string;
 	}[]).map((row) => ({ ...row, createdAt: row.created_at }));
 }
+
+/**
+ * Which message each of Zajel's reply drafts answers (migration 033), so a
+ * second summary doesn't draft the same reply while the first is still in
+ * Drafts. Kept apart from the statements above, like the Telegram outbox.
+ */
+let _replyDrafts: ReturnType<typeof prepareReplyDrafts> | null = null;
+function prepareReplyDrafts() {
+	const db = getDb();
+	return {
+		get: db.prepare(`SELECT draft_id FROM agent_reply_drafts WHERE account_id = ? AND email_id = ?`),
+		put: db.prepare(
+			`INSERT INTO agent_reply_drafts (account_id, email_id, draft_id) VALUES (?, ?, ?)
+			 ON CONFLICT (account_id, email_id) DO UPDATE SET draft_id = excluded.draft_id, created_at = datetime('now')`
+		),
+		drop: db.prepare(`DELETE FROM agent_reply_drafts WHERE account_id = ? AND email_id = ?`),
+		prune: db.prepare(`DELETE FROM agent_reply_drafts WHERE created_at < datetime('now', '-90 days')`)
+	};
+}
+function replyDrafts() {
+	return (_replyDrafts ??= prepareReplyDrafts());
+}
+
+/** The draft Zajel saved answering `emailId`, if it noted one. */
+export function replyDraftFor(accountId: string, emailId: string): string | null {
+	const row = replyDrafts().get.get(accountId, emailId) as { draft_id: string } | undefined;
+	return row?.draft_id ?? null;
+}
+
+export function rememberReplyDraft(accountId: string, emailId: string, draftId: string): void {
+	replyDrafts().prune.run();
+	replyDrafts().put.run(accountId, emailId, draftId);
+}
+
+/** The draft is gone (sent, deleted): a new one may be written. */
+export function forgetReplyDraft(accountId: string, emailId: string): void {
+	replyDrafts().drop.run(accountId, emailId);
+}

@@ -471,7 +471,7 @@ describe('upgrading the owner’s database (stages 1 and 2 done) in one start', 
 
 	it('says, before it starts, which database it is upgrading and what is to run', () => {
 		expect(announced).toEqual([
-			`[migrate] Upgrading the database at ${process.env.DATABASE_PATH}: 5 migrations and 2 one-time steps to apply`
+			`[migrate] Upgrading the database at ${process.env.DATABASE_PATH}: 6 migrations and 2 one-time steps to apply`
 		]);
 	});
 
@@ -530,7 +530,7 @@ describe('upgrading from before stage 1 in one start', () => {
 	it('runs the three rule steps in order and ends in the same shape', () => {
 		expectUpgraded(o);
 		expect(announced).toEqual([
-			`[migrate] Upgrading the database at ${process.env.DATABASE_PATH}: 5 migrations and 4 one-time steps to apply`
+			`[migrate] Upgrading the database at ${process.env.DATABASE_PATH}: 6 migrations and 4 one-time steps to apply`
 		]);
 	});
 

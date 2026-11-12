@@ -6,16 +6,22 @@ import { canMoveInto, mailboxKind } from '$lib/mailboxes';
 import { categoryOf, INBOX_CATEGORIES, isInboxCategory } from '$lib/types/categories';
 import * as filing from '$lib/server/filing';
 import { wallClockToUtc } from '$lib/server/calendar/tz';
-import { listAccounts } from '$lib/server/auth/accounts';
-import { listIdentities } from '$lib/server/db/queries/identities';
 import { spend, type TurnBudget } from './budget';
 import { localClock, parseLocalTime } from './local-time';
 import { getDecision } from '$lib/server/db/queries/jev-decisions';
 import { setTab as moveToTab } from '$lib/server/jev/tab';
-import { htmlToPromptText } from '$lib/server/ai/extract-event';
+import { emailBodyText } from './email-text';
 import { mailFilterConditions, parseMailSearchSpec } from '$lib/server/ai/mail-search';
 import { searchMail as searchMailbox } from '$lib/server/search/hybrid';
-import { createPendingAction, type AgentSource, type PendingAction, type ToolTier } from './store';
+import {
+	createPendingAction,
+	forgetReplyDraft,
+	rememberReplyDraft,
+	replyDraftFor,
+	type AgentSource,
+	type PendingAction,
+	type ToolTier
+} from './store';
 import { composeReply, saveComposedDraft, type ComposeRequest } from './compose';
 import { CALENDAR_TOOLS } from './calendar-tools';
 import { JOB_TOOLS } from './job-tools';
@@ -55,10 +61,22 @@ export interface ToolResult {
 	isError?: boolean;
 	/** A self-tier change that happened, for the reply and the audit log. */
 	done?: string;
+	/** A draft this call saved, for Telegram to show with Send and Open. */
+	draft?: SavedDraft;
 	/** An outward change waiting for your click. */
 	pending?: PendingAction;
 	/** A scheduled job asked for its report not to be sent (stay_quiet). */
 	quiet?: boolean;
+}
+
+/** A draft Zajel saved, as Telegram shows it. */
+export interface SavedDraft {
+	/** Its JMAP id, in the account the turn worked in. */
+	id: string;
+	to: string[];
+	subject: string;
+	text: string;
+	replyToEmailId: string | null;
 }
 
 export interface AgentTool {
@@ -89,16 +107,6 @@ function schema(properties: Record<string, unknown>, required: string[] = Object
 
 const ID_LIST = { type: 'array', items: { type: 'string' }, description: 'Email ids from search_mail or inbox_triage.' };
 
-/** Plain text of a message: its text/plain part, or its HTML turned into text. */
-export function emailBodyText(email: Email, max = 8000): string {
-	const values = email.bodyValues ?? {};
-	const join = (parts: Email['textBody']) =>
-		(parts ?? []).map((part) => values[part.partId]?.value ?? '').join('\n').trim();
-	const plain = join(email.textBody?.filter((part) => part.type?.toLowerCase().startsWith('text/plain')));
-	if (plain) return plain.slice(0, max);
-	const html = join(email.htmlBody?.filter((part) => part.type?.toLowerCase().startsWith('text/html')));
-	return html ? htmlToPromptText(html, max) : (email.preview ?? '');
-}
 
 function who(list: Email['from']): string {
 	return (list ?? []).map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(', ');
@@ -435,45 +443,57 @@ function composeInput(input: Record<string, unknown>): ComposeRequest {
 	};
 }
 
-/** The addresses that are the user's own: the linked accounts and their identities. */
-function ownAddresses(ctx: ToolContext): Set<string> {
-	return new Set(
-		[ctx.userEmail, ...listAccounts(ctx.userId).map((a) => a.email), ...listIdentities(ctx.userEmail).map((i) => i.email)].map((a) =>
-			a.toLowerCase()
-		)
-	);
+/**
+ * The draft Zajel already saved answering `emailId`, while it is still a
+ * draft. One that was sent or deleted is forgotten, so a new one may be written.
+ */
+async function existingReplyDraft(ctx: ToolContext, emailId: string): Promise<{ id: string; subject: string } | null> {
+	const draftId = replyDraftFor(ctx.accountRowId, emailId);
+	if (!draftId) return null;
+	const response = await ctx.client.request([
+		['Email/get', { accountId: ctx.auth.accountId, ids: [draftId], properties: ['subject', 'keywords'] }, '0']
+	]);
+	const found = (response.methodResponses[0][1] as { list?: Email[] }).list?.[0];
+	if (found?.keywords?.$draft) return { id: draftId, subject: found.subject ?? '' };
+	forgetReplyDraft(ctx.accountRowId, emailId);
+	return null;
 }
 
+/**
+ * Drafts wait in Drafts until the user sends them, so saving one is the
+ * user's own mailbox, to anyone: a reply drafted from a summary or a job is
+ * there to review instead of a card to click first. A turn may save only so
+ * many (budget.ts), and one reply per message.
+ */
 const saveDraftTool: AgentTool = {
 	name: 'save_draft',
 	tier: 'self',
 	description:
-		'Write a message and save it to Drafts without sending, for the user to review. A draft addressed to anyone but the user waits for their click first.',
+		'Write a message, or a reply (give reply_to_email_id: the original is quoted under it), and save it to Drafts without sending, for the user to review and send. Nothing leaves the account. One reply draft per message answered.',
 	input_schema: schema(COMPOSE_PROPS),
 	async run(ctx, input) {
-		const message = await composeReply(ctx, composeInput(input));
-		if ('error' in message) return { content: message.error, isError: true };
-		// A draft to someone else is one click from leaving the account, and
-		// mail content can talk the model into writing one: it waits for a card.
-		const own = ownAddresses(ctx);
-		if ([...message.to, ...message.cc].some((address) => !own.has(address.toLowerCase()))) {
-			if (ctx.source !== 'chat') return { content: 'A draft to someone else needs the user to confirm it in Zajel', isError: true };
-			const pending = createPendingAction({
-				userId: ctx.userId,
-				accountId: ctx.accountRowId,
-				conversationId: ctx.conversationId,
-				kind: 'save_draft',
-				payload: { ...message }
-			});
-			return {
-				content: `Waiting for the user to confirm saving a draft to ${message.to.join(', ')}: “${message.subject}”. Nothing has been saved.`,
-				pending
-			};
+		const request = composeInput(input);
+		if (request.replyToEmailId) {
+			const existing = await existingReplyDraft(ctx, request.replyToEmailId);
+			if (existing) {
+				return {
+					content: `A draft replying to that message is already in Drafts (id=${existing.id}, “${existing.subject}”). Nothing new was saved; tell the user it is there.`
+				};
+			}
 		}
+		const message = await composeReply(ctx, request);
+		if ('error' in message) return { content: message.error, isError: true };
+		const refused = spend(ctx.budget, 'drafts', 1);
+		if (refused) return { content: refused, isError: true };
 		const saved = await saveComposedDraft(ctx.auth, ctx.userEmail, message);
-		if (!saved.success) return { content: saved.error ?? 'Could not save the draft', isError: true };
-		const done = `Saved a draft to ${message.to.join(', ')}: “${message.subject}”`;
-		return { content: `Done: ${done}.\n\n${message.text}`, done };
+		if (!saved.success || !saved.id) return { content: saved.error ?? 'Could not save the draft', isError: true };
+		if (message.replyToEmailId) rememberReplyDraft(ctx.accountRowId, message.replyToEmailId, saved.id);
+		const done = `Saved a draft ${message.replyToEmailId ? 'reply ' : ''}to ${message.to.join(', ')}: “${message.subject}”`;
+		return {
+			content: `Done: ${done}. It is in Drafts, not sent.\n\n${message.text}`,
+			done,
+			draft: { id: saved.id, to: message.to, subject: message.subject, text: message.text, replyToEmailId: message.replyToEmailId }
+		};
 	}
 };
 
@@ -569,11 +589,18 @@ export const AGENT_TOOLS: AgentTool[] = [
 	...JOB_TOOLS
 ];
 
-/** Tools allowed for a source: unattended runs never get outward ones, and only a job can stay quiet. */
-export function toolsFor(source: AgentSource): AgentTool[] {
+/**
+ * Tools allowed for a source. Chat has them all. Telegram has them all but
+ * schedule_job, which is set up in the web app (it needs a fresh re-check).
+ * A job gets outward tools only when `outward` says its cards can reach the
+ * user (Telegram, with buttons), and only a job can stay quiet. Whatever the
+ * source, an outward tool only ever prepares a card.
+ */
+export function toolsFor(source: AgentSource, opts: { outward?: boolean } = {}): AgentTool[] {
 	if (source === 'chat') return AGENT_TOOLS;
-	const unattended = AGENT_TOOLS.filter((t) => t.tier !== 'outward');
-	return source === 'job' ? [...unattended, stayQuiet] : unattended;
+	const notJobs = AGENT_TOOLS.filter((t) => t.name !== 'schedule_job');
+	if (source === 'telegram') return notJobs;
+	return [...(opts.outward ? notJobs : AGENT_TOOLS.filter((t) => t.tier !== 'outward')), stayQuiet];
 }
 
 /** A per-request mailbox list, fetched once. */
