@@ -35,7 +35,9 @@ function asMessage(payload: Record<string, unknown>): ComposedMessage | null {
 		text: typeof payload.text === 'string' ? payload.text : '',
 		inReplyTo: typeof payload.inReplyTo === 'string' ? payload.inReplyTo : null,
 		references: typeof payload.references === 'string' ? payload.references : null,
-		replyToEmailId: typeof payload.replyToEmailId === 'string' ? payload.replyToEmailId : null
+		replyToEmailId: typeof payload.replyToEmailId === 'string' ? payload.replyToEmailId : null,
+		// Written by the server when the card was made (quote.ts), never by the model.
+		quoteHtml: typeof payload.quoteHtml === 'string' ? payload.quoteHtml : null
 	};
 	const valid = message.to.length > 0 && [...message.to, ...message.cc].every((a) => ADDRESS.test(a)) && message.subject;
 	return valid ? message : null;
@@ -185,7 +187,11 @@ export function pendingView(action: PendingAction): PendingView {
 		...base,
 		label,
 		title: String(p.subject ?? ''),
-		lines: [`To ${list(p.to).join(', ')}`, ...(list(p.cc).length ? [`Cc ${list(p.cc).join(', ')}`] : [])],
+		lines: [
+			`To ${list(p.to).join(', ')}`,
+			...(list(p.cc).length ? [`Cc ${list(p.cc).join(', ')}`] : []),
+			...(typeof p.quoteHtml === 'string' && p.quoteHtml ? ['With the original message quoted below it'] : [])
+		],
 		body: String(p.text ?? ''),
 		confirmLabel
 	});

@@ -12,7 +12,7 @@ import { spend, type TurnBudget } from './budget';
 import { localClock, parseLocalTime } from './local-time';
 import { getDecision } from '$lib/server/db/queries/jev-decisions';
 import { setTab as moveToTab } from '$lib/server/jev/tab';
-import { htmlToPromptText } from '$lib/server/ai/extract-event';
+import { emailBodyText } from './email-text';
 import { mailFilterConditions, parseMailSearchSpec } from '$lib/server/ai/mail-search';
 import { searchMail as searchMailbox } from '$lib/server/search/hybrid';
 import { createPendingAction, type AgentSource, type PendingAction, type ToolTier } from './store';
@@ -89,16 +89,6 @@ function schema(properties: Record<string, unknown>, required: string[] = Object
 
 const ID_LIST = { type: 'array', items: { type: 'string' }, description: 'Email ids from search_mail or inbox_triage.' };
 
-/** Plain text of a message: its text/plain part, or its HTML turned into text. */
-export function emailBodyText(email: Email, max = 8000): string {
-	const values = email.bodyValues ?? {};
-	const join = (parts: Email['textBody']) =>
-		(parts ?? []).map((part) => values[part.partId]?.value ?? '').join('\n').trim();
-	const plain = join(email.textBody?.filter((part) => part.type?.toLowerCase().startsWith('text/plain')));
-	if (plain) return plain.slice(0, max);
-	const html = join(email.htmlBody?.filter((part) => part.type?.toLowerCase().startsWith('text/html')));
-	return html ? htmlToPromptText(html, max) : (email.preview ?? '');
-}
 
 function who(list: Email['from']): string {
 	return (list ?? []).map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(', ');

@@ -12,6 +12,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	import { browser } from '$app/environment';
 	import { getContext, tick, untrack } from 'svelte';
 	import { renderEmailBodyHtml } from '$lib/utils/email-body';
+	import { replyQuoteHtml } from '$lib/utils/reply-quote';
 	import { emailFrameCsp, prepareEmailForReading } from '$lib/utils/email-images';
 	import { parseListUnsubscribe, type UnsubInfo } from '$lib/utils/list-unsubscribe';
 	import { detectEmailVerificationCode } from '$lib/utils/otp';
@@ -775,13 +776,10 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		return renderEmailBodyHtml(email) || '<p style="color: #59636e;">No content</p>';
 	}
 
+	// Two empty lines to write in, then the original (shared with the agent's replies).
 	function getHtmlQuotedBlock(): string {
-		const sender = email.from?.[0];
-		if (!sender) return '';
-		const dateStr = formatDate(email.receivedAt);
-		const fromStr = sender.name ? `${escapeHtml(sender.name)} &lt;${escapeHtml(sender.email)}&gt;` : escapeHtml(sender.email);
-		const originalBody = getBodyHtml();
-		return `<br><br><blockquote style="margin: 0 0 0 0.8ex; border-left: 3px solid #0969da; padding-left: 1ex; color: #59636e;"><div><strong>From:</strong> ${fromStr}</div><div><strong>Date:</strong> ${dateStr}</div><div><strong>Subject:</strong> ${escapeHtml(email.subject ?? '')}</div><br>${originalBody}</blockquote>`;
+		const quote = replyQuoteHtml(email, getBodyHtml());
+		return quote ? `<br><br>${quote}` : '';
 	}
 
 	function handleAddSenderToContacts() {

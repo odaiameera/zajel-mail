@@ -199,7 +199,9 @@ describe('runAgentTurn', () => {
 				to: ['dana@example.test'],
 				subject: 'Re: Lunch?',
 				text: 'Thanks, Thursday works for me.',
-				inReplyTo: 'abc@example.test'
+				inReplyTo: 'abc@example.test',
+				// The card's message carries the original, quoted, to go out with it.
+				quoteHtml: expect.stringMatching(/^<blockquote .*Dana &lt;dana@example\.test&gt;.*Does Thursday work\?.*<\/blockquote>$/)
 			}
 		});
 		expect(result.message).toBe('Marked it read. The reply is waiting for you.');
@@ -321,6 +323,38 @@ describe('runAgentTurn', () => {
 		mocks.create.mockRejectedValueOnce(Object.assign(new Error('400 messages: roles must alternate'), { status: 400 }));
 		await expect(runAgentTurn(turn())).rejects.toBeTruthy();
 		expect(mocks.create).toHaveBeenCalledTimes(1);
+	});
+
+	it('quotes the original under a reply draft, and writes it from the whole message', async () => {
+		mocks.getEmailDetail.mockResolvedValueOnce({
+			id: 'e2',
+			from: [{ name: 'Dana', email: 'dana@example.test' }],
+			subject: 'Lunch?',
+			receivedAt: '2026-11-11T12:00:00Z',
+			messageId: ['abc@example.test'],
+			references: [],
+			preview: 'Does Thursday work?',
+			htmlBody: [{ partId: 'h', type: 'text/html' }],
+			textBody: [{ partId: 't', type: 'text/plain' }],
+			bodyValues: {
+				h: { value: '<p>Does Thursday work?</p><script>steal()</script><p onclick="x()">Also, can you bring the contract?</p>' },
+				t: { value: 'Does Thursday work?\n\nAlso, can you bring the contract?' }
+			}
+		});
+		// Addressed to the user's own address, so it is saved straight away.
+		mocks.create
+			.mockResolvedValueOnce(reply([toolUse('t1', 'save_draft', { to: ['me@example.test'], cc: [], subject: null, reply_to_email_id: 'e2', points: 'Thursday works; I will bring it', exact_body: null })]))
+			.mockResolvedValueOnce(reply([{ type: 'text', text: 'Saved.' }], 'end_turn'));
+		await runAgentTurn(turn());
+
+		const writer = (mocks.runChat.mock.calls[0] as unknown[])[0] as { messages: { content: string }[] };
+		expect(writer.messages[0].content).toContain('Also, can you bring the contract?');
+		const draft = (mocks.saveDraft.mock.calls[0] as unknown[])[3] as { body: string; inReplyTo: string };
+		expect(draft.inReplyTo).toBe('abc@example.test');
+		expect(draft.body).toMatch(/^<p>Thanks, Thursday works for me\.<\/p><br><blockquote /);
+		expect(draft.body).toContain('<strong>From:</strong> Dana &lt;dana@example.test&gt;');
+		expect(draft.body).toContain('<p>Also, can you bring the contract?</p></blockquote>');
+		expect(draft.body).not.toMatch(/script|steal|onclick/);
 	});
 
 	it('refuses a malformed call instead of coercing it', async () => {

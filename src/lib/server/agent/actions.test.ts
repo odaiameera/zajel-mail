@@ -52,6 +52,14 @@ beforeEach(() => {
 });
 
 describe('deciding a pending action', () => {
+	it('sends a reply with the original it quoted when it was proposed', async () => {
+		const quoteHtml = '<blockquote><div><strong>From:</strong> Dana</div><p>Lunch?</p></blockquote>';
+		const action = propose('acct-1', { ...message, quoteHtml });
+		expect(pendingView(action).lines).toContain('With the original message quoted below it');
+		await decidePendingAction(USER, action.id, 'confirm');
+		expect(mocks.sendComposed.mock.calls[0][2]).toMatchObject({ text: 'Thursday works.', quoteHtml });
+	});
+
 	it('sends once on confirm, from the account it was written in', async () => {
 		const action = propose('acct-2');
 		expect(await decidePendingAction(USER, action.id, 'confirm')).toEqual({ status: 200, message: 'Sent to dana@example.test' });
