@@ -150,6 +150,7 @@ export class Draft<T extends Values> {
 		const done = new Set<keyof T>();
 		const take = (values: Partial<T>) => {
 			for (const key of Object.keys(values) as (keyof T)[]) {
+				if (values[key] === undefined) continue;
 				done.add(key);
 				if (same(this.value[key], sent[key])) this.value[key] = copy(values[key] as T[keyof T]);
 			}

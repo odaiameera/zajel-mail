@@ -191,6 +191,19 @@ describe('Draft', () => {
 		expect(draft.dirty).toBe(true);
 	});
 
+	it('ignores a key reported stored with no value, leaving it as it is', async () => {
+		const { draft } = make(async (changed, _all, stored) => {
+			stored({ name: changed.name, size: undefined });
+			throw new Error('Size wasn’t saved: no');
+		});
+		draft.value.name = 'Grace';
+		draft.value.size = 10;
+		await draft.save();
+		expect(draft.value.size).toBe(10);
+		expect(draft.baseline.size).toBe(50);
+		expect(draft.dirty).toBe(true);
+	});
+
 	it('keeps a value as the page reported it stored, over what was sent', async () => {
 		const { draft } = make(async (_changed, all, stored) => {
 			stored({ name: all.name.trim() });

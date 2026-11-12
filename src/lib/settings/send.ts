@@ -39,8 +39,8 @@ export async function sendJson(
 export interface SaveStep<T> {
 	/** The setting as the page calls it ("Theme"), for the message when this one fails. */
 	label: string;
-	/** The settings this request stores, as `stored` takes them. */
-	values: Partial<T>;
+	/** The settings this request stores, as `stored` takes them; worked out after it ran when it decides. */
+	values: Partial<T> | (() => Partial<T>);
 	run: () => Promise<unknown>;
 }
 
@@ -56,7 +56,7 @@ export async function saveEach<T>(stored: (values: Partial<T>) => void, steps: S
 	for (const step of steps) {
 		try {
 			await step.run();
-			stored(step.values);
+			stored(typeof step.values === 'function' ? step.values() : step.values);
 		} catch (err) {
 			if (err instanceof SaveCancelled) {
 				cancelled = true;

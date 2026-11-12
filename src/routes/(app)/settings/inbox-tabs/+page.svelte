@@ -1,8 +1,11 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
-	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
+	import SettingRow from '$lib/components/settings/SettingRow.svelte';
+	import { useDraft } from '$lib/settings/draft.svelte';
+	import { saveEach, sendJson, type SaveStep } from '$lib/settings/send';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
 	import { INBOX_CATEGORIES, type InboxCategory } from '$lib/types/categories';
 	import { CATEGORY_ICON } from '$lib/components/category-icons';
@@ -13,42 +16,94 @@
 
 	let { data }: { data: PageData } = $props();
 
-	type Key = 'inboxTabs' | 'jevEnabled';
+	type Account = (typeof data.jevAccounts)[number];
 
-	// Switch positions not yet confirmed by a reload, keyed by account id —
-	// so a toggle moves at once, and falls back to the loaded value on error.
-	const pending = $state<Record<string, Partial<Record<Key, boolean>>>>({});
-	const states = $state<Record<string, SaveState>>({});
-	const errors = $state<Record<string, string>>({});
+	/*
+	 * Settings wait for Save in the bar at the foot of the page: for each
+	 * account its tabs, whether Jev reads its new mail and its spam checks,
+	 * and the tab each pinned sender goes to. One flat list of keys, so that
+	 * what saved stays saved when something else on the page is refused:
+	 *   tabs:<account>  jev:<account>  spam:<account>  pin:<account>:<sender>
+	 * Adding and removing a pin, the backfill and "Try it" act at once.
+	 */
+	type Values = Record<string, boolean | string>;
+	const tabsKey = (id: string) => `tabs:${id}`;
+	const jevKey = (id: string) => `jev:${id}`;
+	const spamKey = (id: string) => `spam:${id}`;
+	const pinKey = (id: string, sender: string) => `pin:${id}:${sender}`;
 
-	function current(account: (typeof data.jevAccounts)[number], key: Key): boolean {
-		return pending[account.id]?.[key] ?? account[key];
-	}
-
-	async function save(accountId: string, patch: Partial<Record<Key, boolean>>, stateKey: string) {
-		pending[accountId] = { ...pending[accountId], ...patch };
-		delete errors[stateKey];
-		states[stateKey] = 'saving';
-		try {
-			const res = await fetch('/api/jev/settings', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ accountId, ...patch })
-			});
-			if (!res.ok) {
-				const body = await res.json().catch(() => null);
-				throw new Error(body?.error ?? 'Couldn’t save. Try again.');
-			}
-			states[stateKey] = 'saved';
-			setTimeout(() => { if (states[stateKey] === 'saved') states[stateKey] = 'idle'; }, 1800);
-			await invalidateAll();
-		} catch (err) {
-			errors[stateKey] = err instanceof Error ? err.message : 'Couldn’t save. Try again.';
-			states[stateKey] = 'error';
+	function savedValues(accounts: Account[]): Values {
+		const values: Values = {};
+		for (const a of accounts) {
+			values[tabsKey(a.id)] = a.inboxTabs;
+			values[jevKey(a.id)] = a.jevEnabled;
+			values[spamKey(a.id)] = a.spamMode;
+			for (const pin of a.pins) values[pinKey(a.id, pin.sender)] = pin.category;
 		}
-		delete pending[accountId];
+		return values;
 	}
 
+	const draft = useDraft<Values>({
+		// What the page opened with; later reloads of `data` leave the form alone.
+		initial: untrack(() => savedValues(data.jevAccounts)),
+		async persist(changed, _all, stored) {
+			const steps: SaveStep<Values>[] = [];
+			for (const account of data.jevAccounts) {
+				// One request per account for its three settings, as the server takes them.
+				const body: Record<string, unknown> = {};
+				const values: Values = {};
+				for (const [key, field] of [
+					[tabsKey(account.id), 'inboxTabs'],
+					[jevKey(account.id), 'jevEnabled'],
+					[spamKey(account.id), 'spamMode']
+				] as const) {
+					if (changed[key] === undefined) continue;
+					body[field] = changed[key];
+					values[key] = changed[key];
+				}
+				if (Object.keys(body).length > 0) {
+					steps.push({
+						label: `The settings for ${account.email}`,
+						values,
+						run: () => sendJson('/api/jev/settings', { accountId: account.id, ...body })
+					});
+				}
+				for (const pin of account.pins) {
+					const key = pinKey(account.id, pin.sender);
+					const category = changed[key];
+					if (category === undefined) continue;
+					steps.push({
+						label: `The pin for ${pin.sender}`,
+						values: { [key]: category },
+						run: () => sendJson('/api/jev/pins', { accountId: account.id, sender: pin.sender, category })
+					});
+				}
+			}
+			try {
+				await saveEach(stored, steps);
+			} finally {
+				await invalidateAll();
+			}
+		}
+	});
+
+	// Pins that arrive with a reload (one pinned from a message elsewhere)
+	// come in as saved; a pin already on the page keeps its choice.
+	$effect(() => {
+		const fresh: Values = {};
+		for (const a of data.jevAccounts) {
+			for (const pin of a.pins) {
+				const key = pinKey(a.id, pin.sender);
+				if (!(key in untrack(() => draft.baseline))) fresh[key] = pin.category;
+			}
+		}
+		if (Object.keys(fresh).length > 0) untrack(() => draft.seed(fresh));
+	});
+
+	function current(account: Account, key: 'inboxTabs' | 'jevEnabled'): boolean {
+		const value = draft.value[key === 'inboxTabs' ? tabsKey(account.id) : jevKey(account.id)];
+		return typeof value === 'boolean' ? value : account[key];
+	}
 
 	const configured = $derived(data.jev.mode !== 'off');
 
@@ -71,61 +126,46 @@
 		return `${parts.join(' · ')}.`;
 	}
 
-	// --- Spam checks ---
-
-	const spamModes = $state<Record<string, string>>({});
-
-	async function saveSpamMode(accountId: string, mode: string) {
-		const key = `${accountId}:spam`;
-		spamModes[accountId] = mode;
-		delete errors[key];
-		states[key] = 'saving';
-		try {
-			const res = await fetch('/api/jev/settings', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ accountId, spamMode: mode })
-			});
-			if (!res.ok) {
-				const body = await res.json().catch(() => null);
-				throw new Error(body?.error ?? 'Couldn’t save. Try again.');
-			}
-			states[key] = 'saved';
-			setTimeout(() => { if (states[key] === 'saved') states[key] = 'idle'; }, 1800);
-			await invalidateAll();
-		} catch (err) {
-			errors[key] = err instanceof Error ? err.message : 'Couldn’t save. Try again.';
-			states[key] = 'error';
-		}
-		delete spamModes[accountId];
-	}
-
 	// --- Pinned senders ---
 
 	const newPinSender = $state<Record<string, string>>({});
 	const newPinTab = $state<Record<string, InboxCategory>>({});
 	let pinError = $state<Record<string, string>>({});
 
-	async function savePin(accountId: string, sender: string, category: InboxCategory, method: 'POST' | 'DELETE' = 'POST') {
+	/** Adding a pin and removing one act at once; only a pin's tab waits for Save. */
+	async function pinAction(accountId: string, sender: string, category: string, method: 'POST' | 'DELETE') {
 		pinError = { ...pinError, [accountId]: '' };
 		const res = await fetch('/api/jev/pins', {
 			method,
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ accountId, sender, category })
 		}).catch(() => null);
+		const body = await res?.json().catch(() => null);
 		if (!res?.ok) {
-			const body = await res?.json().catch(() => null);
 			pinError = { ...pinError, [accountId]: body?.error ?? 'Couldn’t save the pin. Try again.' };
-			return false;
+			return null;
 		}
-		await invalidateAll();
-		return true;
+		return body as { pin?: { sender: string; category: string } } | null;
 	}
 
 	async function addPin(accountId: string) {
 		const sender = (newPinSender[accountId] ?? '').trim();
 		if (!sender) return;
-		if (await savePin(accountId, sender, newPinTab[accountId] ?? 'updates')) newPinSender[accountId] = '';
+		const category = newPinTab[accountId] ?? 'updates';
+		const result = await pinAction(accountId, sender, category, 'POST');
+		if (!result) return;
+		newPinSender[accountId] = '';
+		// Stored as the server keeps it (an address in lower case).
+		draft.seed({ [pinKey(accountId, result.pin?.sender ?? sender)]: result.pin?.category ?? category });
+		await invalidateAll();
+	}
+
+	async function removePin(accountId: string, sender: string) {
+		const key = pinKey(accountId, sender);
+		const category = String(draft.baseline[key] ?? draft.value[key] ?? '');
+		if (!(await pinAction(accountId, sender, category, 'DELETE'))) return;
+		draft.forget([key]);
+		await invalidateAll();
 	}
 
 	// --- Preview ---
@@ -210,14 +250,12 @@
 			description={account.isActive
 				? 'Show tabs in this account’s Inbox. This is the account you’re using now.'
 				: 'Show tabs in this account’s Inbox.'}
-			state={states[`${account.id}:tabs`] ?? 'idle'}
-			errorMessage={errors[`${account.id}:tabs`]}
 		>
 			{#snippet control()}
 				<Toggle
 					checked={current(account, 'inboxTabs')}
 					ariaLabel="Show tabs for {account.email}"
-					onChange={(v) => save(account.id, { inboxTabs: v }, `${account.id}:tabs`)}
+					onChange={(v) => (draft.value[tabsKey(account.id)] = v)}
 				/>
 			{/snippet}
 		</SettingRow>
@@ -265,15 +303,13 @@
 		<SettingRow
 			title={`Let Jev read new mail · ${account.email}`}
 			description={`${tabsOn ? 'Sorts it into tabs' : 'Would sort it into tabs (they’re off)'}. Starts with mail that arrives from now on; Jev never moves mail you’ve put in a tab. ${monthLine(account.month)}`}
-			state={states[`${account.id}:sort`] ?? 'idle'}
-			errorMessage={errors[`${account.id}:sort`]}
 		>
 			{#snippet control()}
 				<Toggle
 					checked={current(account, 'jevEnabled')}
 					ariaLabel="Let Jev read new mail for {account.email}"
 					disabled={!configured}
-					onChange={(v) => save(account.id, { jevEnabled: v }, `${account.id}:sort`)}
+					onChange={(v) => (draft.value[jevKey(account.id)] = v)}
 				/>
 			{/snippet}
 		</SettingRow>
@@ -304,9 +340,9 @@
 					<li class="flex items-center gap-3 px-3 py-2">
 						<span class="flex-1 min-w-0 truncate text-sm text-text font-mono">{pin.sender}</span>
 						<select
-							value={pin.category}
+							value={draft.value[pinKey(account.id, pin.sender)] ?? pin.category}
 							aria-label="Tab for {pin.sender}"
-							onchange={(e) => savePin(account.id, pin.sender, e.currentTarget.value as InboxCategory)}
+							onchange={(e) => (draft.value[pinKey(account.id, pin.sender)] = e.currentTarget.value)}
 							class="bg-surface-hover border border-border rounded-lg px-2 py-1 text-xs text-text outline-none focus:border-accent"
 						>
 							{#each INBOX_CATEGORIES as c (c.key)}
@@ -315,7 +351,7 @@
 						</select>
 						<button
 							type="button"
-							onclick={() => savePin(account.id, pin.sender, pin.category, 'DELETE')}
+							onclick={() => removePin(account.id, pin.sender)}
 							title="Remove pin"
 							aria-label="Remove pin for {pin.sender}"
 							class="p-1 rounded-md text-text-tertiary hover:text-danger cursor-pointer"
@@ -460,15 +496,13 @@
 		<SettingRow
 			title={`Spam checks · ${account.email}`}
 			description={current(account, 'jevEnabled') ? 'Applies to mail that arrives from now on.' : 'Let Jev read this account’s new mail first.'}
-			state={states[`${account.id}:spam`] ?? 'idle'}
-			errorMessage={errors[`${account.id}:spam`]}
 		>
 			{#snippet control()}
 				<Select
-					value={spamModes[account.id] ?? account.spamMode}
+					value={String(draft.value[spamKey(account.id)] ?? account.spamMode)}
 					ariaLabel="Spam checks for {account.email}"
 					disabled={!configured || !current(account, 'jevEnabled')}
-					onchange={(v) => saveSpamMode(account.id, v)}
+					onchange={(v) => (draft.value[spamKey(account.id)] = v)}
 					options={[
 						{ value: 'off', label: 'Off' },
 						{ value: 'watch', label: 'Watch only' },

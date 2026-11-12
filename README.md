@@ -283,6 +283,7 @@ Jev is **off until you turn it on, account by account.** For a demo or developme
 - **Signatures**: as many as you like, with a default for each identity.
 - **Notifications** for new mail, plus new and updated events and event reminders. Push is per device: each phone or browser has its own switch, and the page lists the devices receiving push.
 - **Import / Export** your preferences as a file, or **Reset** them.
+- **Nothing in Settings saves until you press Save.** Change what you want and a bar at the foot of the page offers **Save** and **Discard** (Ctrl+S or Cmd+S saves too); leaving with unsaved changes asks first. A theme you pick shows straight away and goes back if you don't save it. Actions still happen at once: adding or removing a pin, linking Telegram, signing out a device, importing.
 
 ### On your phone
 

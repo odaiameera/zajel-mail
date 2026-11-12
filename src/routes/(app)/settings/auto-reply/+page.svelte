@@ -4,65 +4,37 @@
 	import { invalidateAll } from '$app/navigation';
 	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
+	import { useDraft } from '$lib/settings/draft.svelte';
+	import { sendJson } from '$lib/settings/send';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	// The form starts from what is saved, and is sent only by Save.
-	const saved = untrack(() => $state.snapshot(data.autoReply));
-	let enabled = $state(saved.enabled);
-	let from = $state(saved.from);
-	let until = $state(saved.until);
-	let subject = $state(saved.subject);
-	let body = $state(saved.body);
+	type Form = { enabled: boolean; from: string; until: string; subject: string; body: string };
 
 	let status = $state(untrack(() => data.status));
-	let saving = $state(false);
-	let saveError = $state('');
-	let savedNote = $state(false);
 
-	// Checked here as the server checks it, so a mistake shows before Save.
-	const formError = $derived(
-		from && until && until < from
-			? 'The end date is before the start date.'
-			: enabled && !body.trim()
-				? 'Write the message to send.'
-				: ''
-	);
-
-	async function save() {
-		if (formError) return;
-		saving = true;
-		saveError = '';
-		try {
-			const res = await fetch('/api/preferences/auto-reply', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					enabled,
-					from,
-					until,
-					subject,
-					body,
-					// The dates are the owner's days, in the time zone they are in now.
-					tz: Intl.DateTimeFormat().resolvedOptions().timeZone
-				})
-			});
-			const result = await res.json().catch(() => ({}));
-			if (!res.ok) {
-				saveError = result?.error ?? 'Couldn’t save. Try again.';
-				return;
-			}
-			status = result.status ?? status;
-			savedNote = true;
-			setTimeout(() => (savedNote = false), 1800);
+	// The form starts from what is saved, and is sent only by Save in the
+	// bar at the foot of the page, whole, as the server takes it.
+	const draft = useDraft<Form>({
+		initial: untrack(() => $state.snapshot(data.autoReply)),
+		// Checked here as the server checks it, so a mistake shows before Save.
+		check: ({ enabled, from, until, body }) =>
+			from && until && until < from
+				? 'The end date is before the start date.'
+				: enabled && !body.trim()
+					? 'Write the message to send.'
+					: '',
+		async persist(_changed, all) {
+			const result = (await sendJson('/api/preferences/auto-reply', {
+				...all,
+				// The dates are the owner's days, in the time zone they are in now.
+				tz: Intl.DateTimeFormat().resolvedOptions().timeZone
+			})) as { status?: string } | null;
+			status = result?.status ?? status;
 			await invalidateAll();
-		} catch (err) {
-			saveError = err instanceof Error ? err.message : 'Couldn’t save. Try again.';
-		} finally {
-			saving = false;
 		}
-	}
+	});
 
 	const when = (iso: string) =>
 		new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -87,25 +59,25 @@
 <section>
 	<SettingRow title="Send automatic replies" description="Nothing changes until you press Save.">
 		{#snippet control()}
-			<Toggle checked={enabled} onChange={(v) => (enabled = v)} />
+			<Toggle checked={draft.value.enabled} ariaLabel="Send automatic replies" onChange={(v) => (draft.value.enabled = v)} />
 		{/snippet}
 	</SettingRow>
 
 	<SettingRow title="From" description="Optional. The first day replies are sent.">
 		{#snippet control()}
-			<input type="date" aria-label="From" bind:value={from} class="{inputClass} w-[180px]" />
+			<input type="date" aria-label="From" bind:value={draft.value.from} class="{inputClass} w-[180px]" />
 		{/snippet}
 	</SettingRow>
 
 	<SettingRow title="Until" description="Optional. The last day replies are sent.">
 		{#snippet control()}
-			<input type="date" aria-label="Until" bind:value={until} min={from || undefined} class="{inputClass} w-[180px]" />
+			<input type="date" aria-label="Until" bind:value={draft.value.until} min={draft.value.from || undefined} class="{inputClass} w-[180px]" />
 		{/snippet}
 	</SettingRow>
 
 	<SettingRow title="Subject" description="Optional. Left empty, it is “Automatic reply:” and the original subject.">
 		{#snippet control()}
-			<input aria-label="Subject" bind:value={subject} placeholder="Out of office" class="{inputClass} w-[280px]" />
+			<input aria-label="Subject" bind:value={draft.value.subject} placeholder="Out of office" class="{inputClass} w-[280px]" />
 		{/snippet}
 	</SettingRow>
 
@@ -113,7 +85,7 @@
 		{#snippet control()}
 			<textarea
 				aria-label="Message"
-				bind:value={body}
+				bind:value={draft.value.body}
 				rows={5}
 				placeholder="I'm out of the office until next week…"
 				class="{inputClass} w-[360px] resize-none font-sans"
@@ -121,15 +93,6 @@
 		{/snippet}
 	</SettingRow>
 </section>
-
-<div class="flex items-center gap-3 mt-4">
-	<button class="btn btn-primary" onclick={save} disabled={saving || !!formError}>
-		{saving ? 'Saving…' : 'Save'}
-	</button>
-	{#if savedNote}<span class="text-xs text-text-tertiary">Saved</span>{/if}
-	{#if formError}<span class="text-xs text-danger">{formError}</span>{/if}
-	{#if saveError}<span class="text-xs text-danger">{saveError}</span>{/if}
-</div>
 
 <section class="mt-8 text-sm text-text-secondary space-y-1">
 	<h2 class="text-sm font-semibold text-text">How replies are sent</h2>
