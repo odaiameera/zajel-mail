@@ -1,5 +1,7 @@
 import type { Email } from '$lib/jmap/types';
 import type { SpamRow } from '$lib/server/db/queries/jev-decisions';
+import type { SpamMode } from '$lib/server/db/queries/jev-settings';
+import type { JevFacts } from './email-state';
 import type { JevAnswer, JevQuestion } from './types';
 
 /**
@@ -92,8 +94,8 @@ export function securityFacts(email: Email): JevSecurityFacts {
 
 // --- Questions --------------------------------------------------------------
 
-export const SPAM_QUESTION_ID = 'spam';
-export const PHISHING_QUESTION_ID = 'phishing';
+const SPAM_QUESTION_ID = 'spam';
+const PHISHING_QUESTION_ID = 'phishing';
 
 /** Two narrow questions, as TypeSafe recommends, rather than one broad one. */
 export const SPAM_QUESTIONS: Record<string, JevQuestion> = {
@@ -109,7 +111,7 @@ export const SPAM_QUESTIONS: Record<string, JevQuestion> = {
 	}
 };
 
-export function spamAnswers(answers: Record<string, JevAnswer> | undefined): { spam: number; phishing: number } | null {
+function spamAnswers(answers: Record<string, JevAnswer> | undefined): { spam: number; phishing: number } | null {
 	const spam = answers?.[SPAM_QUESTION_ID];
 	const phishing = answers?.[PHISHING_QUESTION_ID];
 	if (spam?.type !== 'noul' || phishing?.type !== 'noul') return null;
@@ -119,15 +121,15 @@ export function spamAnswers(answers: Record<string, JevAnswer> | undefined): { s
 // --- The decision table -----------------------------------------------------
 
 /** Above this, Jev moves mail to Junk (active mode). */
-export const JUNK_AT = 0.9;
+const JUNK_AT = 0.9;
 /** Above this, mail stays put with a "looks suspicious" warning. */
-export const FLAG_AT = 0.6;
+const FLAG_AT = 0.6;
 /** Out of Junk only when Jev is this sure it is neither spam… */
-export const RESCUE_SPAM_BELOW = 0.1;
+const RESCUE_SPAM_BELOW = 0.1;
 /** …nor phishing, and the sender's domain passed DMARC. */
-export const RESCUE_PHISHING_BELOW = 0.05;
+const RESCUE_PHISHING_BELOW = 0.05;
 
-export type SpamAction = 'junk' | 'rescue' | 'flag';
+type SpamAction = 'junk' | 'rescue' | 'flag';
 
 /**
  * What Jev's answers call for, before the mode decides whether to act:
@@ -159,6 +161,69 @@ export function decideSpam(input: {
 	return null;
 }
 
+// --- The plan for one judged email ------------------------------------------
+
+/** Jev's spam answers about one email and what came of them, for the record. */
+export interface SpamRecord {
+	spam: number;
+	phishing: number;
+	stalwartSpam: boolean;
+	/** 'junked' | 'rescued' | 'flagged', or in watch mode 'would_…'. */
+	action: string | null;
+}
+
+/**
+ * Whether the sender is someone you know — a contact, or someone you've
+ * written to — or null when a lookup couldn't tell. Unknown is not "no":
+ * nothing moves to Junk on it (see decideSpam).
+ */
+function trustOf(facts: JevFacts | null): boolean | null {
+	const looked = [facts?.sender_in_contacts, facts?.you_have_written_to_sender];
+	if (looked.includes(true)) return true;
+	return looked.every((v) => v === false) ? false : null;
+}
+
+/** How a spam action reads in the record: what was done, or would have been. */
+function spamActionLabel(action: SpamAction | null, mode: SpamMode): string | null {
+	if (!action) return null;
+	const done = { junk: 'junked', rescue: 'rescued', flag: 'flagged' }[action];
+	return mode === 'active' ? done : `would_${action}`;
+}
+
+/**
+ * What Jev's spam answers about one email come to: what to record, and
+ * where it moves, if anywhere. Only active mode moves mail: to Junk, or
+ * from Junk back to the Inbox. A message with no spam answers (spam
+ * checking off for it) has nothing to record.
+ */
+export function planSpam(input: {
+	answers: Record<string, JevAnswer> | undefined;
+	mode: SpamMode;
+	/** The message is in Junk, not the Inbox. */
+	inJunk: boolean;
+	facts: JevFacts | null;
+}): { record: SpamRecord | null; move: 'junk' | 'inbox' | null } {
+	const verdict = spamAnswers(input.answers);
+	if (!verdict) return { record: null, move: null };
+	const action = decideSpam({
+		...verdict,
+		inJunk: input.inJunk,
+		// Contacts and people you've written to are never sent to Junk —
+		// nor is anyone while that couldn't be checked.
+		trusted: trustOf(input.facts),
+		// Out of Junk needs a DMARC pass, not just "no fail".
+		dmarcPassed: input.facts?.security?.dmarc === 'pass'
+	});
+	const record: SpamRecord = {
+		...verdict,
+		stalwartSpam: input.inJunk || !!input.facts?.security?.stalwart_flagged,
+		action: spamActionLabel(action, input.mode)
+	};
+	const acting = input.mode === 'active';
+	const move = !acting ? null : input.inJunk ? (action === 'rescue' ? 'inbox' : null) : action === 'junk' ? 'junk' : null;
+	return { record, move };
+}
+
 // --- Watch-only report ------------------------------------------------------
 
 /** Jev's call on its own terms: spam, clean, or not sure enough to say. */
@@ -168,7 +233,7 @@ export function jevVerdict(r: Pick<SpamRow, 'spam' | 'phishing'>): 'spam' | 'cle
 	return 'unsure';
 }
 
-export interface SpamSummary {
+interface SpamSummary {
 	judged: number;
 	agree: number;
 	unsure: number;

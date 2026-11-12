@@ -1,59 +1,65 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
-	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
+	import SettingRow from '$lib/components/settings/SettingRow.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
 	import Select from '$lib/components/settings/Select.svelte';
+	import { useDraft } from '$lib/settings/draft.svelte';
+	import { saveEach, sendJson, type SaveStep } from '$lib/settings/send';
 	import type { LayoutData } from '../$types';
 
 	let { data }: { data: LayoutData } = $props();
 
-	let theme = $state(data.theme);
-	let density = $state(data.density);
-	let readingPane = $state(data.readingPane === 'on');
+	type Look = { theme: string; density: string; readingPane: boolean };
 
-	let themeState = $state<SaveState>('idle');
-	let densityState = $state<SaveState>('idle');
-	let readingPaneState = $state<SaveState>('idle');
+	/**
+	 * Shows a theme and density on the page without storing them, so a
+	 * choice can be seen before Save is pressed. Discard, and leaving without
+	 * saving, call this with the saved values to take it back.
+	 */
+	function preview(look: Look) {
+		if (typeof document === 'undefined') return;
+		document.documentElement.classList.toggle('light', look.theme === 'light');
+		// Keep the PWA/mobile browser bar on --color-surface for the theme.
+		document
+			.querySelector('meta[name=theme-color]')
+			?.setAttribute('content', look.theme === 'light' ? '#f6f8fa' : '#010409');
+		// Density is a class on the app shell that tightens the message rows.
+		document.querySelector('.app-shell')?.classList.toggle('density-compact', look.density === 'compact');
+	}
 
-	async function save(url: string, body: unknown, setter: (s: SaveState) => void) {
-		setter('saving');
-		try {
-			const res = await fetch(url, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body)
-			});
-			if (!res.ok) { setter('error'); return; }
-			await invalidateAll();
-			setter('saved');
-			setTimeout(() => setter('idle'), 1800);
-		} catch {
-			setter('error');
+	// Stored when Save is pressed in the bar at the foot of the page.
+	const draft = useDraft<Look>({
+		// What the page opened with; later reloads of `data` leave the form alone.
+		initial: untrack(() => ({ theme: data.theme, density: data.density, readingPane: data.readingPane === 'on' })),
+		preview,
+		async persist(changed, _all, stored) {
+			// Each has its own endpoint; only the ones that changed are sent.
+			const steps: SaveStep<Look>[] = [];
+			if (changed.theme !== undefined) {
+				const value = changed.theme;
+				steps.push({ label: 'Theme', values: { theme: value }, run: () => sendJson('/api/preferences/theme', { value }) });
+			}
+			if (changed.density !== undefined) {
+				const value = changed.density;
+				steps.push({ label: 'Density', values: { density: value }, run: () => sendJson('/api/preferences/density', { value }) });
+			}
+			if (changed.readingPane !== undefined) {
+				const on = changed.readingPane;
+				steps.push({
+					label: 'Reading pane',
+					values: { readingPane: on },
+					run: () => sendJson('/api/preferences/reading-pane', { value: on ? 'on' : 'off' })
+				});
+			}
+			try {
+				await saveEach(stored, steps);
+			} finally {
+				await invalidateAll();
+			}
 		}
-	}
-
-	async function setTheme(next: string) {
-		theme = next;
-		if (typeof document !== 'undefined') {
-			document.documentElement.classList.toggle('light', next === 'light');
-			// Keep the PWA/mobile browser bar on --color-surface for the new theme.
-			document
-				.querySelector('meta[name=theme-color]')
-				?.setAttribute('content', next === 'light' ? '#f6f8fa' : '#010409');
-		}
-		await save('/api/preferences/theme', { value: next }, (s) => (themeState = s));
-	}
-
-	async function setDensity(next: string) {
-		density = next;
-		await save('/api/preferences/density', { value: next }, (s) => (densityState = s));
-	}
-
-	async function toggleReadingPane(next: boolean) {
-		readingPane = next;
-		await save('/api/preferences/reading-pane', { value: next ? 'on' : 'off' }, (s) => (readingPaneState = s));
-	}
+	});
 </script>
 
 <svelte:head><title>{pageTitle({ page: 'Appearance', subtitle: 'Settings' })}</title></svelte:head>
@@ -64,12 +70,15 @@
 </header>
 
 <section>
-	<SettingRow title="Theme" description="Dark or light interface." state={themeState}>
+	<SettingRow title="Theme" description="Dark or light interface.">
 		{#snippet control()}
 			<Select
-				value={theme}
+				value={draft.value.theme}
 				ariaLabel="Theme"
-				onchange={setTheme}
+				onchange={(next) => {
+					draft.value.theme = next;
+					preview(draft.value);
+				}}
 				options={[
 					{ value: 'dark', label: 'Dark' },
 					{ value: 'light', label: 'Light' }
@@ -81,13 +90,15 @@
 	<SettingRow
 		title="Density"
 		description="Compact shows more messages per screen; comfortable has more breathing room."
-		state={densityState}
 	>
 		{#snippet control()}
 			<Select
-				value={density}
+				value={draft.value.density}
 				ariaLabel="Density"
-				onchange={setDensity}
+				onchange={(next) => {
+					draft.value.density = next;
+					preview(draft.value);
+				}}
 				options={[
 					{ value: 'comfortable', label: 'Comfortable' },
 					{ value: 'compact', label: 'Compact' }
@@ -99,10 +110,13 @@
 	<SettingRow
 		title="Reading pane"
 		description="Show a preview pane to the right of the email list on wide screens."
-		state={readingPaneState}
 	>
 		{#snippet control()}
-			<Toggle checked={readingPane} onChange={toggleReadingPane} />
+			<Toggle
+				checked={draft.value.readingPane}
+				ariaLabel="Reading pane"
+				onChange={(next) => (draft.value.readingPane = next)}
+			/>
 		{/snippet}
 	</SettingRow>
 </section>

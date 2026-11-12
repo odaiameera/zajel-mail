@@ -1,4 +1,5 @@
 import type { Token } from './parse';
+import { categoryCondition, isInboxCategory } from '$lib/types/categories';
 
 export interface FilterContext {
 	/** role (e.g. 'inbox') → JMAP mailbox id */
@@ -65,6 +66,13 @@ function tokenToFilter(token: Token, ctx: FilterContext): JmapFilter | null {
 			if (field === 'label') {
 				const id = ctx.labelsByName[value.toLowerCase()];
 				return id ? { inMailbox: id } : MATCHES_NOTHING;
+			}
+			if (field === 'tab') {
+				// Tabs are only in the Inbox: in the Inbox, and in that tab, by
+				// the condition the tabs themselves are counted with.
+				const inbox = ctx.mailboxesByRole.inbox;
+				if (!inbox || !isInboxCategory(value)) return MATCHES_NOTHING;
+				return { operator: 'AND', conditions: [{ inMailbox: inbox }, categoryCondition(value)] };
 			}
 			return null;
 		}

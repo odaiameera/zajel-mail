@@ -3,9 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 const starts = vi.hoisted(() => ({
 	migrate: vi.fn(),
 	reminders: vi.fn(),
-	rules: vi.fn(),
+	mailPipeline: vi.fn(),
 	trash: vi.fn(),
-	jev: vi.fn(),
 	scheduledSend: vi.fn(),
 	push: vi.fn(),
 	telegram: vi.fn(),
@@ -15,9 +14,8 @@ const starts = vi.hoisted(() => ({
 vi.mock('$app/environment', () => ({ building: false }));
 vi.mock('$lib/server/db/migrate', () => ({ runMigrations: starts.migrate }));
 vi.mock('$lib/server/reminder-scheduler', () => ({ startReminderScheduler: starts.reminders, processDueRemindersForUser: vi.fn() }));
-vi.mock('$lib/server/rules-scheduler', () => ({ startRulesScheduler: starts.rules, applyRulesForUserSafe: vi.fn() }));
 vi.mock('$lib/server/trash-retention', () => ({ startTrashRetentionScheduler: starts.trash }));
-vi.mock('$lib/server/jev/worker', () => ({ startJevScheduler: starts.jev, sortNewMailSafe: vi.fn() }));
+vi.mock('$lib/server/mail-pipeline', () => ({ startMailPipeline: starts.mailPipeline, requestPass: vi.fn() }));
 vi.mock('$lib/server/scheduled-send', () => ({ startScheduledSendWorker: starts.scheduledSend }));
 vi.mock('$lib/server/push/worker', () => ({ startPushWorker: starts.push }));
 vi.mock('$lib/server/telegram/worker', () => ({ startTelegramWorker: starts.telegram }));

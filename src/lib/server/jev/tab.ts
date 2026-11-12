@@ -1,6 +1,7 @@
 import type { JMAPClient } from '$lib/jmap/client';
 import { setEmailCategory } from '$lib/jmap/email';
 import type { InboxCategory } from '$lib/types/categories';
+import type { SenderPin } from '$lib/server/db/queries/jev-learning';
 import { recordCorrections } from '$lib/server/db/queries/jev-decisions';
 import { forgetSenderMoves, getPinCategory, recordSenderMoves } from '$lib/server/db/queries/jev-learning';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
@@ -67,4 +68,37 @@ export async function setTab(
 		getPinCategory(accountRowId, unique[0]) !== category
 		? { sender: unique[0], category }
 		: null;
+}
+
+export interface TabChoice {
+	/** The tab to put the message in, or null to leave its tab as it is. */
+	tab: InboxCategory | null;
+	/** The pin that chose it, when one did. */
+	pin: SenderPin | null;
+	/** Whether Jev's own pick would be used: the message is still in Important and nothing of yours decides it. */
+	open: boolean;
+}
+
+/**
+ * The tab for one Inbox message, in order: nothing while the Inbox has no
+ * tabs; your own earlier choice stands (Important included, which leaves no
+ * keyword to see it by); then a sender pin; then Jev's confident pick;
+ * otherwise it stays where it is. Neither a pin nor Jev overrules a tab the
+ * message already has, except that a message already in its pin's tab is
+ * still the pin's doing (an earlier pass put it there without reaching Jev
+ * for the rest), so the record says so.
+ */
+export function decideTab(input: {
+	tabsOn: boolean;
+	userChose: boolean;
+	currentTab: InboxCategory;
+	pin: SenderPin | null;
+	/** Jev's confident pick, or null. */
+	jevPick: InboxCategory | null;
+}): TabChoice {
+	const { tabsOn, userChose, currentTab, pin, jevPick } = input;
+	const free = tabsOn && !userChose;
+	const open = free && currentTab === 'important';
+	const pinned = pin && free && (open || currentTab === pin.category) ? pin : null;
+	return { tab: pinned ? pinned.category : open ? jevPick : null, pin: pinned, open: open && !pinned };
 }

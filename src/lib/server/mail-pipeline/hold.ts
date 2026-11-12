@@ -1,0 +1,172 @@
+import { JMAPAuthError, type JMAPClient } from '$lib/jmap/client';
+import type { Email, Mailbox } from '$lib/jmap/types';
+import { heldCondition, holdEndsAt } from '$lib/inbox-hold';
+import { pipelineNeeds } from './needs';
+import { getHoldSince } from './arrivals';
+
+/**
+ * Server side of the Inbox's hold on new mail (see `$lib/inbox-hold`): for
+ * which accounts it applies, and how much of the Inbox it is holding now.
+ */
+
+/**
+ * Whether new mail in this account's Inbox waits for the new-mail pass:
+ * - while the Inbox has tabs and something will put new mail in them: Jev,
+ *   when it may read the account's mail, or your sender pins, which act
+ *   with Jev off or not configured at all. Without the hold, a pinned
+ *   sender's mail would show in Important for a moment and then jump to
+ *   its tab;
+ * - while an enabled rule moves mail out of the Inbox, tabs or none, so
+ *   mail a rule files never shows in the Inbox first. Rules that only
+ *   label, star or mark as read don't hold anything.
+ *
+ * Otherwise nothing is held, as nothing would move it. The pass decides
+ * from the same answer (pipelineNeeds), so mail is only ever held for a
+ * pass that will mark it.
+ */
+export function inboxHoldOn(accountRowId: string | null | undefined): boolean {
+	if (!accountRowId) return false;
+	return pipelineNeeds(accountRowId).hold;
+}
+
+/**
+ * Since when this account's Inbox holds new mail (ms), or null when it
+ * holds nothing. What every reader of the hold asks (the Inbox list, its
+ * unread counts, the account badges, push notifications): only mail
+ * received since the hold was switched on is held, so a rule or the tabs
+ * switched on never hide mail that was already showing. Until the time is
+ * recorded (see keepHoldInStep), nothing is held.
+ */
+export function inboxHoldSince(accountRowId: string | null | undefined): number | null {
+	if (!inboxHoldOn(accountRowId)) return null;
+	return getHoldSince(accountRowId!);
+}
+
+export interface InboxHold {
+	/** Unread messages the Inbox is holding. */
+	unread: number;
+	/** When the first held message is let through if Jev never gets to it (ms), or null. */
+	releaseAt: number | null;
+}
+
+/** What the Inbox is holding at `now`, for a hold on since `since` (ms), in one request. */
+export async function heldInInbox(
+	client: JMAPClient,
+	accountId: string,
+	inboxId: string,
+	since: number,
+	now = Date.now()
+): Promise<InboxHold> {
+	const held = { operator: 'AND', conditions: [{ inMailbox: inboxId }, heldCondition(now, since)] };
+	const response = await client.request([
+		[
+			'Email/query',
+			{
+				accountId,
+				filter: { operator: 'AND', conditions: [held, { notKeyword: '$seen' }] },
+				calculateTotal: true,
+				limit: 0
+			},
+			'u'
+		],
+		[
+			'Email/query',
+			{ accountId, filter: held, sort: [{ property: 'receivedAt', isAscending: true }], limit: 1 },
+			'q'
+		],
+		[
+			'Email/get',
+			{
+				accountId,
+				'#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
+				properties: ['id', 'receivedAt']
+			},
+			'g'
+		]
+	]);
+	const byTag = new Map(response.methodResponses.map(([, result, tag]) => [tag, result]));
+	const unread = (byTag.get('u') as { total?: number } | undefined)?.total ?? 0;
+	const oldest = (byTag.get('g') as { list?: Pick<Email, 'receivedAt'>[] } | undefined)?.list?.[0];
+	return { unread, releaseAt: oldest ? holdEndsAt(oldest.receivedAt) : null };
+}
+
+/**
+ * What the Inbox is holding, or null when the mail server couldn't say
+ * (a lost sign-in still throws, for the caller's re-login handling).
+ */
+export async function readInboxHold(
+	client: JMAPClient,
+	accountId: string,
+	inboxId: string,
+	since: number,
+	now = Date.now()
+): Promise<InboxHold | null> {
+	try {
+		return await heldInInbox(client, accountId, inboxId, since, now);
+	} catch (err) {
+		if (err instanceof JMAPAuthError) throw err;
+		console.warn('[mail] could not read the Inbox hold', err instanceof Error ? err.message : err);
+		return null;
+	}
+}
+
+// Per linked account: its Inbox's id, so the next page load can ask about
+// the hold alongside the mailboxes instead of after them, and the unread
+// count last shown, for a load where the hold can't be read.
+const known = new Map<string, { inboxId: string; shownUnread: number }>();
+
+/** The Inbox id seen on this account's last load, if any. */
+export function knownInboxId(accountRowId: string): string | undefined {
+	return known.get(accountRowId)?.inboxId;
+}
+
+/**
+ * The mailbox list with the Inbox's unread count leaving out held mail, so
+ * the sidebar badge and the new-mail alert that watches it don't tick up
+ * for a message before it appears in its tab.
+ *
+ * When the hold couldn't be read, the count is the mail server's own, but
+ * never above what was last shown: rising for a held message, dropping on
+ * the next load and rising again when it appears would alert twice.
+ */
+export function applyInboxHold(
+	accountRowId: string,
+	mailboxes: Mailbox[],
+	hold: InboxHold | null
+): { mailboxes: Mailbox[]; releaseAt: number | null } {
+	const inbox = mailboxes.find((m) => m.role === 'inbox');
+	if (!inbox) return { mailboxes, releaseAt: null };
+	const last = known.get(accountRowId);
+	const unread = hold
+		? Math.max(0, inbox.unreadEmails - hold.unread)
+		: last?.inboxId === inbox.id
+			? Math.min(inbox.unreadEmails, last.shownUnread)
+			: inbox.unreadEmails;
+	known.set(accountRowId, { inboxId: inbox.id, shownUnread: unread });
+	return {
+		mailboxes:
+			unread === inbox.unreadEmails
+				? mailboxes
+				: mailboxes.map((m) => (m.id === inbox.id ? { ...m, unreadEmails: unread } : m)),
+		releaseAt: hold?.releaseAt ?? null
+	};
+}
+
+/** applyInboxHold, reading the hold after the mailboxes: for callers that have them already. */
+export async function withInboxHold(
+	client: JMAPClient,
+	accountId: string,
+	accountRowId: string,
+	mailboxes: Mailbox[],
+	since: number,
+	now = Date.now()
+): Promise<{ mailboxes: Mailbox[]; releaseAt: number | null }> {
+	const inbox = mailboxes.find((m) => m.role === 'inbox');
+	if (!inbox) return { mailboxes, releaseAt: null };
+	return applyInboxHold(accountRowId, mailboxes, await readInboxHold(client, accountId, inbox.id, since, now));
+}
+
+/** Forget what was last shown: for tests. */
+export function forgetInboxHolds(): void {
+	known.clear();
+}

@@ -17,8 +17,9 @@ import { costUsd, jevMode } from '$lib/server/jev/client';
 /**
  * Sorting the mail already in the active account's Inbox: what's still
  * unsorted (the Important tab) and what that would cost, progress, start
- * and cancel. The worker does the judging, tab only, in the background
- * (see `judgeAndApply`). Starting is the consent for that mail to be sent.
+ * and cancel. The new-mail pipeline does the judging, tab only, on its
+ * scheduled passes (see `runBackfill` in jev/backfill.ts). Starting is the
+ * consent for that mail to be sent.
  */
 
 /** Tokens per email to estimate with before this account has any usage. */

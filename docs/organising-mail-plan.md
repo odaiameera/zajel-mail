@@ -90,7 +90,7 @@ Two behaviour changes follow from this:
 
 ## Data model
 
-Stage 3 took 028 (`account_tasks`, one-time jobs per account such as retiring the Sieve script) and stage 4 took 029 (`auto_reply_log`), so the numbers below start at 030. Old tables stay until the last stage, so an interrupted upgrade loses nothing.
+Stage 3 took 028 (`account_tasks`, one-time jobs per account such as retiring the Sieve script) and stage 4 took 029 (`auto_reply_log`), so the numbers below start at 030. Old tables stay until the last stage, so an interrupted upgrade loses nothing; the old rules and colours stay beyond it (see "Kept on purpose").
 
 - **030 `rules`**: one row per rule, keyed by account id: position, enabled, name, conditions, one target (folder or label by id; Trash, Archive, Junk by role), `mark_read`, `star`, `stop`, an `attention` note, and the original rule kept as `legacy_json`.
   - Surviving actions: move, label, mark read, star (renamed from "mark important", which clashed with the Important tab), stop. "Delete" becomes a move to Trash.
@@ -100,8 +100,8 @@ Stage 3 took 028 (`account_tasks`, one-time jobs per account such as retiring th
   - Deleting a folder or label deletes its rules (the confirmation says how many).
 - **029 `auto_reply_log`** (stage 4): account, sender address, time, message. One row per reply, written before it is sent; a sender gets at most one a day and a login at most 30 an hour, across all its accounts; pruned after 30 days.
 - **031 `mailbox_meta`**: colour, icon and display name for folders and labels in one table, keyed by account id (merges `label_meta` and `folder_meta`).
-- **032**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows).
-- **033**: drop `user_rules`, `rules_cursor`, `label_meta`, `folder_meta`, `jev_rule_feedback` and the unused Jev columns.
+- **032**: `mail_pipeline` (the one cursor), `mail_arrivals` (what was seen and which rules fired; pruned after a week), and `jev_settings.sort_cursor` renamed `jev_since`. `jev_user_tabs` (your own tab choices, replacing the fake "done" decision rows) was not built: see the stage 9 design.
+- **Data step `data/drop_unused`** (stage 9, in place of a 033 migration): drops `rules_cursor`, `jev_rule_feedback` and `jev_decisions.rules_json`. `user_rules`, `label_meta` and `folder_meta` are kept for now, as the only copy of the rules and colours from before the upgrade (see "Kept on purpose" below).
 
 ## Settings
 
@@ -122,9 +122,9 @@ Each is its own PR, migrates data automatically, and leaves the app correct.
 | 4 | **Done.** Out-of-office sent by the app (hooked into the existing new-mail run; moves into the pipeline in stage 7) | Replying to the wrong mail; guarded by the rules above and tests |
 | 5 | **Done.** Rules table (030) and validated saves | Splitting multi-target rules |
 | 6 | **Done.** Folders and labels consistent: `filing.ts`, one metadata API (031), one picker | Moves now leave every folder, not just the Inbox |
-| 7 | One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
-| 8 | The two settings pages | UI only |
-| 9 | Clean-up (033): a small "why is this here" on the tab chip, a `tab:` search operator, dead code | Low |
+| 7 | **Done.** One new-mail pipeline (032); `jev/worker.ts` split | The largest change |
+| 8 | **Done.** The two settings pages: Folders & labels, Inbox tabs | UI only |
+| 9 | **Done.** Clean-up: the whole upgrade tested in one start, unused tables dropped (`data/drop_unused`), a `tab:` search operator, why a message is in its tab on the tab chip, dead code | Low |
 
 Stages 1 and 2 remove the most complexity for the least risk, and can ship before anything structural moves. Between stages 3 and 4 the Auto-reply settings page is hidden, since it does nothing today either. The README's Jev section and `docs/jev-plan.md` are updated in each stage.
 
@@ -150,7 +150,38 @@ Stages 1 and 2 remove the most complexity for the least risk, and can ship befor
 
 ## Status
 
-Stages 0 to 6 are done. Later stages follow one PR at a time.
+Every stage, 0 to 9, is done. What to check on the server after upgrading is in "After upgrading" below.
+
+## After upgrading
+
+The owner's server goes from the build with stages 1 and 2 to this one in a single start. The upgrade is tested end to end (`src/lib/server/db/upgrade-chain.test.ts`), but nothing here can be tried on that server first, so take a backup before the start (README → Docker (production) → Backups), and afterwards make these checks, in this order. Each names the stage it comes from.
+
+1. **The upgrade ran** (all). The app serves pages. A migration or data step that fails stops the app with a message naming it, and logs `migration_failed`; nothing after it is attempted, and the next start picks up from there.
+2. **Every rule came across** (stage 5). Settings → Folders & labels → All rules, in order: every rule is listed, in the old order. A rule that filed in several places is now several rules side by side, the extra ones saying so; two such rules file new mail as before. A rule that had a Jev condition is under Needs your attention, switched off. A rule whose folder is gone says *target missing*. A rule that became a pin says so until "Got it".
+3. **Rules can be changed** (stage 5). Reorder two rules; create, edit and delete one; "Save & apply" on one.
+4. **The count matches** (stage 3). In the rule editor, the match count agrees with what "Save & apply" then moves.
+5. **The old Sieve script is gone** (stage 3). The `mailrules` script is gone from Stalwart; any other script is untouched.
+6. **Colours and icons** (stage 6). Folder and label colours and icons look as before; clear one and reload.
+7. **Filing** (stage 6). From a label view, move a message to a folder: it is in the folder and keeps the label. "Move to…" → a label: the message keeps its folder and gains the label. Remove the only label of a message that is in no folder: it appears in Archive.
+8. **The old settings addresses** (stage 8). `/settings/rules`, `/settings/jev`, `/settings/folders` and `/settings/labels` land on the new pages.
+9. **Folders & labels** (stage 8). On a label row, "Add rule" → "Save & apply" files matching Inbox mail under that label. Create, rename, recolour and delete a label and a folder.
+10. **New mail** (stage 7, and the plan's checks 2 to 4). With Jev off and no pins, an exact rule files a new message within a few seconds and the message never shows in the Inbox; with that rule on, an ordinary new message appears in the Inbox within a second or two. An exact rule still files mail while Jev is unreachable. With Jev on, new mail reaches its tab within seconds. With Jev off, a pinned sender's mail lands in its tab without showing in Important first. A dropped event stream falls back to the minute run.
+11. **A restart** (stage 7). Restart the app: no message is filed, answered or alerted twice.
+12. **Out-of-office** (stage 4). It is off after the upgrade even if it was on before (it needs a time it was switched on, which only a save sets): switch it on and save. A message from another address gets one reply, within seconds; a second the same day gets none; a newsletter gets none; a message from before switching on gets none. With an end date of today, no reply tomorrow.
+13. **Inbox tabs** (stage 8). Switch tabs off and on; add and remove a pin.
+14. **On a phone** (stage 8). Both settings pages.
+15. **Search by tab** (stage 9). `tab:updates from:someone` finds that sender's mail in the Updates tab, and nothing outside the Inbox.
+16. **Why it is in its tab** (stage 9). Hover the tab chip on a pinned sender's message ("Mail from … is pinned to …") and on one Jev sorted ("Jev put this in … (N% sure)"); tap it on a phone: the same words in a toast.
+
+### Kept on purpose: the old rules and colours
+
+`user_rules`, `label_meta` and `folder_meta` are not dropped. They are the only untouched copy of the rules and the folder and label colours from before this upgrade, and the owner's upgrade converts them in the same start that would otherwise delete them. Nothing reads them after the upgrade. Once the checks above are done they can be dropped, by hand or as a data step in a later release (one that needs `data/rules_to_table`, so a database that hasn't converted them yet still can):
+
+```sql
+DROP TABLE user_rules;
+DROP TABLE label_meta;
+DROP TABLE folder_meta;
+```
 
 ## Design notes
 
@@ -397,7 +428,7 @@ Operations:
 - The sidebar: dropping on Remind Me Later is no longer allowed (it created no reminder).
 
 **Metadata**
-- Migration `031_mailbox_meta.sql`: `mailbox_meta(account_id, mailbox_id, color, icon, display_name, created_at, updated_at)`, all three values nullable, primary key `(account_id, mailbox_id)`, cascading from `mail_accounts`. Filled in the same migration from `label_meta` and `folder_meta` by joining the address to `mail_accounts.email` (exact match first, then case-insensitive only for addresses with no exact match). The old tables are left alone (dropped in the last stage).
+- Migration `031_mailbox_meta.sql`: `mailbox_meta(account_id, mailbox_id, color, icon, display_name, created_at, updated_at)`, all three values nullable, primary key `(account_id, mailbox_id)`, cascading from `mail_accounts`. Filled in the same migration from `label_meta` and `folder_meta` by joining the address to `mail_accounts.email`: an account's own rows are those under its exact address; rows under another spelling are used only for an account with no row of its own in that table, and only for a spelling no account has exactly. The old tables are left alone (dropped in the last stage).
 - One store, `src/lib/server/db/queries/mailbox-meta.ts`, keyed by account id; a value can be set back to nothing (today's `COALESCE` upsert can't clear one).
 - One API: `PATCH /api/mailboxes/[id]/meta` `{ color?, icon?, displayName? }` (null clears). Deleting a folder or a label deletes its row server-side.
 - The app layout returns the active account's metadata; the sidebar reads label **and** folder colour and icon from it. `src/lib/stores/userState.ts` loses its folder and label parts.
@@ -447,7 +478,7 @@ Every test point has a test seen to fail without its behaviour; `npm run lint` c
 - Trash deletes for good only on an explicit `permanent: true` for a message really in Trash (see "After review"). `sourceMailboxId` is ignored by every mail endpoint; only the reminder endpoint still reads it, as a hint for where a snoozed message comes back to, used only when the message is really there. "Trust sender" brings a message out of Junk when it is really in Junk, whatever the view.
 - `list_folders` says `folder` (mail can be moved into it), `label`, or `not for filing`.
 - The sidebar no longer accepts a drop on Remind Me Later from the first commit on, since the server refuses that move from then.
-- `mailbox_meta`: a row with no values left is removed. Where both old tables had the same mailbox for an account, the colour and icon changed last win (on a tie, the folder's). A display name comes only from `label_meta`, and a `folder_meta` row with no colour or icon brings nothing. An empty icon, colour or name became NULL.
+- `mailbox_meta`: a row with no values left is removed. Where both old tables had the same mailbox for an account, the colour and the icon each come from the row changed last that has one (on a tie, the folder's): an empty value never replaces a set one. A display name comes only from `label_meta`, and a `folder_meta` row with no colour or icon brings nothing. An empty icon, colour or name became NULL.
 - `PATCH /api/mailboxes/[id]/meta` takes the active account's folders and labels only: an id the account doesn't have is 404; a system folder, Remind Me Later, Scheduled or the Labels container is 400.
 - Labels' colours still reach the sidebar in the label list (`listLabels`), because a label with no colour of its own gets one from the automatic palette; the list is built from `mailbox_meta` in the same page load as `mailboxMeta`.
 - The create and edit dialog writes colour and icon only, in one call, and has a "No color" choice so a colour can be cleared. Renaming a label clears any stored display name, so the label's own name shows. A colour sent with `/api/preferences/labels` `create` is still stored, for an open tab of the older app. `Label.createdAt` is gone (it came from `label_meta` and nothing read it).
@@ -466,3 +497,249 @@ Principle: never take a message out of a mailbox the app can't identify, and nev
 
 #### Notes for the PR
 - A tab left open across the deploy can't change folder or label colours until it is reloaded: the routes it used are gone (404 / 400). No mail is affected.
+
+### Stage 7 design: one pipeline for new mail
+
+#### Why
+Two loops handle the same new Inbox message today, each with its own cursor, guard, catch-up and write code:
+- The rules scheduler (`src/lib/server/rules-scheduler.ts`, keyed by mail address, cursor in `rules_cursor`, an in-memory `lastHandled`), which also hosts out-of-office and the one-time account tasks.
+- The Jev worker (`src/lib/server/jev/worker.ts`, 914 lines, keyed by account id, cursor in `jev_settings.sort_cursor`), which calls the rules scheduler from inside its own pass (`applyRulesNow`) when the account has a rule.
+
+Consequences found in the code:
+- Rules act within seconds only on accounts that happen to have a Jev stream; otherwise they wait for the minute run. Out-of-office never rides the fast path.
+- A stream pass during a Jev outage returns early and runs no rules.
+- Rule writes don't re-read where the message is, so they can undo a move you made a moment earlier; a rules run from the cron is not serialised against Jev's write.
+- Discovery, cursor stepping, batched writes, the no-overlap guard, the minute cron and the 20-second catch-up all exist twice.
+- With rules only (no Jev, no pins) there is no Inbox hold, so mail a rule files shows in the Inbox first.
+
+#### What a pass does
+One pass per account, keyed by **account id** throughout. In order:
+
+1. **Needs.** `pipelineNeeds(accountId)` (new, the one place that reads the switches) returns what is on: runnable rules, a runnable rule that moves mail out of the Inbox, out-of-office active, Jev sorting (enabled and configured), tabs shown, pins, spam mode, urgent alerts, and from those `hold` and `wantsArrivals`. One-time account tasks run first, as today, and never block.
+2. **Nothing on** (`wantsArrivals` false): the cursor is set to now and the pass ends without asking the mail server anything.
+3. **Discover.** Inbox mail received after the cursor minus a 60-second look-back, oldest first, 100 at a time (plus Junk while the spam add-on is on). Each message not seen before is recorded in `mail_arrivals`; that table, not memory, is what stops a message being handled twice. The cursor then steps exactly as today (a full page steps to its last second; a full page all in one second moves past it; otherwise to now).
+4. **Out-of-office**, for new Inbox arrivals, on the message as it arrived (`answerNewMail`, unchanged rules).
+5. **Rules**, on new Inbox arrivals, in order (the stage 5 engine).
+6. **First write.** Rule changes are written now, so rules never wait for Jev. If Jev will not be asked anything in this pass, this write is held back and merged with the next one.
+7. **Jev queue.** Inbox arrivals a rule did not move out (and Junk arrivals while spam is on), received on or after "Jev on since", are queued for Jev. Marking the arrival handled and queueing it happen in one database transaction.
+8. **Jev step** (only if Jev sorting, pins, spam or urgent is on): up to 25 queued messages; one call per message asking tab, spam and urgent together, as today; spam plan; tab from `decideTab` (your own choice, then a pin, then Jev's confident pick, else Important).
+9. **Second write**: tab, spam move, and the "sorted" marker for held Inbox mail, together.
+10. **Record** decisions, then send urgent alerts.
+11. **Backfill** ("sort existing mail"), only on scheduled passes, as today.
+
+Every write goes through one function that **re-reads where each message is first**: a message that has left the mailbox it was found in is not touched (your move wins); a message whose tab changed keeps the rule changes but not the tab; the update is computed against the current placement. This is Jev's existing re-check, now also covering rule writes.
+
+#### Behaviour changes
+1. **Rules, out-of-office and pins act within seconds** on any account where one of them is on, because the account gets an event stream whenever `wantsArrivals` is true (today only with Jev or pins).
+2. **The Inbox hold also applies when an enabled rule moves mail out of the Inbox**, whatever the Jev and tab settings, so mail a rule files never shows in the Inbox first. Every new Inbox message on such an account is hidden until the pass has looked at it: normally a second or two, and never longer than the existing two-minute limit. Rules that only label, star or mark as read do not switch the hold on.
+3. **A stream pass during a Jev outage still runs rules, out-of-office and pins**; only the Jev call is skipped.
+4. **Rule writes respect a move you just made.**
+5. **A pass that fails part-way is picked up again**: arrivals not yet handled are retried on the next pass, up to 5 attempts, then given up with a log line.
+6. Accounts are run side by side on the minute run, so a slow Jev call for one account no longer delays rules for another.
+
+Unchanged on purpose: rule changes and the tab are still two writes when Jev is asked (rules first); Jev is never sent mail from before it was switched on; pins act with Jev off, during an outage and during a rate-limit pause; the marker rules; backfill; spam modes; urgent alerts; out-of-office rules.
+
+#### Data
+Migration `032_mail_pipeline.sql`:
+- `mail_pipeline(account_id PRIMARY KEY → mail_accounts ON DELETE CASCADE, cursor TEXT, updated_at)`.
+  - Seeded for each account from the earlier of its `rules_cursor.last_run` (matched by address: exact, then case-insensitive only where no exact row exists) and `jev_settings.sort_cursor`; no row when it has neither (the first pass then starts at now). Do this in SQL or as a one-time data step, whichever compares the two timestamp formats correctly; test it.
+- `mail_arrivals(account_id → mail_accounts ON DELETE CASCADE, email_id, mailbox TEXT ('inbox' | 'junk'), received_at, seen_at, handled_at NULL, attempts INTEGER DEFAULT 0, rules_json NULL, PRIMARY KEY (account_id, email_id))`. `rules_json` holds the ids of the rules that matched. Rows older than 7 days are pruned on the daily job that prunes the auto-reply log.
+- `jev_settings.sort_cursor` is renamed `jev_since`. It keeps the meaning it already has at the edges (set to now when Jev is switched on, null when off) and is **no longer advanced**. The pass sets it to null whenever Jev sorting is not on (disabled, or enabled but not configured) and to now when it finds Jev on with no value, judging nothing in that pass.
+- `rules_cursor` is no longer read or written (dropped in the last stage). `jev_decisions` stays Jev's queue and record, unchanged. The plan's `jev_user_tabs` table is **not** part of this stage (moved to the clean-up stage); "you chose this tab yourself" keeps coming from `correctedEmailIds`.
+
+#### Code
+
+**New `src/lib/server/mail-pipeline/`**
+- `needs.ts`: `pipelineNeeds(accountId)`.
+- `arrivals.ts`: the cursor, discovery, `mail_arrivals` queries (record new, list unhandled, mark handled + queue for Jev in one transaction, count an attempt, prune).
+- `write.ts`: the change set (rule outcome, tab keywords, spam move, marker per message), `flush()` with the re-read, batched `Email/set`, and the refusal accounting from today's `writeUpdates` / `noteWrites`.
+- `pass.ts`: `runPass(accountId, auth, { fromStream })`, the eleven steps above and nothing else.
+- `index.ts`: `startMailPipeline()` (one `* * * * *` cron over `listSchedulableAuths()`, accounts side by side; the daily prune), `requestPass(accountId, auth, opts)` with the no-overlap guard and merged re-run taken from `sortNewMailSafe`, error handling as today (`JMAPAuthError` → `markNeedsReauth`; anything else logged once and noted), and `refreshPipeline()`.
+- `stream.ts`: moved from `jev/stream.ts`. Targets: accounts where `wantsArrivals` is true. Refreshed every minute and by `refreshPipeline()`, which is called from the Jev settings and pin routes (as now) **and** from every rule write (`/api/rules/**`, and folder / label deletion when it changes rules) and the out-of-office save.
+- `hold.ts`: moved from `jev/hold.ts`. `inboxHoldOn(accountId)` = `pipelineNeeds(accountId).hold` = (tabs shown and (Jev sorting or pins)) or an enabled runnable rule that moves mail out of the Inbox. `src/lib/inbox-hold.ts` is unchanged.
+
+**`src/lib/server/jev/`**: `worker.ts` is split and deleted.
+- `judge.ts`: `fetchEmailsForJev`, `judgeEmails`, `PREVIEW_LIMIT`, the property list.
+- `tab.ts`: gains pure `decideTab({ tabsOn, userChose, currentTab, pin, jevPick })`, replacing `tabToApply`, `planFor`'s open check, `tabOpen` and the `wantsTabs && !chosen` argument. `setTab` stays.
+- `spam.ts`: gains the spam plan (junk, rescue, or record only) from `judgeAndApply`.
+- `urgent.ts`: moved from `telegram/urgent.ts`.
+- `health.ts`: rate-limit pause, outage flag, log de-duplication (`forgetRateLimits`, `noteFailure`, `noteRecovered`).
+- `step.ts`: the Jev step (steps 8 and 10): given the queued ids and the needs, returns changes for `write.ts` and what to record. `backfill.ts`, `record.ts`.
+
+**Deleted**: `src/lib/server/rules-scheduler.ts` (and `applyRulesNow`, `applyRulesForUser`, `lastHandled`), `jev/worker.ts`, `jev/stream.ts`, `jev/hold.ts`, `telegram/urgent.ts`, the rules-cursor query functions, and one of the two 20-second catch-ups in `src/hooks.server.ts` (the remaining one calls `requestPass` for the request's active account, throttled by account id). `startRulesScheduler` and `startJevScheduler` become `startMailPipeline`.
+
+`runAccountTasks`, `answerNewMail` / `outOfOfficeFor` take an account id instead of an address. Stale comments that say "on the account's next rules run" are updated.
+
+Not in this stage: merging the push worker's own event stream with this one; `jev_user_tabs`.
+
+#### Tests
+Port by behaviour, not by file. The report must include a table mapping **every** existing test in `jev/worker.test.ts` (64), `rules-scheduler.test.ts` (12), `jev/stream.test.ts` (6) and `jev/hold.test.ts` (7) to the new test that covers it, or to a reason it no longer applies (allowed reasons: it tested `applyRulesNow` waiting and re-running, `lastHandled`, or the pins-only cursor clamp; for the clamp, the replacing tests are "switching pins / tabs / Jev on never acts on mail from before"). Groups that must survive: cursor stepping; failure accounting; no overwrite of your move or tab; write refusals; TypeSafe refusals and rate limits; your own tab choices; pins, history, backfill; urgent alerts; switching Jev off mid-pass; spam modes; every marker case; rules before the marker with the two writes in order; rules while TypeSafe is down; a rule needing a rewrite never runs; stream passes are new mail only and make no TypeSafe call while it is failing; pins with Jev off, unconfigured, in an outage, per-message failure and rate-limit pause; out-of-office (first sight, only unseen mail, a failure doesn't stop rules); account tasks never block; stream open / debounce / 401 / relink / stall; `inboxHoldOn` and the unread maths.
+
+New tests:
+- One cursor: rules-only, Jev-only, both, neither (no mail-server call at all), pins with Jev off.
+- Migration 032: seeded from the earlier cursor; from only one; from none; case-different address; `jev_since` renamed with its value kept; cascade on account removal.
+- `mail_arrivals`: a message is handled once across passes and the look-back; a pass that throws after discovery leaves its arrivals unhandled and the next pass handles them; given up after 5 attempts; handled + queued atomically; pruning.
+- Hold: on for a rules-only account with a move rule (tabs off and on), off with only label / star / read rules, off when the rule is disabled or flagged; held Inbox mail on such an account is marked in the pass, in the same write as its rule changes when Jev is not asked.
+- Stream: opens for a rules-only account and for out-of-office only; a rule save and an out-of-office save refresh it.
+- Out-of-office answered on a stream pass with no rules; `answerNewMail` tested directly, not only through mocks.
+- A stream pass during an outage runs rules and pins and makes no TypeSafe call.
+- Rule write re-read: a message you moved between discovery and write is left alone; one whose tab you changed keeps its rule label.
+- Two accounts on one tick: a slow Jev call for one does not delay the other's rule write.
+- `decideTab`: every row of its truth table.
+- Hooks: one start function, one catch-up, throttled by account id.
+
+#### Verification on the owner's server
+1. An exact rule files a new message within a few seconds, with Jev off and no pins, and the message never shows in the Inbox.
+2. With that rule on, an ordinary new message appears in the Inbox within a second or two.
+3. New mail still reaches its tab within seconds with Jev on; a pinned sender lands in its tab with Jev off.
+4. Out-of-office answers within seconds.
+5. Restart the app: no message is filed, answered or alerted twice.
+
+#### Risks
+- **The largest change in the plan.** Mitigated by building it as three commits, each passing on its own: (1) `jev/worker.ts` split into the files above with no behaviour change; (2) the pipeline, arrivals and cursor, with the scheduler and the worker loop removed; (3) the hold for move rules, stream targets, refresh on rule and out-of-office saves, docs.
+- **Hold for rules-only accounts** delays every new Inbox message until the pass has run. If the stream is down that is up to a minute (20 seconds while the app is open), capped at two minutes.
+- **First pass after upgrade** starts from the earlier of the two old cursors (one that isn't a readable time is ignored, and one later than the upgrade becomes the time of the upgrade), so up to a minute of mail may be looked at again: rules re-evaluate it (writes only differences), Jev's queue ignores what it already has, out-of-office's once-a-day check prevents a second reply.
+
+#### Done means
+Every test point above has a test seen to fail without its behaviour; the mapping table is complete; `npm run lint` clean, `npm run check` 0 errors, full `npx vitest run` passing on each commit; README (Jev and rules sections), `docs/jev-plan.md` and `docs/organising-mail-plan.md` updated.
+
+#### As built
+Built as three commits: the split of `jev/worker.ts` with no change in behaviour; the pipeline; then the hold for rules that move mail, the event streams and these docs.
+
+- **The cursor** is stored as the Jev worker kept its own: after a partial page it is set a minute back from the pass (never back past where it was), and the next pass reads mail received after it. That is the 60-second look-back. Reading a further minute back from a stored "now" would have re-read a full page of mail stamped in one second for ever.
+- **When the rules wait for the next write** (Jev isn't asked anything in the pass: no Jev, Jev rate-limited, or a stream pass while TypeSafe is failing), the arrivals are marked handled, and queued for Jev in the same transaction, after that one write rather than before Jev's step. So a pass that fails before writing leaves the arrivals unhandled, and the next pass runs their rules again. When Jev is asked, the order is as designed: the rules' write, then handled and queued together, then Jev.
+- **`jev_since`**: when a pass clears it (Jev switched on but not configured on the server) or sets it (Jev found configured again, or after the upgrade for an account that had no place), new arrivals still queued for Jev are withdrawn. The pass that sets it runs Jev's step as with Jev off: pins act and held mail is marked, Jev is asked nothing, and nothing from that pass is queued for it later.
+- **Queued for Jev**: with Jev off, the Inbox's new mail is queued for pins as before (and recorded as never sorted when no pin takes it), but only mail received within the hold's two minutes, so after a stretch with no passes pins never reach back over older mail. Junk is read, and its arrivals recorded, only while the spam add-on is on. The transaction that marks arrivals handled reads the Jev settings again, and queues only what the settings allow then (Jev switched off and on during a pass queues nothing from before).
+- **Arrivals no longer in the Inbox** when the pass reads them (moved within seconds of arriving) are handled with nothing done: no reply, no rules, nothing queued.
+- **The hold** applies on the Inbox page with the tabs off too, when a rule moves mail. Mail the pass doesn't queue for Jev is marked in the rules' write; mail queued for Jev is marked once Jev has answered, as before.
+- **`refreshPipeline()`** is called by: creating, editing, deleting and reordering rules; dismissing a note that deletes a rule; pinning a rule's sender; deleting a folder or label when that changed rules; saving out-of-office; and, as before, Jev's settings and pins.
+- **Rule writes** share Jev's refusal accounting and log line (`write_refused`, now logged under `mail`). A refused rule write is not retried, as before; the message is where it was, so it is treated as staying in the Inbox: queued for Jev (or the pins) and marked in that pass.
+- **The minute's run** starts every account's pass at once and waits for all of them.
+- **The rules-cursor data step** from stage 1 (`data/rules_exact_only`) still rewinds `rules_cursor`, which nothing reads now. A database upgrading from before stage 1 straight to this version loses that rewind; its pipeline starts from the earlier of the two old places as usual.
+- **Tests**: the old worker, scheduler, stream and hold tests are ported by behaviour into `src/lib/server/mail-pipeline/` (`pass.test.ts`, `stream.test.ts`, `hold.test.ts`), with `needs.test.ts` and `migration.test.ts` new. The tests of `applyRulesNow` and the pins-only cursor clamp are gone with them, replaced by "switching pins, tabs or Jev on never acts on mail from before".
+
+After review:
+- **Arrivals are handled on their own.** Reading new mail, out-of-office, the rules, their write, and marking the arrivals handled and queued complete whatever happens in Jev's step. A failure in the step (reading mail for Jev or the pins, planning, its write, recording, backfill) is logged once while it lasts (`jev_step_failed`, under `mail`) and leaves the queue to the next pass; the emails it was planning are charged a Jev attempt on scheduled passes, so a batch that can never be read gives way under Jev's own limit. When Jev isn't asked, the rules, the pins' tabs and the marker still go out in one write; if the step can't be planned, the rules' changes go out alone. A refused password still stops the pass from anywhere.
+- **One bad message.** When the read of new mail for out-of-office and the rules fails, the messages are read one at a time; only one that can't be read is left for the next pass (`arrival_read_failed`, once while it lasts). Attempts are counted at most once a minute per arrival (`mail_arrivals.last_attempt_at`), and after five an arrival is handled without out-of-office or the rules, and still queued for Jev or the pins.
+- **The hold starts when it is switched on.** `mail_pipeline.hold_since` is set when the hold is found on (by `refreshPipeline()` after any change that can switch it, or at the start of a pass) and emptied when it is off. Only mail received since then is held, by every reader (the Inbox list and tab counts, the layout's unread count, the account badges, push), and only that mail is marked. Saving a first move rule, or switching tabs on with a pin, no longer hides mail already showing.
+- **A message id seen again with another `receivedAt`** is treated as a new message.
+- **The pipeline's start flag and its per-account guard** live on `globalThis`, like the event streams, so a reload can't start a second minute's run or a second pass beside one already running.
+
+### Stage 8 design: two settings pages
+
+Builds on stage 7 (after its review fixes). UI and routes only; no change to how mail is filed or sorted.
+
+#### Why
+One job is spread over four pages (Folders, Labels, "Filters & Rules", Jev), which were written separately:
+- Folders and Labels are near-copies of each other (same reorder, delete and edit code), report errors with `alert()`, and neither has a test.
+- The rules page has its own fixed two-column layout that doesn't work on a phone; a rule can't be started from the folder or label it files into; its apply-progress dialog lives in the page, so nothing else can use "Save & apply".
+- The Jev page mixes tabs, sorting, pins, backfill, a preview and the spam add-on in an order that doesn't match how they depend on each other.
+- Labels are created, renamed and deleted through `/api/preferences/labels` while folders use `/api/folders`.
+
+#### Routes and navigation
+- New: `/settings/folders-labels` ("Folders & labels") and `/settings/inbox-tabs` ("Inbox tabs"). In `src/lib/config/settings-nav.ts` they replace the four entries `folders`, `labels`, `rules`, `jev`, in that order, in the Organization group.
+- Old routes become redirect-only pages (a lone `+page.server.ts`, as `settings/advanced` and `settings/mail` are today), status 308: `/settings/folders`, `/settings/labels` and `/settings/rules` → `/settings/folders-labels`; `/settings/jev` → `/settings/inbox-tabs`.
+- Every link and text that names the old pages is updated: the three "Settings → Jev → Pinned senders" links (now "Settings → Inbox tabs → Pinned senders", `/settings/inbox-tabs#pinned-senders`), `src/lib/telegram/urgent-state.ts` (`/settings/inbox-tabs`, label "Inbox tabs"), "No labels yet. Create one in Settings." in `EmailDetail.svelte` (now a link to `/settings/folders-labels`), the API error texts that say "from the Labels settings", README and docs.
+
+#### Page 1: Folders & labels (`settings/folders-labels/`)
+
+Load (`+page.server.ts`): the active account's rules (`listRules`) plus the layout's `mailboxes`, `labels`, `mailboxMeta`.
+
+Top to bottom:
+
+1. **Header.** "Folders & labels", one sentence: a folder is where a message lives, a label is a tag, and rules file new mail into either. Buttons "New folder", "New label".
+2. **Needs your attention** (only when there are flagged rules): the rules switched off by a flag (`jev_condition`, `tab_rule`, `tab_pinned`), as rows. Opening one shows today's explanation panel and editor (same texts, same "Save as exact rule" confirmation, same one-click pin, same "Got it").
+3. **Folders.** The folder tree, indented as today. Each row: icon, name, unread count, "N rules" when it has any, "View", Move up, Move down, Edit, Delete.
+   - A row with rules can be opened. Opened, it lists the rules that file into that folder (name, conditions in words, on/off switch; a row opens the editor) and an **Add rule** button, which opens the editor on a new rule with "File it in" already set to that folder. The target can still be changed.
+4. **Labels.** The same rows and behaviour for labels.
+5. **System folders.** As today (name and role, not editable). Archive, Junk and Trash rows can be opened in the same way, since rules can file into them.
+6. **All rules, in order** (collapsed by default; opened automatically when the address has `#rules`): every rule that can run, in its real order, each with its on/off switch, what it does ("conditions → target"), any note with its "Got it", and Move up / Move down. Rules that file nowhere (mark as read, star or stop only) are reachable only here. "New rule" here opens the editor with no target set. One sentence explains the order: labels add up, the first rule that moves a message decides its folder.
+
+Behaviour kept exactly: nothing is sent until Save; server problems shown beside the fields; reorder sends the full order with two rules exchanged and skips flagged rules; a plain Save keeps a flagged rule flagged; Save & apply applies the saved rule by id with progress and Cancel; the live match count and its wording; delete confirmations including the rules sentence (now computed from the rules the page already has, no extra request); going to the Inbox when the folder being viewed is deleted.
+
+Changes:
+- **The rule editor opens in a dialog** (full width on a phone), not a side column. The page is a single column inside the normal settings width.
+- **Errors appear in the page** (an alert line at the top of the section, `role="alert"`), never `window.alert`. `window.confirm` stays for deletes until the settings pass.
+- **One move-up / move-down control** (the icon buttons Folders and Labels use) for folders, labels and rules.
+- Wording: "color" everywhere in UI text (the modal's error text said "colour"); the page title and nav label agree.
+
+### Code
+- `src/lib/components/settings/MailboxRow.svelte`: one row for a folder, label or system folder, with its expandable rules. Replaces the two copies of row markup, `step()`, `rulesNote()` and the delete flow.
+- `src/lib/components/settings/RuleDialog.svelte`: the dialog holding the attention panel (moved from the rules page) and `RuleEditor`.
+- `src/lib/components/settings/RuleApplyDialog.svelte` and `src/lib/rules/apply.ts` (`streamApply`): moved out of the rules page unchanged.
+- `RuleEditor.svelte`: new optional prop `initialTarget`, used only when `rule` is null. It also shows the `problems` the preview returns (today it ignores them).
+- `CreateMailboxModal.svelte`: unchanged in behaviour, but labels are created, renamed and deleted through `/api/folders` (see below).
+- **One endpoint for folders and labels.** `/api/folders` `create` accepts `kind: 'label'` (creating the `Labels` container when needed, with the code `/api/preferences/labels` uses today), and `rename` / `delete` accept labels with the same checks and the same `{ rulesDeleted, rulesKept }` answer. `/api/preferences/labels` is deleted.
+- Deleted: `settings/folders/+page.svelte`, `settings/labels/+page.svelte`, `settings/rules/+page.svelte` (their `+page.server.ts` become the redirects).
+
+#### Page 2: Inbox tabs (`settings/inbox-tabs/`)
+
+Load: the Jev page's load, unchanged. Sections, in this order, with the existing controls, texts and endpoints (`/api/jev/*`):
+
+1. **Inbox tabs**: what the four tabs are; "Show tabs" per account.
+2. **Let Jev sort new mail**: the connection status line, "What Jev is sent", the per-account switch with this month's usage.
+3. **Pinned senders** (`id="pinned-senders"`): per account, with the existing warning when tabs are off for that account.
+4. **Sort the mail already in your Inbox** and **Try Jev** (active account, only when configured), as today.
+5. **Add-ons**: "Spam checks" with its explanation, the per-account Off / Watch only / Active choice, and the spam report. One line pointing to Notifications for urgent alerts.
+
+Changes: the header is "Inbox tabs" with one sentence; the tab grid and the preview's count grid get phone breakpoints (one or two columns under `md`). Settings still save on change here; they move to the shared Save bar in the settings pass, with the rest of Settings.
+
+Deleted: `settings/jev/+page.svelte` (its `+page.server.ts` logic moves to `inbox-tabs`, and `jev` becomes a redirect). `PREVIEW_LIMIT` and friends are imported from wherever stage 7 put them.
+
+#### Tests
+- **Folders & labels page** (`settings/folders-labels/page.test.ts`), following the harness in today's `settings/rules/page.test.ts`:
+  - All 25 existing rules-page tests, ported: the report must map each to its new test. (List summary and target missing; nothing sent until Save; create; problems beside fields; reorder up and down, past a split rule, past a flagged rule; notes and "Got it"; disabled while busy; Save & apply by id; no apply when the save is refused; on/off; delete; count wording; the eleven "Needs your attention" tests.)
+  - New: folders render as a tree and labels as a list; the rule count on a row; opening a row lists exactly the rules that file into it; "Add rule" on a folder, a label and Trash opens the editor with that target and saves a rule with it; a rule that files nowhere appears only under "All rules"; `#rules` opens that section; create, edit (rename, move, color, icon, "No color") and delete a folder and a label, with the delete confirmation naming the rule counts and omitting a zero count; move up / down for a folder and a label; an error from the server appears in the page and `window.alert` is never called; deleting the folder being viewed goes to the Inbox.
+- **Inbox tabs page** (`settings/inbox-tabs/page.test.ts`, none exists today): each switch and select sends the right body for the right account; the status line for off / mock / live; the Jev switch disabled when not configured; add, change and remove a pin, and the warning when tabs are off; spam select disabled unless Jev is on; backfill and preview shown only when configured.
+- **Routes**: each old path redirects with 308 to its new page; the nav has the two new entries and none of the four old ones; `urgent-state` points at `/settings/inbox-tabs`.
+- **`/api/folders` for labels**: create (including when no `Labels` container exists), rename, delete with `{ rulesDeleted, rulesKept }`, another account's label refused; the existing folder tests unchanged. No caller of `/api/preferences/labels` remains (a grep in the report).
+- `RuleEditor`: `initialTarget` is used for a new rule and ignored for an existing one; preview problems are shown.
+- Every new test seen to fail with its behaviour removed.
+
+A browser check with Playwright against a temporary harness route (deleted before committing) for the two pages at desktop and phone width: screenshots saved to the scratchpad folder named in the task, and anything that looks wrong listed in the report.
+
+#### Verification on the owner's server
+1. The old addresses (`/settings/rules`, `/settings/jev`, `/settings/folders`, `/settings/labels`) land on the new pages.
+2. On a label row, "Add rule" → Save & apply files matching Inbox mail under that label.
+3. Create, rename, recolor and delete a label and a folder.
+4. Inbox tabs: switch tabs off and on; add and remove a pin.
+5. Both pages on a phone.
+
+#### Risks
+- **Label create / rename / delete move to another endpoint.** Covered by the endpoint tests; a tab left open across the deploy must be reloaded to manage labels.
+- **A large page.** Built as three commits, each passing on its own: (1) shared pieces extracted with the old pages still in place (`MailboxRow`, `RuleDialog`, `RuleApplyDialog`, `apply.ts`, `initialTarget`, `/api/folders` for labels); (2) the Folders & labels page, the three redirects, nav and links; (3) the Inbox tabs page, its redirect, README and docs.
+
+#### Done means
+The test mapping is complete; `npm run lint` clean, `npm run check` 0 errors, full `npx vitest run` passing on each commit; README (the Settings mentions and the Jev section) and `docs/organising-mail-plan.md` updated; no file imports a deleted page or endpoint.
+
+#### As built
+Built as three commits: the shared pieces with the old pages still on them; the Folders & labels page with the three redirects; the Inbox tabs page with its redirect and these docs.
+
+- **Shared pieces.** Besides the files named above, the notes on a rule an upgrade changed are their own component, `RuleAttention.svelte` (the old rules page used it until it went, and `RuleDialog` uses it now), and what a rule says in words (its conditions, target, notes, pin wording) is in `src/lib/rules/describe.ts`. `Toggle` takes an optional `ariaLabel`, so a rule's switch is named after the rule.
+- **Every folder and label row opens**, not only one with rules, and so do Archive, Junk and Trash: "Add rule" is the way to start a rule from a folder that has none yet. A row says "N rules" when it has any. The Inbox, Sent and Drafts don't open. Each row is a group named after its mailbox (a label after its own name, `Label.name`, which can differ from the mailbox's). A rule switched off by an upgrade is listed under its folder too, with the warning mark in place of its switch.
+- **On a phone** a row hides its unread count (and the "·" before the rule count), its "View" link, and Edit and Delete, which are inside the opened row instead as "Edit folder" / "Delete folder" ("… label"); the indent is 12px a level and stops growing after the fourth level. The rule dialog fills the screen.
+- **The rule dialog** closes after Save, Delete or "Save & apply" (whose progress then shows), and when its rule goes away (a pin made from it, a "Got it" on a rule that became a pin). A change made from inside it (a pin, a "Got it") that the server refuses is shown at the top of the dialog. After a plain Save a short "Saved" shows, as before.
+- **Preview problems.** When the conditions don't hold up yet, the count reads "Not counted yet:" and the server's reason. A missing name or target is said only on Save, beside its field, so a new rule doesn't open full of complaints.
+- **Rules' switches** are the settings `Toggle`, in the rows and in "All rules, in order"; A running rule's note and its "Got it" show on its line under its folder or label as well as under "All rules, in order", and the dialog's note panel has its own "Got it". Inside a row and under "All rules" the switches are the small `Toggle` (`size="sm"`). Move up / Move down are arrows (`move-up` / `move-down` in `icons.ts`), so they don't read as a second open control; this also changes the reorder buttons on Settings → Accounts.
+- **`/api/folders` and labels**: a label is created with `kind: 'label'` (empty names refused); `rename` and `delete` find a label like a folder (another account's id is 404) and use the label calls (`renameLabelMailbox`, which clears a stored display name, and `deleteLabelMailbox`, whose mail only in the label goes to Archive). The Labels container can be neither renamed nor deleted (400), even when empty. The create and edit dialog renames a label through `rename`, and its error text says "color".
+- **Inbox tabs**: the first section is headed "The four tabs", so it doesn't repeat the page title. Its switches are named for their account ("Show tabs for …", "Let Jev read new mail for …"). The "Sort the mail already in your Inbox" card puts its button under the text when they don't fit side by side, as "Try Jev" does.
+- **Tests**: the rules page's 25 tests moved to `settings/folders-labels/page.test.ts`, each marked with what it was, adapted to the dialog and the collapsed list; new tests there for the rows, the dialog started from a folder, label and Trash, and creating, editing, moving and deleting folders and labels. `settings/inbox-tabs/page.test.ts`, `settings/redirects.test.ts`, `config/settings-nav.test.ts`, `RuleEditor.test.ts` and `rules/apply.test.ts` are new; `api/folders/server.test.ts` covers labels.
+- **After review.** The rule dialog keeps a changed draft: a click outside does nothing, Escape and the X ask "Discard your changes to this rule?", Cancel closes without asking, and nothing closes it while a save (and the read-back after it) is on its way, so "Save & apply" never starts for a dialog that was dismissed. The rule dialog and the apply progress keep Tab inside them (`src/lib/utils/trap-focus.ts`); when the rule dialog closes, focus goes back to what opened it, else to its row, else to its section's heading. The page's rules follow `data.rules` when a load brings new ones (another account). An opened row has no background of its own; hover and keyboard focus light the same area. `/settings/rules` goes to `/settings/folders-labels#rules`, and Notifications' fix for an account Jev doesn't read reads "Let Jev sort new mail" and goes to `/settings/inbox-tabs#jev-heading`.
+
+### Stage 9 design: clean-up
+
+Builds on stage 8. The last stage. Nothing here changes how mail is filed or sorted.
+
+#### What was built
+- **The upgrade, tested in one start** (`src/lib/server/db/upgrade-chain.test.ts`): a database built with the real migration files up to 027, the stage 1 and 2 data steps recorded, and rows written the way that build wrote them (three accounts under one login, one waiting to be signed in again and one with no Jev settings saved; a rule filing in three places with mark read, star and stop; a single-target rule; a rule flagged for its Jev condition; a rule whose folder is gone; a rule that became a pin, and that pin; a rule that lost its tab and kept a label; a disabled delete rule; rules under an address with no account, and under another spelling of the owner's; the rules scheduler's place for each address, and for another spelling of the owner's; label and folder colours with '' for no icon, one under an address in another case, and a newer one under another spelling of the owner's; Jev's settings with its place, including the moving place of the account with Jev off and a pin, pins, moves and usage; Jev's decisions pending, answered, corrected, pinned, chosen before Jev saw them, failed, skipped and from a sort of existing mail, with rule answers; rule feedback; out-of-office preferences). One run of the runner brings it to this version; a second changes nothing; a database from before stage 1 (no data-step markers, the rules as a browser wrote them) ends in the same shape, and its old list is left exactly as the owner's database holds it; an upgrade that fails in its last step keeps the earlier steps' work, leaves nothing of the failed one and completes on the next start; the last step run again with its marker lost changes nothing. With the colour row under another spelling of the owner's address it found that 031 let a newer row under another spelling replace the colour and name the owner saw; 031 now uses an account's own rows, and another spelling's only for an account with none of its own in that table.
+- **`data/drop_unused`**, the last data step, drops `rules_cursor`, `jev_rule_feedback` and `jev_decisions.rules_json`. A data step, not a 033 `.sql` file: the runner runs every `.sql` file before any data step, so a `.sql` drop would remove `rules_cursor` before `data/rules_exact_only` rewinds it on a database from before stage 1. It needs `032_mail_pipeline.sql` and the three rule steps.
+- **`jev_user_tabs`: not built.** `jev_decisions.corrected_to` already records "you chose this tab yourself", with three readers and one writer; the one oddity, a placeholder row when you choose before Jev has seen the message, is six lines of tested SQL. A new table would need a data move, a join for the correction statistics and changes to Jev's queue, for no change in behaviour.
+- **`tab:` in search**: `tab:important`, `tab:updates`, `tab:newsletters`, `tab:promotions`, meaning "in the Inbox and in that tab" (the condition the tab counts use). An unknown tab is an error token, as for `is:`; with no Inbox it matches nothing. `tab` becomes a pill like `from`. It stays eligible for search by meaning, whose hits are checked against the tab.
+- **Why a message is in its tab**: the chip's hover text and accessible name, and a toast when it is tapped: "You moved this to Updates.", "Mail from news@example.com is pinned to Updates.", "Jev put this in Updates (92% sure).", or "In the Updates tab.", with "Rule “Receipts” also matched." when rules matched it on arrival. Only a record about the tab the message is in now counts; your own choice is the latest word. Asked for (`GET /api/jev/decision/[emailId]?tab=`) the first time the chip is hovered, focused or tapped, once per message and tab.
+- **A server that stops answering**: when the read of new mail fails and the pass reads one message at a time, it stops after three single reads fail in a row and leaves the rest, uncharged, for the next pass.
+- **Dead code** removed: `notifyUrgent`, `sortingEnabled`, `countRules`, the layout's `jevReads`, the export on functions, constants and types used only in their own file, and comments naming things that no longer exist.
+
+#### As built
+- The chip is a `<button>` with the span's classes, so it looks as before; only its hover text, name and tap changed. Before its reason is known, or if it can't be had, it says "In the Updates tab" as before. A pin on a whole domain reads "Mail from anyone at shop.example is pinned to Updates."
+- The route returns `why` (`chosen`, `pin`, `jev` or `none`) for the `tab` it is given, and `rules`, the names of the matching rules that still exist, in their order and without repeats; the sentence is put together in the browser (`src/lib/tab-reason.ts`). The route's earlier `decision` field is kept.
+- `rules/upgrade.test.ts` makes `rules_cursor` again after migrating, since its rewind tests need the table the last step drops.

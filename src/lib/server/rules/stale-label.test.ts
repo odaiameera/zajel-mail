@@ -3,9 +3,9 @@ import { emptyOutcome, outcomeToUpdate } from './engine';
 
 /**
  * A move worked out with a mailbox list loaded before a label existed. The
- * Jev worker and the rules scheduler load the list once per pass; a label
- * made meanwhile, and put on a message, is not in it. An id the list
- * doesn't know is kept, never treated as a folder to leave.
+ * new-mail pass loads the list once per pass; a label made meanwhile, and
+ * put on a message, is not in it. An id the list doesn't know is kept,
+ * never treated as a folder to leave.
  */
 describe('a move with a mailbox list older than a label', () => {
 	const staleList = [

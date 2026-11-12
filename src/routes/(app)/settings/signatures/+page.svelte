@@ -6,43 +6,17 @@
 		createSignature,
 		updateSignature,
 		deleteSignature,
-		setIdentitySignature,
-		clearIdentitySignature,
-		refreshIdentities,
 		type SignatureValue
 	} from '$lib/stores/userState';
 	import { showToast } from '$lib/stores/toast';
 	import SignatureEditor from '$lib/components/SignatureEditor.svelte';
+	import IdentityDefaults from './IdentityDefaults.svelte';
 
-	let refreshing = $state(false);
 	const identities = $derived($userState.identities);
-	const identityOverrides = $derived($userState.identitySignatures);
-
-	async function pickIdentitySignature(identityId: string, raw: string) {
-		try {
-			if (raw === '') {
-				await clearIdentitySignature(identityId);
-			} else {
-				await setIdentitySignature(identityId, parseInt(raw, 10));
-			}
-		} catch {
-			showToast({ message: 'Could not save override' });
-		}
-	}
-
-	async function refreshIdentitiesNow() {
-		refreshing = true;
-		try {
-			const list = await refreshIdentities();
-			showToast({ message: `Refreshed — ${list.length} identit${list.length === 1 ? 'y' : 'ies'}` });
-		} catch {
-			showToast({ message: 'Refresh failed' });
-		} finally {
-			refreshing = false;
-		}
-	}
 
 	const MAX_CHARS = 5000;
+	// What a new signature is called until it is given a name.
+	const NEW_NAME = 'New signature';
 
 	type Selection = { kind: 'existing'; id: number } | { kind: 'new' } | null;
 
@@ -85,19 +59,32 @@
 		return s.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ');
 	}
 
+	// The editor keeps its own Save button. Opening another signature (or a
+	// new one) replaces what is in it, so edits that were never saved are
+	// asked about first. A new signature nobody has typed in isn't an edit.
+	const hasUnsavedEdits = $derived(
+		isNew ? draftName !== NEW_NAME || stripTags(draftHtml).trim().length > 0 : isDirty
+	);
+
+	function mayReplaceEditor(): boolean {
+		return !hasUnsavedEdits || confirm('This signature has unsaved changes. Discard them?');
+	}
+
 	// Selecting an existing signature loads it into the editor. Picking
 	// "new" seeds a draft we can save into a brand new row.
 	function selectExisting(id: number) {
 		const sig = signatures.find((s) => s.id === id);
 		if (!sig) return;
+		if (!mayReplaceEditor()) return;
 		selection = { kind: 'existing', id };
 		draftName = sig.name;
 		draftHtml = sig.html;
 	}
 
 	function startNew() {
+		if (!mayReplaceEditor()) return;
 		selection = { kind: 'new' };
-		draftName = 'New signature';
+		draftName = NEW_NAME;
 		draftHtml = '<p></p>';
 	}
 
@@ -219,7 +206,8 @@
 				Select a signature from the list, or create a new one.
 			</div>
 		{:else}
-			<div class="flex flex-col gap-4">
+			<!-- The editor has a Save of its own, so Cmd/Ctrl+S in it isn't the bar's. -->
+			<div class="flex flex-col gap-4" data-own-save>
 				<label class="block">
 					<span class="text-xs font-medium text-text-secondary block mb-1.5">Name</span>
 					<input
@@ -290,54 +278,7 @@
 </div>
 
 {#if identities.length > 1 && signatures.length > 0}
-	<section class="mt-10 pt-6 border-t border-border">
-		<header class="mb-4 flex items-start justify-between gap-4">
-			<div>
-				<h2 class="text-base font-semibold text-text">Default signatures per identity</h2>
-				<p class="text-sm text-text-tertiary mt-1 max-w-prose">
-					For each address, pick the signature that auto-applies when you compose from it. Anything
-					left on "Use global default" follows the default chosen above.
-				</p>
-			</div>
-			<button
-				type="button"
-				onclick={refreshIdentitiesNow}
-				disabled={refreshing}
-				class="btn btn-secondary shrink-0"
-			>
-				{refreshing ? 'Refreshing…' : 'Refresh from server'}
-			</button>
-		</header>
-
-		<div class="flex flex-col gap-2">
-			{#each identities as identity (identity.jmapId)}
-				<div class="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-hover/50 border border-border/60">
-					<div class="flex-1 min-w-0">
-						<div class="text-sm text-text truncate">{identity.email}</div>
-						{#if identity.name}
-							<div class="text-xs text-text-tertiary truncate">{identity.name}</div>
-						{/if}
-					</div>
-					{#if identity.isPrimary}
-						<span class="text-3xs uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-accent/15 text-accent-fg shrink-0">
-							Primary
-						</span>
-					{/if}
-					<select
-						value={identityOverrides.get(identity.jmapId)?.toString() ?? ''}
-						onchange={(e) => pickIdentitySignature(identity.jmapId, (e.target as HTMLSelectElement).value)}
-						aria-label="Default signature for {identity.email}"
-						class="bg-surface border border-border rounded-md px-2 py-1 text-sm text-text outline-none focus:border-accent transition-colors cursor-pointer max-w-[220px]"
-					>
-						<option value="">— Use global default —</option>
-						{#each signatures as sig (sig.id)}
-							<option value={sig.id.toString()}>{sig.name}</option>
-						{/each}
-					</select>
-				</div>
-			{/each}
-		</div>
-	</section>
+	<IdentityDefaults />
 {:else if identities.length > 1 && signatures.length === 0}
 	<section class="mt-10 pt-6 border-t border-border">
 		<p class="text-sm text-text-tertiary">

@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { pageTitle } from '$lib/utils/title';
 	import { invalidateAll } from '$app/navigation';
-	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
+	import SettingRow from '$lib/components/settings/SettingRow.svelte';
+	import { useDraft } from '$lib/settings/draft.svelte';
+	import { saveEach, sendJson, type SaveStep } from '$lib/settings/send';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
 	import { findLabelsParentId, isLabelMailbox, isLabelsParent } from '$lib/types/labels';
 	import {
@@ -14,7 +16,7 @@
 		unsubscribePush
 	} from '$lib/notifications';
 	import { relativeTime } from '$lib/devices';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import type { LayoutData } from '../$types';
 	import { fixFor, urgentState, type AccountReach } from '$lib/telegram/urgent-state';
@@ -35,7 +37,10 @@
 
 	async function loadTelegram() {
 		const res = await fetch('/api/telegram');
-		if (res.ok) telegram = await res.json();
+		if (!res.ok) return;
+		telegram = await res.json();
+		// Its switches come in as saved; one already changed here keeps its choice.
+		if (telegram?.linked) draft.seed({ telegramUrgent: telegram.urgent, telegramPaused: telegram.paused });
 	}
 
 	async function telegramAction(body: Record<string, unknown>) {
@@ -61,12 +66,10 @@
 	async function unlinkTelegram() {
 		if (await telegramAction({ action: 'unlink' })) {
 			telegramLink = null;
+			// Its two switches are gone with it, saved or not.
+			draft.forget(['telegramUrgent', 'telegramPaused']);
 			await loadTelegram();
 		}
-	}
-
-	async function setTelegram(flags: { urgent?: boolean; paused?: boolean }) {
-		if (await telegramAction({ action: 'set', ...flags })) await loadTelegram();
 	}
 
 	async function testTelegram() {
@@ -78,37 +81,96 @@
 
 	let { data }: { data: LayoutData } = $props();
 
-	let enabled = $state(data.notificationsEnabled);
+	type Values = {
+		enabled: boolean;
+		folders: string[];
+		calendarEvents: boolean;
+		eventReminders: boolean;
+		/** Push on this device, kept on the device. Known once the page has asked the browser. */
+		pushHere?: boolean;
+		/** Telegram's switches, once it is linked. */
+		telegramUrgent?: boolean;
+		telegramPaused?: boolean;
+	};
+
+	/*
+	 * Every switch and choice here waits for Save in the bar at the foot of
+	 * the page. What acts at once: asking the browser for permission (it
+	 * only shows its prompt in answer to a click), linking and unlinking
+	 * Telegram, and its test alert.
+	 */
+	const draft = useDraft<Values>({
+		// What the page opened with; later reloads of `data` leave the form alone.
+		initial: untrack(() => ({
+			enabled: data.notificationsEnabled,
+			// Kept sorted, so ticking a box and unticking it again reads as no change.
+			folders: [...data.notificationFolders].sort(),
+			calendarEvents: data.notifyCalendarEvents,
+			eventReminders: data.notifyEventReminders
+		})),
+		async persist(changed, all, stored) {
+			const steps: SaveStep<Values>[] = [];
+			const prefs: Partial<Values> = {};
+			for (const key of ['enabled', 'folders', 'calendarEvents', 'eventReminders'] as const) {
+				if (changed[key] !== undefined) (prefs as Record<string, unknown>)[key] = changed[key];
+			}
+			if (Object.keys(prefs).length > 0) {
+				steps.push({
+					label: 'Notifications',
+					values: prefs,
+					// The keys are the endpoint's own.
+					run: async () => {
+						await sendJson('/api/preferences/notifications', prefs);
+						await invalidateAll();
+					}
+				});
+			}
+			// Switching notifications on or off takes this device along: on
+			// subscribes it for push so notifications arrive while the app is
+			// closed, off stops them.
+			const followsMain = changed.enabled !== undefined;
+			if (changed.pushHere !== undefined || followsMain) {
+				const wanted = all.pushHere ?? all.enabled;
+				steps.push({
+					label: 'This device',
+					// Whatever this device ended up with.
+					values: () => ({ pushHere }),
+					run: async () => {
+						// Push is extra (without it notifications still show while the
+						// app is open), so with the main switch a device that can't take
+						// it just reads off; switched on its own, it says so.
+						if (!(await setPushHere(wanted)) && !followsMain) {
+							throw new Error('Push couldn’t be turned on for this device.');
+						}
+					}
+				});
+			}
+			const flags: { urgent?: boolean; paused?: boolean } = {};
+			const telegramValues: Partial<Values> = {};
+			if (changed.telegramUrgent !== undefined) flags.urgent = telegramValues.telegramUrgent = changed.telegramUrgent;
+			if (changed.telegramPaused !== undefined) flags.paused = telegramValues.telegramPaused = changed.telegramPaused;
+			if (Object.keys(flags).length > 0) {
+				steps.push({
+					label: 'Telegram',
+					values: telegramValues,
+					run: async () => {
+						await sendJson('/api/telegram', { action: 'set', ...flags }, { stepUp: true });
+						await loadTelegram();
+					}
+				});
+			}
+			await saveEach(stored, steps);
+		}
+	});
+
 	// Notifications are on for the account, but each device needs its own
 	// permission: on one that hasn't given it (a phone added later), the
 	// switch reads off so turning it on asks there.
 	let deviceAllowed = $state(true);
 	onMount(() => { deviceAllowed = canNotify(); });
-	const on = $derived(enabled && deviceAllowed);
-	let selectedFolders = $state<Set<string>>(new Set(data.notificationFolders));
-	let calendarEvents = $state(data.notifyCalendarEvents);
-	let eventReminders = $state(data.notifyEventReminders);
-
-	const states = $state<Record<string, SaveState>>({});
-	function flash(key: string, ok: boolean) {
-		states[key] = ok ? 'saved' : 'error';
-		if (ok) setTimeout(() => { if (states[key] === 'saved') states[key] = 'idle'; }, 1800);
-	}
-
-	async function save(body: unknown, key: string) {
-		states[key] = 'saving';
-		try {
-			const res = await fetch('/api/preferences/notifications', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body)
-			});
-			flash(key, res.ok);
-			if (res.ok) await invalidateAll();
-		} catch {
-			flash(key, false);
-		}
-	}
+	// The rows under the main switch follow it as it is on screen, saved or
+	// not, so the folders can be picked before Save.
+	const on = $derived(draft.value.enabled && deviceAllowed);
 
 	let permissionError = $state('');
 
@@ -136,8 +198,8 @@
 	// the device, so a phone turned off stays off when the app opens there.
 	type PushDevice = { label: string; current: boolean; createdAt: string; lastSentAt: string | null };
 	let devices = $state<PushDevice[]>([]);
+	/** Whether this device is subscribed now. */
 	let pushHere = $state(false);
-	let pushState = $state<SaveState>('idle');
 	let pushError = $state('');
 
 	async function loadDevices() {
@@ -147,10 +209,11 @@
 
 	onMount(async () => {
 		pushHere = pushWantedHere() && (await currentPushSubscription().catch(() => null)) !== null;
+		draft.seed({ pushHere });
 		await loadDevices();
 	});
 
-	/** Subscribe or unsubscribe this device, remembering the choice here. */
+	/** Subscribe or unsubscribe this device, remembering the choice here. True when it took. */
 	async function setPushHere(next: boolean): Promise<boolean> {
 		setPushWantedHere(next);
 		if (next) pushHere = await subscribePush().catch(() => false);
@@ -162,49 +225,68 @@
 		return pushHere === next;
 	}
 
+	/** This device's switch waits for Save, but a browser permission it needs is asked for now. */
 	async function togglePushHere(next: boolean) {
 		pushError = '';
-		pushState = 'saving';
 		if (next && !canNotify()) {
 			const problem = await askPermission();
 			if (problem) {
 				pushError = problem;
-				pushState = 'error';
 				return;
 			}
 			deviceAllowed = true;
 		}
-		const ok = await setPushHere(next);
-		pushState = ok ? 'saved' : 'error';
-		if (ok) setTimeout(() => { if (pushState === 'saved') pushState = 'idle'; }, 1800);
+		draft.value.pushHere = next;
+		pushChosen = true;
 	}
 
+	/**
+	 * "This device" as it was when the main switch left its saved value, so
+	 * that switching it back puts the device back too; and whether the
+	 * person set "This device" themselves since, which then stands.
+	 */
+	let pushBeforeMain: boolean | undefined;
+	let pushChosen = false;
+
+	/**
+	 * The main switch waits for Save like the rest. Turning it on asks the
+	 * browser for permission there and then, as browsers only show their
+	 * prompt in answer to a click; refused, nothing changes and the reason
+	 * shows beside it. This device follows the switch: on subscribes it for
+	 * push, off stops it.
+	 */
 	async function toggleEnabled(next: boolean) {
 		permissionError = '';
+		// On for the account but never allowed here, the switch reads off on
+		// this device, and turning it on is turning it on here.
+		const onHereAlready = deviceAllowed;
 		if (next) {
 			const problem = await askPermission();
 			if (problem) {
 				permissionError = problem;
-				states.enabled = 'error';
-				enabled = false;
 				return;
 			}
 			deviceAllowed = true;
 		}
-		enabled = next;
-		await save({ enabled: next }, 'enabled');
-		// This device follows the switch: on subscribes it for push so
-		// notifications arrive while the app is closed, off stops them.
-		// Without push they still show while the app is open.
-		await setPushHere(next);
+		// This device goes along only while the main switch differs from what
+		// is saved: off to on subscribes it, on to off stops it. Back where it
+		// was saved, the device is back to how it was before (or how the
+		// person has since set it), so there is nothing to save.
+		if (draft.value.enabled === draft.baseline.enabled) {
+			pushBeforeMain = draft.value.pushHere;
+			pushChosen = false;
+		}
+		draft.value.enabled = next;
+		if (next !== draft.baseline.enabled || (next && !onHereAlready)) draft.value.pushHere = next;
+		// (Not known yet when the main switch moved: as saved, once it is.)
+		else if (!pushChosen) draft.value.pushHere = pushBeforeMain ?? draft.baseline.pushHere;
 	}
 
 	function toggleFolder(id: string, checked: boolean) {
-		const next = new Set(selectedFolders);
+		const next = new Set(draft.value.folders);
 		if (checked) next.add(id);
 		else next.delete(id);
-		selectedFolders = next;
-		save({ folders: [...next] }, `folder:${id}`);
+		draft.value.folders = [...next].sort();
 	}
 
 	const labelsParentId = $derived(findLabelsParentId(data.mailboxes));
@@ -232,22 +314,27 @@
 	<SettingRow
 		title="Enable notifications"
 		description="Request permission from your browser and show a notification when new mail arrives in the selected folders."
-		state={states.enabled ?? 'idle'}
+		state={permissionError ? 'error' : 'idle'}
 		errorMessage={permissionError}
 	>
 		{#snippet control()}
-			<Toggle checked={on} onChange={toggleEnabled} />
+			<Toggle checked={on} ariaLabel="Enable notifications" onChange={toggleEnabled} />
 		{/snippet}
 	</SettingRow>
 
 	<SettingRow
 		title="This device"
 		description="Push reaches this device while the app is closed. Off, this device shows notifications only while the app is open, and stays off when the app opens here again."
-		state={pushState}
+		state={pushError ? 'error' : 'idle'}
 		errorMessage={pushError}
 	>
 		{#snippet control()}
-			<Toggle checked={pushHere && on} disabled={!on} onChange={togglePushHere} />
+			<Toggle
+				checked={(draft.value.pushHere ?? pushHere) && on}
+				disabled={!on}
+				ariaLabel="This device"
+				onChange={togglePushHere}
+			/>
 		{/snippet}
 	</SettingRow>
 
@@ -284,7 +371,7 @@
 					<input
 						type="checkbox"
 						disabled={!on}
-						checked={selectedFolders.has(mb.id)}
+						checked={draft.value.folders.includes(mb.id)}
 						onchange={(e) => toggleFolder(mb.id, (e.currentTarget as HTMLInputElement).checked)}
 						class="w-3.5 h-3.5 rounded-md border-border accent-accent cursor-pointer disabled:cursor-not-allowed"
 					/>
@@ -304,16 +391,13 @@
 	<SettingRow
 		title="New & updated events"
 		description="Notify when an event is added or changed on one of your calendars — including from other devices and CalDAV clients."
-		state={states.calendarEvents ?? 'idle'}
 	>
 		{#snippet control()}
 			<Toggle
-				checked={calendarEvents && on}
+				checked={draft.value.calendarEvents && on}
 				disabled={!on}
-				onChange={(next) => {
-					calendarEvents = next;
-					save({ calendarEvents: next }, 'calendarEvents');
-				}}
+				ariaLabel="New & updated events"
+				onChange={(next) => (draft.value.calendarEvents = next)}
 			/>
 		{/snippet}
 	</SettingRow>
@@ -321,16 +405,13 @@
 	<SettingRow
 		title="Event reminders"
 		description="Fire each event's reminders (e.g. 10 minutes before it starts), like Google or Apple Calendar."
-		state={states.eventReminders ?? 'idle'}
 	>
 		{#snippet control()}
 			<Toggle
-				checked={eventReminders && on}
+				checked={draft.value.eventReminders && on}
 				disabled={!on}
-				onChange={(next) => {
-					eventReminders = next;
-					save({ eventReminders: next }, 'eventReminders');
-				}}
+				ariaLabel="Event reminders"
+				onChange={(next) => (draft.value.eventReminders = next)}
 			/>
 		{/snippet}
 	</SettingRow>
@@ -353,14 +434,19 @@
 			</SettingRow>
 			<!-- Jev decides what is urgent, so the switch is off while it reads no
 			     account; with several accounts, the ones it skips are listed. -->
-			{@const urgent = urgentState(telegram.accounts, telegram.urgent)}
+			{@const urgent = urgentState(telegram.accounts, draft.value.telegramUrgent ?? telegram.urgent)}
 			{@const only = telegram.accounts.length === 1 ? urgent.skipped[0] : undefined}
 			<SettingRow title="Urgent mail">
 				{#snippet control()}
 					{#if only?.blocked}
 						<a href={fixFor(only.blocked).href} class="btn btn-secondary btn-sm">{fixFor(only.blocked).label}</a>
 					{/if}
-					<Toggle checked={urgent.checked} disabled={urgent.disabled} onChange={(next) => setTelegram({ urgent: next })} />
+					<Toggle
+						checked={urgent.checked}
+						disabled={urgent.disabled}
+						ariaLabel="Urgent mail"
+						onChange={(next) => (draft.value.telegramUrgent = next)}
+					/>
 				{/snippet}
 			</SettingRow>
 			{#if telegram.accounts.length > 1}
@@ -370,14 +456,18 @@
 							{#if account.blocked}
 								<a href={fixFor(account.blocked).href} class="btn btn-secondary btn-sm">{fixFor(account.blocked).label}</a>
 							{/if}
-							<Toggle checked={false} disabled />
+							<Toggle checked={false} disabled ariaLabel="Urgent mail for {account.email}" />
 						{/snippet}
 					</SettingRow>
 				{/each}
 			{/if}
 			<SettingRow title="Paused">
 				{#snippet control()}
-					<Toggle checked={telegram!.paused} onChange={(next) => setTelegram({ paused: next })} />
+					<Toggle
+						checked={draft.value.telegramPaused ?? telegram!.paused}
+						ariaLabel="Paused"
+						onChange={(next) => (draft.value.telegramPaused = next)}
+					/>
 				{/snippet}
 			</SettingRow>
 			<SettingRow title="Test alert">

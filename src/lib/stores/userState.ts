@@ -93,12 +93,21 @@ export async function refreshIdentities(): Promise<IdentityValue[]> {
 	return identities;
 }
 
+/** A refused change must not look saved: throw the server's reason, before the store is touched. */
+async function mustBeOk(res: Response): Promise<void> {
+	if (res.ok) return;
+	const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+	throw new Error(typeof body?.error === 'string' ? body.error : 'Couldn’t save. Try again.');
+}
+
 export async function setIdentitySignature(identityId: string, signatureId: number): Promise<void> {
-	await fetch('/api/user-state/identity-signatures', {
-		method: 'PUT',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ identityId, signatureId })
-	});
+	await mustBeOk(
+		await fetch('/api/user-state/identity-signatures', {
+			method: 'PUT',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ identityId, signatureId })
+		})
+	);
 	userState.update((s) => {
 		const next = new Map(s.identitySignatures);
 		next.set(identityId, signatureId);
@@ -107,9 +116,11 @@ export async function setIdentitySignature(identityId: string, signatureId: numb
 }
 
 export async function clearIdentitySignature(identityId: string): Promise<void> {
-	await fetch(
-		`/api/user-state/identity-signatures?identityId=${encodeURIComponent(identityId)}`,
-		{ method: 'DELETE' }
+	await mustBeOk(
+		await fetch(
+			`/api/user-state/identity-signatures?identityId=${encodeURIComponent(identityId)}`,
+			{ method: 'DELETE' }
+		)
 	);
 	userState.update((s) => {
 		const next = new Map(s.identitySignatures);
@@ -139,11 +150,12 @@ export async function updateSettings(patch: {
 	displayName?: string;
 	settings?: Record<string, unknown>;
 }): Promise<void> {
-	await fetch('/api/user-state/settings', {
+	const res = await fetch('/api/user-state/settings', {
 		method: 'PATCH',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(patch)
 	});
+	await mustBeOk(res);
 	userState.update((s) => ({
 		...s,
 		displayName: patch.displayName ?? s.displayName,

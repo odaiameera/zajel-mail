@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { getPrefs } from '$lib/server/db/queries/app-prefs';
 import { writePreferences } from '$lib/server/preferences';
 import { autoReplySettings, autoReplyStatus, nextSince, parseAutoReplyForm } from '$lib/server/auto-reply';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 
 /**
  * Save the out-of-office settings, all at once from the page's Save
@@ -27,5 +28,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		auto_reply_tz: form.tz,
 		auto_reply_since: since
 	});
+	// Out-of-office answers within seconds: every linked account needs an event stream while it is on.
+	refreshPipeline();
 	return json({ success: true, status: autoReplyStatus({ ...form, since }, now) });
 };

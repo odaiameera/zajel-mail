@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import { pageTitle } from '$lib/utils/title';
-	import { fetchWithStepUp } from '$lib/auth/step-up';
 	import SettingRow, { type SaveState } from '$lib/components/settings/SettingRow.svelte';
 	import TextInput from '$lib/components/settings/TextInput.svelte';
 	import Toggle from '$lib/components/settings/Toggle.svelte';
+	import { useDraft } from '$lib/settings/draft.svelte';
+	import { sendJson } from '$lib/settings/send';
 
 	interface Account {
 		id: string;
@@ -17,61 +18,50 @@
 		indexed: number;
 		lastError: string | null;
 	}
+	interface Overview {
+		url: string | null;
+		model: string | null;
+		accounts: Account[];
+	}
 
-	let url = $state('');
-	let model = $state('');
 	let accounts = $state<Account[]>([]);
 	let loaded = $state(false);
 	const states = $state<Record<string, SaveState>>({});
 	const errors = $state<Record<string, string>>({});
 	let timer: ReturnType<typeof setTimeout> | null = null;
 
-	/** The values last loaded, so an unchanged field isn't saved again on blur. */
-	let saved = { url: '', model: '' };
-
-	/** `fields` refills the endpoint and model; the progress refresh leaves them, in case one is being typed in. */
-	function apply(data: { url: string | null; model: string | null; accounts: Account[] }, fields: boolean) {
-		if (fields) {
-			saved = { url: data.url ?? '', model: data.model ?? '' };
-			url = saved.url;
-			model = saved.model;
+	// The endpoint and model wait for Save in the bar at the foot of the
+	// page. They decide where every message's text is sent, so the server
+	// asks for a fresh sign-in check first; closing that dialog saves
+	// nothing and leaves what was typed in place. The per-account switches
+	// below start or delete an index, and act at once.
+	const draft = useDraft({
+		// Filled by the first load below: this page fetches its own values.
+		initial: { url: '', model: '' },
+		async persist(changed) {
+			const data = (await sendJson('/api/search/index', changed, { method: 'PUT', stepUp: true })) as Overview;
+			showAccounts(data.accounts);
+			// As the server keeps them: tidied up, or back to its own default
+			// when a field was emptied.
+			return { url: data.url ?? '', model: data.model ?? '' };
 		}
-		accounts = data.accounts;
-		loaded = true;
+	});
+
+	function showAccounts(list: Account[]) {
+		accounts = list;
 		// Progress moves on its own while an index is being built.
 		if (timer) clearTimeout(timer);
 		timer = accounts.some((a) => a.enabled && !a.ready) ? setTimeout(() => load(false), 5000) : null;
 	}
 
+	/** `fields` fills the endpoint and model; the progress refresh leaves them, in case one is being typed in. */
 	async function load(fields: boolean) {
 		const res = await fetch('/api/search/index').catch(() => null);
-		if (res?.ok) apply(await res.json(), fields);
-	}
-
-	async function saveSetting(key: 'url' | 'model', value: string) {
-		if (value.trim() === saved[key]) return;
-		states[key] = 'saving';
-		delete errors[key];
-		const res = await fetchWithStepUp('/api/search/index', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ [key]: value })
-		}).catch(() => null);
-		const data = await res?.json().catch(() => null);
-		if (!res?.ok) {
-			// A cancelled re-check leaves things as they were.
-			if (data?.stepUp) states[key] = 'idle';
-			else {
-				errors[key] = data?.message ?? data?.error ?? 'That didn’t save';
-				states[key] = 'error';
-			}
-			if (key === 'url') url = saved.url;
-			else model = saved.model;
-			return;
-		}
-		apply(data, true);
-		states[key] = 'saved';
-		setTimeout(() => { if (states[key] === 'saved') states[key] = 'idle'; }, 1800);
+		if (!res?.ok) return;
+		const data = (await res.json()) as Overview;
+		if (fields) draft.seed({ url: data.url ?? '', model: data.model ?? '' });
+		showAccounts(data.accounts);
+		loaded = true;
 	}
 
 	async function toggle(account: Account, enabled: boolean) {
@@ -118,16 +108,14 @@
 		<SettingRow
 			title="Ollama endpoint"
 			description="Reached from the server, not your browser. It receives the text of every message it indexes."
-			state={states.url ?? 'idle'}
-			errorMessage={errors.url}
 		>
 			{#snippet control()}
-				<TextInput bind:value={url} ariaLabel="Ollama endpoint" width="260px" onSave={(next) => saveSetting('url', next)} />
+				<TextInput bind:value={draft.value.url} ariaLabel="Ollama endpoint" width="260px" />
 			{/snippet}
 		</SettingRow>
-		<SettingRow title="Model" state={states.model ?? 'idle'} errorMessage={errors.model}>
+		<SettingRow title="Model">
 			{#snippet control()}
-				<TextInput bind:value={model} ariaLabel="Model" width="260px" onSave={(next) => saveSetting('model', next)} />
+				<TextInput bind:value={draft.value.model} ariaLabel="Model" width="260px" />
 			{/snippet}
 		</SettingRow>
 		{#each accounts as account (account.id)}
@@ -142,6 +130,7 @@
 					<Toggle
 						checked={account.enabled}
 						disabled={!account.configured || states[account.id] === 'saving'}
+						ariaLabel="Index {account.email}"
 						onChange={(next) => toggle(account, next)}
 					/>
 				{/snippet}

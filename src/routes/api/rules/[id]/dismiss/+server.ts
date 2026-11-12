@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { dismissNote } from '$lib/server/rules/store';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 
 /**
  * The owner has read a rule's note ("Got it"). A note about a rule that
@@ -15,5 +16,6 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 	if (done === 'nothing') {
 		return json({ error: 'This rule has no note to dismiss. Rewrite it or delete it.' }, { status: 400 });
 	}
+	if (done === 'deleted') refreshPipeline();
 	return json({ success: true, deleted: done === 'deleted' });
 };

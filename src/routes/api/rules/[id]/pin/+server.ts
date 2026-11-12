@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db/index';
 import { setPin } from '$lib/server/db/queries/jev-learning';
-import { refreshJevWatchers } from '$lib/server/jev/stream';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 import { deleteRule, getRule } from '$lib/server/rules/store';
 import { isInboxCategory } from '$lib/types/categories';
 
@@ -26,6 +26,6 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 		setPin(accountId, pin.sender, pin.category);
 		deleteRule(accountId, rule.id);
 	})();
-	refreshJevWatchers();
+	refreshPipeline();
 	return json({ success: true, pin });
 };

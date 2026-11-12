@@ -22,9 +22,9 @@ vi.mock('$lib/jmap/mailbox', () => ({
 	getMailboxes: async () => [{ id: 'inbox', role: 'inbox', unreadEmails: state.inboxUnread }]
 }));
 vi.mock('./accounts', () => ({ authStateForAccount: () => ({ accountId: 'jmap' }) }));
-vi.mock('$lib/server/jev/hold', async (importOriginal) => ({
-	...(await importOriginal<typeof import('$lib/server/jev/hold')>()),
-	inboxHoldOn: () => state.hold
+vi.mock('$lib/server/mail-pipeline/hold', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/mail-pipeline/hold')>()),
+	inboxHoldSince: () => (state.hold ? 0 : null)
 }));
 
 import { unreadBadges } from './unread-badges';

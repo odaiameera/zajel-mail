@@ -87,8 +87,9 @@
 				Find messages by sender, subject, or any words. Combine filters like
 				<code class="text-text-secondary">from:</code>,
 				<code class="text-text-secondary">subject:</code>,
-				<code class="text-text-secondary">has:attachment</code>, or
-				<code class="text-text-secondary">is:unread</code>.
+				<code class="text-text-secondary">has:attachment</code>,
+				<code class="text-text-secondary">is:unread</code>, or
+				<code class="text-text-secondary">tab:updates</code>.
 			</p>
 		</div>
 	{:else if data.total === 0}

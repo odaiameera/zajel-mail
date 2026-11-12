@@ -1,9 +1,11 @@
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'zajel-auto-reply-api-')), 'test.db');
+const pipeline = vi.hoisted(() => ({ refreshPipeline: vi.fn() }));
+vi.mock('$lib/server/mail-pipeline', () => pipeline);
 
 import { getDb } from '$lib/server/db/index';
 import { runMigrations } from '$lib/server/db/migrate';
@@ -50,5 +52,15 @@ describe('saving out-of-office', () => {
 	it('clears the switch-on time when switched off', async () => {
 		await save({ enabled: false, body: 'Away' });
 		expect(getPrefs('user-1')).toMatchObject({ auto_reply_enabled: 'off', auto_reply_since: '' });
+	});
+
+	it('opens or closes the new-mail event streams at once, so replies go out within seconds', async () => {
+		pipeline.refreshPipeline.mockClear();
+		await save({ enabled: true, body: 'Away', tz: 'UTC' });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(1);
+		await save({ enabled: true, body: 'Away', from: '2026-11-21', until: '2026-11-20', tz: 'UTC' });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(1);
+		await save({ enabled: false, body: '', tz: 'UTC' });
+		expect(pipeline.refreshPipeline).toHaveBeenCalledTimes(2);
 	});
 });

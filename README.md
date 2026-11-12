@@ -44,6 +44,7 @@ It's built to feel quick and calm:
 - [Installation](#installation)
   - [Quick start (development)](#quick-start-development)
   - [Docker (production)](#docker-production)
+  - [Upgrading](#upgrading)
   - [Installing with Jev](#installing-with-jev)
   - [Setting up Zajel](#setting-up-zajel)
 - [Configuration](#configuration)
@@ -94,15 +95,15 @@ The inbox is built for getting through mail, not just reading it.
 **Inbox tabs.** Messages split into **Important**, **Updates**, **Newsletters** and **Promotions**, each with its own unread count. A tab only changes where you see a message; it stays in your Inbox on the server. You can sort mail yourself:
 - drag a message onto a tab,
 - use **Move to tab**, or
-- **pin a sender**, or a whole `@domain`, to a tab in Settings → Jev, so its new mail always lands there. Pins need tabs, not Jev.
+- **pin a sender**, or a whole `@domain`, to a tab in Settings → Inbox tabs, so its new mail always lands there. Pins need tabs, not Jev.
 
 **Folders and labels.** Folders are real JMAP mailboxes and can nest. Labels are mailboxes too, grouped under a `Labels` parent, so they show up cleanly in any other client. A message is in exactly one folder and can have any number of labels, and every way of filing mail keeps it so: moving it by hand, a rule, Zajel, a job or Telegram.
 - **Move to…** lists the Inbox, Archive, Junk and Trash, then your folders as a tree, and your labels in their own section. Picking a folder moves the message there: it leaves whatever folder it was in and keeps its labels. Picking a label adds the label and leaves the message where it is. Dropping a message on a label in the sidebar does the same.
 - Taking a message's last label off, when it is in no folder, puts it in Archive, and an open message shows it there straight away.
 - Remind Me Later and Scheduled belong to the app: mail can't be moved into them by hand, and they can't be renamed, moved or deleted.
-- Folders and labels can have a colour and an icon, kept per mail account; a colour can be cleared again. Drag a folder or label in the sidebar to reorder it or nest it under another; the order is stored on the server, so other clients that honour it see the same arrangement. Settings → Folders and Labels have Move up and Move down for keyboards and touch screens.
+- Folders and labels can have a colour and an icon, kept per mail account; a colour can be cleared again. Drag a folder or label in the sidebar to reorder it or nest it under another; the order is stored on the server, so other clients that honour it see the same arrangement. Settings → Folders & labels has Move up and Move down for keyboards and touch screens, and shows beside each folder and label the rules that file into it, with **Add rule** to start one there.
 
-**Search** sits at the top of every page (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>, or <kbd>/</kbd>). It looks across every folder, and active filters show as chips you can clear.
+**Search** sits at the top of every page (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>, or <kbd>/</kbd>). It looks across every folder, and active filters show as chips you can clear. Operators narrow it down: `from:`, `to:`, `cc:`, `subject:`, `body:`, `in:`, `label:`, `is:unread`, `has:attachment`, `before:` and `after:`, and `tab:` (`important`, `updates`, `newsletters` or `promotions`) for Inbox mail in that tab.
 
 With **semantic search** switched on in Settings → Search, it also finds mail by meaning. For example, *"the plumber's quote from spring"* finds the estimate for the leaking pipe, in Arabic or English.
 - Keyword and meaning results are merged, so a message both find comes first. A match has to stand out from the rest of the mailbox, so a mailbox with fewer than ten messages, or a folder where nothing does, gets keyword results alone.
@@ -130,8 +131,8 @@ With **semantic search** switched on in Settings → Search, it also finds mail 
 - **Archive** works even when your server has no folder with the archive role: it uses your top-level `Archive` folder.
 - **Trash can empty itself** after 7 or 30 days. Pressing Trash deletes a message for good only in the Trash folder itself; anywhere else (a label, Search, Starred) it moves the message to Trash, and a message already there stays put.
 - **Bulk actions** say how many messages couldn't be changed, if any, and do the rest.
-- **Rules** match mail exactly, by sender, recipient, subject, body, size or attachment, and file it in **one** place: a folder, a label, Trash, Archive or Junk (or nowhere). A rule can also mark the mail read, star it, or stop the rules after it. Rules run in the order of the list, which you change with **move up / move down** (a rule waiting under **Needs your attention** keeps its place): labels add up, and the first rule that moves a message decides its folder; the message leaves every other folder it was in and keeps its labels. Each rule is saved on its own with **Save**, and checked by the server, which says what is wrong beside the field. Rules belong to the mail account: unlinking it deletes them (the confirmation says how many), and deleting a folder or label deletes the rules that only file into it (a rule that also marks read, stars or stops later rules is kept, filing nowhere; the confirmation says how many of each). A rule never picks an Inbox tab; a sender pin does that. Rules run on the server about a minute after mail lands, so they keep filtering with every tab closed. A live count shows how many of your newest Inbox messages a rule matches, counted exactly as **Save & apply** then sorts them.
-- **Auto-reply** (out-of-office) is sent by Zajel itself, with optional start and end dates and one setting for all your linked accounts. Replies go to the sender's own address (never a Reply-To), and each person gets at most one a day across all your accounts; newsletters, mailing lists, automatic mail, delivery reports, spam, mail that fails the sender checks and mail from before you switched it on get none. Replies go out only while Zajel is running, and the settings page lists the latest ones.
+- **Rules** match mail exactly, by sender, recipient, subject, body, size or attachment, and file it in **one** place: a folder, a label, Trash, Archive or Junk (or nowhere). A rule can also mark the mail read, star it, or stop the rules after it. Rules live in Settings → Folders & labels, under the folder or label they file into, and all of them under **All rules, in order**. Rules run in the order of that list, which you change with **move up / move down** (a rule waiting under **Needs your attention** keeps its place): labels add up, and the first rule that moves a message decides its folder; the message leaves every other folder it was in and keeps its labels. Each rule is saved on its own with **Save**, and checked by the server, which says what is wrong beside the field. Rules belong to the mail account: unlinking it deletes them (the confirmation says how many), and deleting a folder or label deletes the rules that only file into it (a rule that also marks read, stars or stops later rules is kept, filing nowhere; the confirmation says how many of each). A rule never picks an Inbox tab; a sender pin does that. Rules run on the server within seconds of mail landing (the server listens to the mail server's push channel; if that is down, within a minute), so they keep filtering with every tab closed. While a rule that moves mail out of the Inbox is switched on, a new message waits, a second or two and never more than two minutes, until the rules have had it, so mail a rule files never shows in the Inbox first. Saving such a rule never hides mail that is already in the Inbox: only mail that arrives after it waits. A rule that only labels, stars or marks as read holds nothing back. A message the mail server can't read for the rules doesn't hold up the others; it is tried again on later passes (at most once a minute) and after five tries is let through without the rules. A rule never undoes a move you made: if you move a message before its rule acts, it stays where you put it. A live count shows how many of your newest Inbox messages a rule matches, counted exactly as **Save & apply** then sorts them.
+- **Auto-reply** (out-of-office) is sent by Zajel itself, with optional start and end dates and one setting for all your linked accounts. Replies go to the sender's own address (never a Reply-To), and each person gets at most one a day across all your accounts; newsletters, mailing lists, automatic mail, delivery reports, spam, mail that fails the sender checks and mail from before you switched it on get none. Replies go out only while Zajel is running, within seconds of the mail arriving, and the settings page lists the latest ones.
 - **Sender avatars** come from BIMI, site favicons and Gravatar. They're cached on the server, so every device shares one lookup. Lookups that find nothing are remembered too, instead of being retried on every render.
 
 ### The composer
@@ -198,7 +199,7 @@ Otherwise it runs on **any Ollama-compatible endpoint**: Ollama Cloud, or a mode
 
 [Jev](https://docs.typesafe.ai) is TypeSafe's decision model. It doesn't write text; it answers typed questions about each email, with probabilities. Zajel Mail uses those answers in two places.
 
-![Settings → Jev: the four Inbox tabs and the switch that turns them on for an account](docs/screenshots/jev-tabs.png)
+![Settings → Inbox tabs: the four Inbox tabs and the switch that turns them on for an account](docs/screenshots/jev-tabs.png)
 
 **1. Sorting new mail into tabs.** Each new email is judged **once**, together with facts the app works out:
 - whether the sender is a contact
@@ -206,9 +207,9 @@ Otherwise it runs on **any Ollama-compatible endpoint**: Ollama Cloud, or a mode
 - whether it's a mailing list
 - whether it carries a sign-in code
 
-A confident pick is applied. Anything else stays in **Important**, so nothing is hidden because Jev was unsure. The message view shows **why** a message landed where it did.
+A confident pick is applied. Anything else stays in **Important**, so nothing is hidden because Jev was unsure. An open message names its tab beside its labels; hover the name (or tap it on a phone) to see why the message is there: you moved it, a sender pin put it there, or Jev did (and how sure it was), plus any rule that matched it when it arrived.
 
-New mail appears **already in its tab**. The server listens to the mail server's push channel and asks Jev within seconds of delivery. Until Jev is done with a message, the Inbox tabs, their unread counts, the Inbox badge and new-mail notifications leave it out. That way it never shows in Important and then moves. Your rules act on it first, so a rule's folder or label is already in place too. The wait is **two minutes at most**: if Jev is slow, down, rate-limited or stops answering, the message appears in Important when that time is up. Search, All Mail and other mail apps show it straight away. Only mail dated within two minutes of now is ever held back, and none at all while tabs are off for the account, or while nothing would sort its new mail (Jev is off and no sender is pinned).
+New mail appears **already in its tab**. The server listens to the mail server's push channel and asks Jev within seconds of delivery. Until Jev is done with a message, the Inbox tabs, their unread counts, the Inbox badge and new-mail notifications leave it out. That way it never shows in Important and then moves. Your rules act on it first, in the same pass and without waiting for Jev, so a rule's folder or label is already in place too. The wait is **two minutes at most**: if Jev is slow, down, rate-limited or stops answering, the message appears in Important when that time is up. Search, All Mail and other mail apps show it straight away. Only mail dated within two minutes of now, and received since the hold was last switched on, is ever held back, and none at all while nothing would move it: tabs off (or Jev off and no sender pinned), and no rule that moves mail out of the Inbox. While TypeSafe is down your rules, out-of-office and pins carry on; only Jev's own answers wait. The same goes for any other failure in Jev's part of a pass: your rules and out-of-office have already acted, and what was waiting for Jev is tried again on the next pass.
 
 Jev learns from you:
 - **It never moves mail you've put in a tab yourself**, Important included.
@@ -221,15 +222,7 @@ Before switching it on, **Try Jev** shows where it would put your newest 200 Inb
 - **Watch only** records Jev's verdict next to Stalwart's, with a report of where the two disagree. Nothing moves.
 - **Active** moves mail Jev is at least 90% sure is spam or phishing to Junk. It warns from 60%, and never moves mail from your contacts or people you've written to, nor any mail when it couldn't check that. It also brings mail back out of Junk when Jev is very sure it's fine and the sender passed DMARC. A missing or errored DMARC result doesn't count as a pass.
 
-**Rules are not Jev's.** A rule matches mail exactly and is run by the app's own rules engine, whether Jev is on, off or unreachable. Earlier versions let a rule carry a condition written in plain English for Jev to judge. That is gone. When you upgrade, a rule that had such a condition is **switched off, not rewritten**: left running without the condition it would act on more mail than you wrote it for. It is listed under **Needs your attention** in Settings → Filters & Rules, with what it used to say, and you can rewrite it with exact conditions and press **Save as exact rule** (which first asks whether to drop what Jev judged), or delete it. Until you do, it stays switched off and never runs; a plain **Save**, a rename say, keeps it that way.
-
-**Tabs are not a rule's to set.** "Always put this sender in Updates" is a sender pin, not a rule, and rules no longer have a "move to Inbox tab" action. When you upgrade, the rules that had one are converted. No rule is deleted by the upgrade: every rule it changes stays listed with a note until you dismiss it.
-- A rule that **only** set a tab, was switched on, and matched **one sender** becomes a pin for that sender. That means a single *From* condition, without NOT, that *contains* or *ends with* an address or an `@domain`, or *is exactly* an address. The rule isn't dropped without a word: it stays in the list, switched off, under **Needs your attention**, saying *"This rule became a sender pin: sender → tab"* and exactly what the pin matches, until you press **Got it**. A pin matches a whole address or a whole domain, so where the rule said *contains*, the note says the pin can match less (a rule on `@shop.co` also caught `@shop.com`); mail it misses stays in Important. Where two such rules named the same sender, the later one's tab becomes the pin, as that is where its mail ended up; both are noted. A pin you had before the upgrade is never changed.
-- A rule that also **moved** the mail to a folder or Trash simply loses the tab: the mail leaves the Inbox, where tabs mean nothing.
-- A rule that also **labelled** or marked the mail keeps running without the tab, and stays where it runs in the list with a note naming the tab it used to set.
-- Any other rule that only set a tab is **switched off** and listed there with what it matched and why it wasn't pinned: it didn't match just one sender, it was switched off, a rule before it stops processing (so it never saw all of that sender's mail), or the sender was **already pinned to another tab**. In that last case your pin is kept and the rule's tab is not applied, where the rule used to win. When such a rule names a sender, one click on **Pin … to …** makes the pin and removes the rule; otherwise pin the senders yourself or give the rule something else to do.
-
-**One place per rule.** A rule now files into one place. When you upgrade, a rule that filed into several (two labels and a folder, say) becomes that many rules side by side, with the same name and conditions: mark read and star on the first, stop on the last. The extra ones stay where they run in the list, each with a note saying it is one of the N rules the rule became, until you press **Got it**. Run in order they do what the one rule did, except that a message two rules move goes to the first rule's folder only, since a message lives in one folder. "Delete" is now **Trash** and "mark important" is **star**. A rule whose folder or label no longer exists is kept, marked *target missing*, and does nothing until you pick another.
+**Rules are not Jev's.** A rule matches mail exactly and is run by the app's own rules engine, whether Jev is on, off or unreachable, and never picks an Inbox tab: "always put this sender in Updates" is a sender pin. Rules from earlier versions that relied on Jev or set a tab are converted when you upgrade (see [Upgrading](#upgrading)).
 
 Jev is **off until you turn it on, account by account.** For a demo or development without a key, `JEV_MOCK=1` answers on the server and labels every answer as a mock, so a demo can never be mistaken for Jev. What is still planned is in [docs/jev-plan.md](docs/jev-plan.md).
 
@@ -290,6 +283,7 @@ Jev is **off until you turn it on, account by account.** For a demo or developme
 - **Signatures**: as many as you like, with a default for each identity.
 - **Notifications** for new mail, plus new and updated events and event reminders. Push is per device: each phone or browser has its own switch, and the page lists the devices receiving push.
 - **Import / Export** your preferences as a file, or **Reset** them.
+- **Nothing in Settings saves until you press Save.** Change what you want and a bar at the foot of the page offers **Save** and **Discard** (Ctrl+S or Cmd+S saves too); leaving with unsaved changes asks first. A theme you pick shows straight away and goes back if you don't save it. Actions still happen at once: adding or removing a pin, linking Telegram, signing out a device, importing.
 
 ### On your phone
 
@@ -419,6 +413,36 @@ docker compose exec webmail node -e "require('better-sqlite3')('/data/ameera.db'
 
 Or, with the `sqlite3` tool on the host: `sqlite3 /path/to/ameera.db ".backup '/path/to/ameera-backup.db'"`. Keep `WEBMAIL_SECRET` with the backup, since the linked mail passwords in it only decrypt with the secret they were saved under. To restore, stop the container, replace `ameera.db`, delete any `ameera.db-wal` and `ameera.db-shm` beside it, and start it again.
 
+### Upgrading
+
+Take a backup first, in one of two ways:
+- With SQLite's own backup, as under **Backups** above. This works while the app runs.
+- Or stop the app (`docker compose stop webmail`) and copy `ameera.db` together with the `ameera.db-wal` and `ameera.db-shm` files beside it, if they are there.
+
+A copy of `ameera.db` alone, taken while the app runs, can miss recent changes.
+
+Then pull the new version and start it:
+
+```sh
+git pull
+docker compose up --build -d
+```
+
+The database is brought up to date as the app starts, in one go. Before it changes anything, the app logs one line naming the database file and saying how many migrations and one-time steps it is about to apply; see it with `docker compose logs webmail`. The app takes no backup of its own.
+
+If the upgrade stops part-way, the app shows which step failed, on every page, and serves nothing else. What finished before that step is kept, and restarting the app retries from that step.
+
+**Going back.** An earlier version cannot run on an upgraded database: it shows errors on every page. So going back always means restoring the backup: stop the app, put the backup in place of `ameera.db`, delete the `ameera.db-wal` and `ameera.db-shm` files left beside it, and start the earlier version. Anything changed after the upgrade is not carried back.
+
+What changes for what you made in an earlier version:
+- **A rule with a condition Jev judged** is switched off, not rewritten (without the condition it would act on more mail than you meant). It is listed under **Needs your attention** in Settings → Folders & labels with what it said: rewrite it with exact conditions and press **Save as exact rule**, or delete it.
+- **A rule that set an Inbox tab.** One that only put one sender's mail in a tab, and was switched on, became a sender pin, and stays listed with a note until you press **Got it**. One that also moved the mail just lost the tab; one that also labelled or marked it keeps running, with a note. Any other is switched off and listed with the reason, with **Pin … to …** where it names a sender. Your own pins are never changed.
+- **A rule that filed into several places** is now that many rules side by side, the extra ones noted. In order they do what it did, except that a message two rules move goes to the first rule's folder only. "Delete" is now **Trash**, "mark important" is **star**, and a rule whose folder or label is gone is kept, marked *target missing*.
+- **Folder and label colours and icons** carry over, per mail account.
+- **Out-of-office**, if it was switched on, stays off until you save it again, now that Zajel sends it itself (earlier versions left it to the mail server).
+
+The old copy of your rules and colours stays in the database, unused, in case it is ever needed; [docs/organising-mail-plan.md](docs/organising-mail-plan.md) says how to remove it, and lists the checks worth making after upgrading.
+
 ### Installing with Jev
 
 Jev is optional and off by default. Here's how to switch it on.
@@ -436,7 +460,7 @@ environment:
   # - TYPESAFE_BASE_URL=https://gateway.example.com
 ```
 
-**3. Restart the app**, then open **Settings → Jev**.
+**3. Restart the app**, then open **Settings → Inbox tabs**.
 
 **4. Turn on Inbox tabs** for the account. The switch is per account.
 

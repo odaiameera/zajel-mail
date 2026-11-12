@@ -5,6 +5,7 @@ import { getDisplayName } from '$lib/server/db/queries/app-prefs';
 import { parseTrashRetentionDays } from '$lib/constants/trash-retention';
 import { parseUndoSendSeconds } from '$lib/server/compose-input';
 import { parseMailSort, parseMarkReadDelay } from '$lib/mail-prefs';
+import { notifiedFolders } from '$lib/settings/notification-folders';
 
 function num(value: string | undefined, fallback: number): number {
 	if (value === undefined) return fallback;
@@ -24,16 +25,20 @@ export const load: LayoutServerLoad = async ({ cookies, locals, parent }) => {
 
 	const prefs = readPreferences(locals.user.id, cookies);
 
-	let notificationFolders: string[] = ['inbox'];
+	let storedFolders: string[] = [];
 	try {
 		const raw = prefs.notification_folders;
 		if (raw) {
 			const parsed = JSON.parse(raw);
-			if (Array.isArray(parsed)) notificationFolders = parsed;
+			if (Array.isArray(parsed)) storedFolders = parsed.filter((id) => typeof id === 'string');
 		}
 	} catch {
 		// keep default
 	}
+	// With nothing chosen for this account the Inbox notifies, so it is the
+	// box that is ticked (this used to be the word 'inbox', which matches no
+	// folder's id and so ticked none).
+	const notificationFolders = notifiedFolders(storedFolders, mailboxes);
 
 	return {
 		// Account / identity

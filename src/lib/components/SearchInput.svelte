@@ -69,7 +69,7 @@
 	 */
 	const TRIGGER_KEYWORDS = new Set([
 		'from', 'to', 'cc', 'subject', 'body',
-		'before', 'after', 'in', 'label'
+		'before', 'after', 'in', 'label', 'tab'
 	]);
 
 	const tokens = $derived(parseSearch(value));

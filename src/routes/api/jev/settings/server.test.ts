@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
 	jevMode: vi.fn()
 }));
 
-vi.mock('$lib/server/auth/accounts', () => ({ listAccounts: mocks.listAccounts }));
+vi.mock('$lib/server/auth/accounts', () => ({ listAccounts: mocks.listAccounts, listAllMailAccounts: () => [] }));
 vi.mock('$lib/server/db/queries/jev-settings', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/server/db/queries/jev-settings')>()),
 	updateJevSettings: mocks.updateJevSettings
@@ -33,7 +33,7 @@ beforeEach(() => {
 	mocks.updateJevSettings.mockImplementation((_id: string, patch: object) => ({
 		inboxTabs: false,
 		jevEnabled: false,
-		sortCursor: null,
+		jevSince: null,
 		...patch
 	}));
 });

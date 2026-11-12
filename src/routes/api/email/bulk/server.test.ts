@@ -33,7 +33,7 @@ vi.mock('$lib/server/db/queries/jev-learning', () => ({
 	getPinCategory: mocks.getPinCategory
 }));
 vi.mock('$lib/server/db/queries/jev-settings', () => ({
-	getJevSettings: () => ({ inboxTabs: mocks.inboxTabs, jevEnabled: mocks.jevEnabled, sortCursor: null })
+	getJevSettings: () => ({ inboxTabs: mocks.inboxTabs, jevEnabled: mocks.jevEnabled, jevSince: null })
 }));
 
 import { POST } from './+server';

@@ -6,9 +6,8 @@ import {
 	startReminderScheduler,
 	processDueRemindersForUser
 } from '$lib/server/reminder-scheduler';
-import { startRulesScheduler, applyRulesForUserSafe } from '$lib/server/rules-scheduler';
 import { startTrashRetentionScheduler } from '$lib/server/trash-retention';
-import { startJevScheduler, sortNewMailSafe } from '$lib/server/jev/worker';
+import { requestPass, startMailPipeline } from '$lib/server/mail-pipeline';
 import { startScheduledSendWorker } from '$lib/server/scheduled-send';
 import { startPushWorker } from '$lib/server/push/worker';
 import { startTelegramWorker } from '$lib/server/telegram/worker';
@@ -46,14 +45,11 @@ let startupError: string | null = null;
 const lastDueCheck = new Map<string, number>();
 const DUE_CHECK_INTERVAL_MS = 30 * 1000;
 
-// Same idea for the auto-apply rules pass: opportunistic catch-up for active
-// users so rules fire within a couple seconds instead of waiting on the cron.
-const lastRulesRun = new Map<string, number>();
-const RULES_RUN_INTERVAL_MS = 20 * 1000;
-
-// And for Jev sorting new mail into Inbox tabs. Keyed by the account row.
-const lastJevRun = new Map<string, number>();
-const JEV_RUN_INTERVAL_MS = 20 * 1000;
+// Same idea for the new-mail pass (out-of-office, rules, Jev): a catch-up
+// for the account in use, for when its event stream is down, instead of
+// waiting on the minute's run. Keyed by the account row.
+const lastPass = new Map<string, number>();
+const PASS_INTERVAL_MS = 20 * 1000;
 
 // BODY_SIZE_LIMIT is set high enough for 25 MB attachments (Dockerfile).
 // Nothing a signed-out visitor can post needs more than a form, so they
@@ -191,9 +187,8 @@ function startBackground(): void {
 		return;
 	}
 	startReminderScheduler();
-	startRulesScheduler();
+	startMailPipeline();
 	startTrashRetentionScheduler();
-	startJevScheduler();
 	startScheduledSendWorker();
 	startPushWorker();
 	startTelegramWorker();
@@ -300,16 +295,11 @@ export const handle: Handle = async ({ event, resolve }) => {
 					void processDueRemindersForUser(auth, userEmail);
 				}
 
-				const lastRules = lastRulesRun.get(userEmail) ?? 0;
-				if (Date.now() - lastRules > RULES_RUN_INTERVAL_MS) {
-					lastRulesRun.set(userEmail, Date.now());
-					void applyRulesForUserSafe(auth, userEmail);
-				}
-
-				const lastJev = lastJevRun.get(active.id) ?? 0;
-				if (Date.now() - lastJev > JEV_RUN_INTERVAL_MS) {
-					lastJevRun.set(active.id, Date.now());
-					void sortNewMailSafe(active.id, active.email, auth);
+				const lastRun = lastPass.get(active.id) ?? 0;
+				if (Date.now() - lastRun > PASS_INTERVAL_MS) {
+					lastPass.set(active.id, Date.now());
+					// Never throws.
+					void requestPass(active.id, auth);
 				}
 			}
 		} else {

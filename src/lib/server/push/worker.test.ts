@@ -28,6 +28,8 @@ function matches(filter: Record<string, unknown>, e: FakeEmail): boolean {
 const mail = vi.hoisted(() => ({
 	emails: new Map<string, unknown>(),
 	hold: true,
+	/** When the hold was switched on (ms): mail from before it is never held. */
+	holdSince: 0,
 	sent: [] as { title: string; tag?: string }[]
 }));
 
@@ -69,7 +71,7 @@ vi.mock('../auth/accounts', () => ({
 vi.mock('../db/queries/app-prefs', () => ({ getPrefs: () => ({ notifications: 'on' }) }));
 vi.mock('../db/queries/push', () => ({ usersWithPushSubscriptions: () => [] }));
 vi.mock('../calendar/service', () => ({ upcomingReminders: async () => [] }));
-vi.mock('../jev/hold', () => ({ inboxHoldOn: () => mail.hold }));
+vi.mock('../mail-pipeline/hold', () => ({ inboxHoldSince: () => (mail.hold ? mail.holdSince : null) }));
 vi.mock('./send', () => ({
 	sendPushToUser: async (_user: string, _account: string, payload: { title: string; tag?: string }) => {
 		mail.sent.push(payload);
@@ -113,6 +115,7 @@ async function startWatching() {
 beforeEach(() => {
 	mail.emails.clear();
 	mail.hold = true;
+	mail.holdSince = 0;
 	mail.sent = [];
 	vi.useFakeTimers({ toFake: ['Date'] });
 	vi.setSystemTime(NOW);
@@ -177,6 +180,16 @@ describe('push for new mail while Jev sorts the Inbox', () => {
 		sortedByJev('slow');
 		await inner().checkOnce();
 		expect(announced()).toEqual(['quick', 'slow']);
+	});
+
+	it('announces at once mail that arrived before the hold was switched on', async () => {
+		await startWatching();
+		add('before', 1);
+		mail.holdSince = NOW + 1500; // a rule that moves mail was saved just after it came
+		add('after', 2);
+		vi.setSystemTime(NOW + 3000);
+		await inner().checkOnce();
+		expect(announced()).toEqual(['before']);
 	});
 
 	it('announces at once, as before, while nothing is held', async () => {

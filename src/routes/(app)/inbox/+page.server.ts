@@ -5,7 +5,7 @@ import { countUnreadByCategory, queryAndFetchEmails } from '$lib/jmap/email';
 import { userEmailFromAuth } from '$lib/server/user';
 import { getDefaultPageSize, getDefaultSort } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
-import { inboxHoldOn } from '$lib/server/jev/hold';
+import { inboxHoldSince } from '$lib/server/mail-pipeline/hold';
 import { shownCondition } from '$lib/inbox-hold';
 import { listMarkedIds } from '$lib/server/db/queries/reminders';
 import { allOf, parseListFilter, listFilterCondition } from '$lib/email-filters';
@@ -57,9 +57,13 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	// all of it, exactly as before tabs existed.
 	const tabsOn = !!locals.activeAccountId && getJevSettings(locals.activeAccountId).inboxTabs;
 	const category = tabsOn ? parseInboxCategory(url.searchParams.get('category')) : null;
-	// While Jev sorts the tabs, a message it hasn't finished with yet waits
-	// (two minutes at most) instead of showing in Important and then moving.
-	const hold = tabsOn && inboxHoldOn(locals.activeAccountId) ? shownCondition(Date.now()) : null;
+	// While something will move new mail (Jev or a pin into its tab, or a
+	// rule out of the Inbox), a message the new-mail pass hasn't finished
+	// with yet waits (two minutes at most) instead of showing and then moving.
+	// Only mail received since the hold was switched on waits: nothing
+	// already showing disappears.
+	const holdSince = inboxHoldSince(locals.activeAccountId);
+	const hold = holdSince !== null ? shownCondition(Date.now(), holdSince) : null;
 
 	const [result, tabUnread] = await Promise.all([
 		queryAndFetchEmails(client, locals.auth.accountId, inbox.id, {

@@ -50,8 +50,55 @@ const DATA_STEPS: { name: string; needs: string[]; run: () => void }[] = [
 		name: 'data/rules_to_table',
 		needs: ['006_auth.sql', '030_rules.sql', 'data/rules_exact_only', 'data/rule_tabs_to_pins'],
 		run: () => moveStoredRulesToTable()
+	},
+	// What nothing reads or writes any more: the rules scheduler's place
+	// (the pipeline's took over from it in 032), Jev's per-rule feedback and
+	// its answers about rule conditions (rules haven't had Jev conditions
+	// since the first step above). A step, not a .sql file, because every
+	// .sql file runs before any step, and the rule steps above still read
+	// and write `rules_cursor` on a database that hasn't run them yet.
+	// `user_rules`, `label_meta` and `folder_meta` are kept: they are the
+	// only copy of the rules and colours as they were before this upgrade.
+	{
+		name: 'data/drop_unused',
+		needs: ['032_mail_pipeline.sql', 'data/rules_exact_only', 'data/rule_tabs_to_pins', 'data/rules_to_table'],
+		run: () => dropUnused()
 	}
 ];
+
+/** Drop the tables and the column nothing uses (see `data/drop_unused`). Safe to run again. */
+function dropUnused(): void {
+	const db = getDb();
+	db.exec('DROP TABLE IF EXISTS rules_cursor');
+	db.exec('DROP TABLE IF EXISTS jev_rule_feedback');
+	const columns = db.prepare('PRAGMA table_info(jev_decisions)').all() as { name: string }[];
+	if (columns.some((c) => c.name === 'rules_json')) db.exec('ALTER TABLE jev_decisions DROP COLUMN rules_json');
+}
+
+/**
+ * Say what is about to change, once, before any of it does: the database
+ * file, and how many migrations and one-time steps are to run. Nothing when
+ * nothing is. The app takes no backup itself (see the README's Upgrading).
+ */
+function announce(file: string, pendingMigrations: string[], applied: string[]): void {
+	// The steps that will run: not done yet, and with everything they need
+	// done already or about to be.
+	const done = new Set([...applied, ...pendingMigrations]);
+	let steps = 0;
+	for (const step of DATA_STEPS) {
+		if (done.has(step.name) || !step.needs.every((name) => done.has(name))) continue;
+		done.add(step.name);
+		steps++;
+	}
+	if (pendingMigrations.length === 0 && steps === 0) return;
+	const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+	const what = [
+		...(pendingMigrations.length ? [count(pendingMigrations.length, 'migration', 'migrations')] : []),
+		...(steps ? [count(steps, 'one-time step', 'one-time steps')] : [])
+	].join(' and ');
+	console.log(`[migrate] Upgrading the database at ${file}: ${what} to apply`);
+	logEvent('info', 'db', 'upgrade_started', { file, migrations: pendingMigrations.length, steps });
+}
 
 /** A migration that did not apply. The server refuses requests until it does. */
 export class MigrationError extends Error {
@@ -88,9 +135,16 @@ export function runMigrations(sources: Record<string, string> = MIGRATION_SOURCE
 	const mark = db.prepare('INSERT INTO _migrations (name) VALUES (?)');
 
 	const ordered = Object.keys(sources).sort();
+	const nameOf = (path: string) => path.split('/').pop() ?? path;
+
+	announce(
+		db.name,
+		ordered.map(nameOf).filter((name) => !seen.get(name)),
+		(db.prepare('SELECT name FROM _migrations').all() as { name: string }[]).map((r) => r.name)
+	);
 
 	for (const path of ordered) {
-		const name = path.split('/').pop() ?? path;
+		const name = nameOf(path);
 		if (seen.get(name)) continue;
 
 		const sql = sources[path];

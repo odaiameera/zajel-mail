@@ -5,7 +5,7 @@ import { getMailboxes } from '$lib/jmap/mailbox';
 import type { Email } from '$lib/jmap/types';
 import { categoryOf, type InboxCategory } from '$lib/types/categories';
 import { costUsd, jevMode } from '$lib/server/jev/client';
-import { fetchEmailsForJev, judgeEmails, PREVIEW_LIMIT } from '$lib/server/jev/worker';
+import { fetchEmailsForJev, judgeEmails, PREVIEW_LIMIT } from '$lib/server/jev/judge';
 
 const FETCH_CHUNK = 50;
 

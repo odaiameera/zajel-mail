@@ -19,25 +19,34 @@
 	 * One rule, being written: its name, its conditions, and what it does
 	 * ("Then": one place to file mail, mark as read, star, stop). Nothing is
 	 * sent until Save; the server checks the rule (parseRule) and what it
-	 * finds wrong is shown beside the part it is about. Used by the rules
-	 * page, and meant for the folders and labels page too.
+	 * finds wrong is shown beside the part it is about. Used in the rule
+	 * dialog of Settings → Folders & labels.
 	 */
 	let {
 		rule,
+		initialTarget,
 		mailboxes,
 		labels,
 		onSaved,
 		onDeleted,
-		onCancel
+		onCancel,
+		changed = $bindable(false),
+		saving = $bindable(false)
 	}: {
 		/** The rule to edit, or null for a new one. */
 		rule: Rule | null;
+		/** Where a new rule files mail to begin with (the folder or label it was started from). Ignored for an existing rule. */
+		initialTarget?: RuleTarget;
 		mailboxes: Mailbox[];
 		labels: Label[];
-		/** Saved; `apply` when the owner asked to apply it now as well. */
-		onSaved: (rule: Rule, apply: boolean) => void;
-		onDeleted: (id: string) => void;
+		/** Saved; `apply` when the owner asked to apply it now as well. The editor stays "saving" until this settles. */
+		onSaved: (rule: Rule, apply: boolean) => void | Promise<void>;
+		onDeleted: (id: string) => void | Promise<void>;
 		onCancel: () => void;
+		/** Out: the draft differs from what the editor opened with. */
+		changed?: boolean;
+		/** Out: a save or delete is on its way to the server. */
+		saving?: boolean;
 	} = $props();
 
 	const newCondition = (): RuleCondition => ({
@@ -48,14 +57,14 @@
 		negate: false
 	});
 
-	function draftOf(r: Rule | null): RuleDraft {
+	function draftOf(r: Rule | null, startTarget: RuleTarget = { kind: 'none' }): RuleDraft {
 		if (!r) {
 			return {
 				name: '',
 				enabled: true,
 				logic: 'allof',
 				conditions: [newCondition()],
-				target: { kind: 'none' },
+				target: { ...startTarget },
 				markRead: false,
 				star: false,
 				stop: false
@@ -68,15 +77,19 @@
 	// The editor is remounted for each rule (the page keys it), so the draft
 	// starts from the rule it was opened with.
 	// svelte-ignore state_referenced_locally
-	let draft = $state<RuleDraft>(draftOf(rule));
+	let draft = $state<RuleDraft>(draftOf(rule, initialTarget));
 	let problems = $state<RuleProblem[]>([]);
-	let saving = $state(false);
 	let error = $state('');
 
 	// svelte-ignore state_referenced_locally
 	const rewriting = rule ? needsRewrite(rule) : false;
 	/** The rule as the editor opened it, to tell a rename from an edit of what it does. */
 	const opened = JSON.stringify({ ...$state.snapshot(draft), name: '' });
+	/** The whole draft as the editor opened it, to tell whether anything was changed. */
+	const openedDraft = JSON.stringify($state.snapshot(draft));
+	$effect(() => {
+		changed = JSON.stringify(draft) !== openedDraft;
+	});
 	/** What a rule switched off for its Jev condition also required, in its owner's words: shown before it is saved without that. */
 	// svelte-ignore state_referenced_locally
 	const droppedJev = (rule?.attention === 'jev_condition' ? (rule.legacy?.conditions ?? []) : [])
@@ -111,7 +124,14 @@
 
 	// --- Live match count ---
 
-	let preview = $state<{ matched: number; scanned: number; total: number } | null>(null);
+	let preview = $state<{ matched: number; scanned: number; total: number; problems?: RuleProblem[] } | null>(null);
+	/**
+	 * Why the preview couldn't count: its conditions don't hold up yet. The
+	 * name and the target are checked on Save, beside their fields.
+	 */
+	const previewProblem = $derived(
+		preview?.problems?.find((p) => p.field === 'conditions' || p.field === 'logic')?.message ?? null
+	);
 	let previewLoading = $state(false);
 	let previewTimer: ReturnType<typeof setTimeout> | undefined;
 	const previewKey = $derived(JSON.stringify({ logic: draft.logic, conditions: draft.conditions }));
@@ -171,7 +191,7 @@
 				if (problems.length === 0) error = answer.error ?? `Save failed (HTTP ${res.status})`;
 				return;
 			}
-			onSaved(answer.rule as Rule, apply);
+			await onSaved(answer.rule as Rule, apply);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Save failed';
 		} finally {
@@ -190,7 +210,7 @@
 				error = (await res.json().catch(() => ({}))).error ?? 'Delete failed';
 				return;
 			}
-			onDeleted(rule.id);
+			await onDeleted(rule.id);
 		} finally {
 			saving = false;
 		}
@@ -350,10 +370,13 @@
 
 	<!-- Match count + buttons -->
 	<div class="rounded-xl border border-border bg-surface-hover/40 p-4 flex items-center gap-3 flex-wrap">
-		<div class="flex items-center gap-2">
+		<!-- The buttons wrap together, under the count, when they don't fit beside it. -->
+		<div class="flex-1 min-w-[14rem] flex items-center gap-2">
 			{#if previewLoading}
 				<span class="w-3 h-3 rounded-full border-2 border-accent/40 border-t-accent animate-spin"></span>
 				<span class="text-xs text-text-tertiary">Counting…</span>
+			{:else if previewProblem}
+				<span class="text-xs text-text-tertiary">Not counted yet: {previewProblem}</span>
 			{:else if preview !== null}
 				<span class="text-sm font-semibold text-text">{preview.matched.toLocaleString()}</span>
 				<span class="text-xs text-text-tertiary">
@@ -368,7 +391,7 @@
 				<span class="text-xs text-text-tertiary">No preview</span>
 			{/if}
 		</div>
-		<div class="flex-1"></div>
+		<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
 		{#if rule}
 			<button onclick={remove} disabled={saving} class="btn btn-secondary">Delete</button>
 		{/if}
@@ -386,5 +409,6 @@
 			</button>
 			<button onclick={() => save(true)} disabled={saving} class="btn btn-primary">Save &amp; apply</button>
 		{/if}
+		</div>
 	</div>
 </div>

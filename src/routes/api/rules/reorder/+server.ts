@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { listRules, reorderRules } from '$lib/server/rules/store';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 
 /**
  * Put the active account's rules in a new order: `{ ids }`, every one of
@@ -17,5 +18,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!reorderRules(locals.activeAccountId, ids)) {
 		return json({ error: 'The rules have changed since this page loaded. Reload and try again.' }, { status: 409 });
 	}
+	refreshPipeline();
 	return json({ rules: listRules(locals.activeAccountId) });
 };

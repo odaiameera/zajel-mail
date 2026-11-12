@@ -2,7 +2,6 @@ import { JMAPMethodError, type JMAPClient } from '$lib/jmap/client';
 import { getIdentities } from '$lib/jmap/identities';
 import type { Email, EmailAddress, Mailbox } from '$lib/jmap/types';
 import { getAccount, listAccounts } from './auth/accounts';
-import { accountIdForEmail } from './db/queries/account-tasks';
 import { getPrefs } from './db/queries/app-prefs';
 import {
 	claimAutoReply,
@@ -21,8 +20,8 @@ import { normalizeAddress } from './trust-sender';
  * Out-of-office, sent by the app.
  *
  * The mail server never sent the Sieve vacation message this used to be,
- * so Zajel answers new Inbox mail itself, from the rules scheduler's run
- * (see runApply in rules-scheduler.ts), which sees each new message once.
+ * so Zajel answers new Inbox mail itself, from the new-mail pass (see
+ * mail-pipeline/pass.ts), which sees each new message once.
  * One setting per login covers every linked mail account. Replies go out
  * only while Zajel is running.
  *
@@ -439,7 +438,7 @@ export async function sendAutoReply(
 	return outcome;
 }
 
-/** Out-of-office for one mail account's run, when it is on for that account's login. */
+/** Out-of-office for one mail account's pass, when it is on for that account's login. */
 export interface OutOfOffice {
 	accountRowId: string;
 	accountEmail: string;
@@ -447,10 +446,9 @@ export interface OutOfOffice {
 	settings: AutoReplySettings;
 }
 
-/** Out-of-office for the mail account with this address, or null when it isn't on. */
-export function outOfOfficeFor(accountEmail: string, now = new Date()): OutOfOffice | null {
-	const id = accountIdForEmail(accountEmail);
-	const account = id ? getAccount(id) : undefined;
+/** Out-of-office for this linked mail account, or null when it isn't on. */
+export function outOfOfficeFor(accountRowId: string, now = new Date()): OutOfOffice | null {
+	const account = getAccount(accountRowId);
 	if (!account) return null;
 	const settings = autoReplySettings(getPrefs(account.user_id));
 	if (!autoReplyActiveAt(settings, now)) return null;
@@ -468,7 +466,7 @@ async function replyIdentity(client: JMAPClient, accountId: string, accountEmail
 }
 
 /**
- * Answer the new Inbox messages of one account's run that should be
+ * Answer the new Inbox messages of one account's pass that should be
  * answered, as they arrived (before rules move them).
  */
 export async function answerNewMail(

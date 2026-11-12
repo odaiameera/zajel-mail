@@ -1,0 +1,203 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { JMAPClient } from '$lib/jmap/client';
+import type { Mailbox, MethodCall } from '$lib/jmap/types';
+
+const jev = vi.hoisted(() => ({
+	mode: 'live' as 'live' | 'mock' | 'off',
+	settings: { inboxTabs: true, jevEnabled: true, jevSince: null, spamMode: 'off' },
+	pins: [] as { sender: string; category: string }[],
+	rules: [] as unknown[]
+}));
+vi.mock('$lib/server/db/queries/jev-learning', () => ({ listPins: () => jev.pins }));
+vi.mock('$lib/server/jev/client', () => ({ jevMode: () => jev.mode }));
+vi.mock('$lib/server/db/queries/jev-settings', () => ({ getJevSettings: () => jev.settings }));
+vi.mock('$lib/server/rules/store', () => ({ listRules: () => jev.rules }));
+vi.mock('$lib/server/auto-reply', () => ({ outOfOfficeFor: () => null }));
+vi.mock('$lib/server/telegram/notifier', () => ({ urgentAlertsWanted: () => false }));
+
+import { applyInboxHold, forgetInboxHolds, heldInInbox, inboxHoldOn, knownInboxId, withInboxHold } from './hold';
+import { heldCondition, holdEndsAt } from '$lib/inbox-hold';
+
+function fakeClient(reply: (call: MethodCall) => Record<string, unknown>) {
+	const requests: MethodCall[][] = [];
+	const client = {
+		async request(calls: MethodCall[]) {
+			requests.push(calls);
+			return { methodResponses: calls.map((call) => [call[0], reply(call), call[2]]), sessionState: '' };
+		}
+	} as unknown as JMAPClient;
+	return { client, requests };
+}
+
+const NOW = Date.parse('2026-11-10T10:00:00Z');
+const RECEIVED = '2026-11-10T09:59:40Z';
+/** The hold was switched on before any of this mail arrived. */
+const SINCE = NOW - 10 * 60_000;
+const mailbox = (id: string, role: string | null, unreadEmails: number): Mailbox => ({
+	id,
+	name: id,
+	role,
+	sortOrder: 0,
+	totalEmails: 50,
+	unreadEmails,
+	parentId: null
+});
+
+beforeEach(() => {
+	jev.mode = 'live';
+	jev.settings = { inboxTabs: true, jevEnabled: true, jevSince: null, spamMode: 'off' };
+	jev.pins = [];
+	jev.rules = [];
+	forgetInboxHolds();
+});
+
+describe('inboxHoldOn', () => {
+	it('holds new mail only while Jev sorts the Inbox tabs', () => {
+		expect(inboxHoldOn('acct')).toBe(true);
+		jev.settings = { ...jev.settings, inboxTabs: false, jevEnabled: true };
+		expect(inboxHoldOn('acct')).toBe(false);
+		jev.settings = { ...jev.settings, inboxTabs: true, jevEnabled: false };
+		expect(inboxHoldOn('acct')).toBe(false);
+		// No key and no mock: nothing would ever sort it, so nothing waits.
+		jev.settings = { ...jev.settings, inboxTabs: true, jevEnabled: true };
+		jev.mode = 'off';
+		expect(inboxHoldOn('acct')).toBe(false);
+		jev.mode = 'mock';
+		expect(inboxHoldOn('acct')).toBe(true);
+		expect(inboxHoldOn(undefined)).toBe(false);
+	});
+
+	it('holds new mail for sender pins too, with Jev off or not configured', () => {
+		jev.pins = [{ sender: '@linkedin.com', category: 'updates' }];
+		// Switched off for the account: the pin still sorts, so mail still waits for it.
+		jev.settings = { ...jev.settings, inboxTabs: true, jevEnabled: false };
+		expect(inboxHoldOn('acct')).toBe(true);
+		// No key on the server at all.
+		jev.settings = { ...jev.settings, inboxTabs: true, jevEnabled: true };
+		jev.mode = 'off';
+		expect(inboxHoldOn('acct')).toBe(true);
+		// A pin puts mail in a tab: without tabs there is nothing to wait for.
+		jev.settings = { ...jev.settings, inboxTabs: false, jevEnabled: false };
+		expect(inboxHoldOn('acct')).toBe(false);
+		// And without a pin, with Jev off, nothing would sort it.
+		jev.settings = { ...jev.settings, inboxTabs: true, jevEnabled: false };
+		jev.pins = [];
+		expect(inboxHoldOn('acct')).toBe(false);
+	});
+});
+
+describe('inboxHoldOn, with rules', () => {
+	const rule = (over: Record<string, unknown> = {}) => ({
+		id: 'r',
+		name: 'r',
+		enabled: true,
+		logic: 'allof',
+		conditions: [{ id: 'c', field: 'from', op: 'contains', value: 'github.com', negate: false }],
+		target: { kind: 'folder', mailboxId: 'projects' },
+		markRead: false,
+		star: false,
+		stop: false,
+		...over
+	});
+
+	beforeEach(() => {
+		// Nothing else would hold new mail: Jev off, no pins.
+		jev.settings = { ...jev.settings, jevEnabled: false };
+	});
+
+	it('holds new mail while a rule moves mail out of the Inbox, tabs on or off', () => {
+		jev.rules = [rule()];
+		expect(inboxHoldOn('acct')).toBe(true);
+		jev.settings = { ...jev.settings, inboxTabs: false };
+		expect(inboxHoldOn('acct')).toBe(true);
+		for (const kind of ['archive', 'trash', 'junk']) {
+			jev.rules = [rule({ target: { kind } })];
+			expect(inboxHoldOn('acct')).toBe(true);
+		}
+	});
+
+	it('holds nothing for rules that only label, star or mark as read', () => {
+		jev.settings = { ...jev.settings, inboxTabs: false };
+		jev.rules = [
+			rule({ target: { kind: 'label', mailboxId: 'news' } }),
+			rule({ id: 'r2', target: { kind: 'none' }, star: true }),
+			rule({ id: 'r3', target: { kind: 'none' }, markRead: true })
+		];
+		expect(inboxHoldOn('acct')).toBe(false);
+	});
+
+	it('holds nothing for a move rule that is switched off, or waiting to be rewritten', () => {
+		jev.settings = { ...jev.settings, inboxTabs: false };
+		jev.rules = [rule({ enabled: false })];
+		expect(inboxHoldOn('acct')).toBe(false);
+		jev.rules = [rule({ attention: 'jev_condition' })];
+		expect(inboxHoldOn('acct')).toBe(false);
+		jev.rules = [rule({ attention: 'tab_rule' })];
+		expect(inboxHoldOn('acct')).toBe(false);
+	});
+});
+
+describe('heldInInbox', () => {
+	it('counts held unread mail and says when the oldest held message shows', async () => {
+		const { client, requests } = fakeClient(([name, , tag]) =>
+			tag === 'u' ? { ids: [], total: 2 } : name === 'Email/get' ? { list: [{ id: 'm1', receivedAt: RECEIVED }] } : { ids: ['m1'] }
+		);
+
+		expect(await heldInInbox(client, 'acc', 'inbox', SINCE, NOW)).toEqual({ unread: 2, releaseAt: holdEndsAt(RECEIVED) });
+		expect(requests).toHaveLength(1);
+		const held = { operator: 'AND', conditions: [{ inMailbox: 'inbox' }, heldCondition(NOW, SINCE)] };
+		expect(requests[0][0][1].filter).toEqual({ operator: 'AND', conditions: [held, { notKeyword: '$seen' }] });
+		expect(requests[0][1][1].filter).toEqual(held);
+	});
+
+	it('counts only mail received since the hold was switched on', async () => {
+		const { client, requests } = fakeClient(([name, , tag]) => (tag === 'u' ? { total: 0 } : name === 'Email/get' ? { list: [] } : { ids: [] }));
+		await heldInInbox(client, 'acc', 'inbox', NOW - 30_000, NOW);
+		// Received before the switch, 30 seconds ago, it shows: only later mail is held.
+		expect(JSON.stringify(requests[0][0][1].filter)).toContain('"before":"2026-11-10T09:59:30Z"');
+	});
+});
+
+describe('withInboxHold', () => {
+	it('leaves held mail out of the Inbox’s unread count, and only the Inbox’s', async () => {
+		const { client } = fakeClient(([name, , tag]) =>
+			tag === 'u' ? { total: 2 } : name === 'Email/get' ? { list: [{ id: 'm1', receivedAt: RECEIVED }] } : { ids: ['m1'] }
+		);
+		const { mailboxes, releaseAt } = await withInboxHold(
+			client,
+			'acc',
+			'acct-1',
+			[mailbox('inbox', 'inbox', 5), mailbox('work', null, 3)],
+			SINCE,
+			NOW
+		);
+		expect(mailboxes.map((m) => m.unreadEmails)).toEqual([3, 3]);
+		expect(releaseAt).toBe(holdEndsAt(RECEIVED));
+		expect(knownInboxId('acct-1')).toBe('inbox');
+	});
+
+	it('keeps the mail server’s count when the hold can’t be read and nothing was shown before', async () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const client = { request: () => Promise.reject(new Error('down')) } as unknown as JMAPClient;
+		const list = [mailbox('inbox', 'inbox', 5)];
+		expect(await withInboxHold(client, 'acc', 'acct-1', list, SINCE, NOW)).toEqual({ mailboxes: list, releaseAt: null });
+	});
+});
+
+describe('applyInboxHold', () => {
+	it('doesn’t raise the count for held mail on a load where the hold can’t be read', () => {
+		// Shown: 5 unread, 2 of them held, so 3.
+		applyInboxHold('acct-1', [mailbox('inbox', 'inbox', 5)], { unread: 2, releaseAt: null });
+		// The hold can't be read: the count stays at 3 rather than jumping to
+		// 5 and back, which would raise the new-mail alert twice.
+		const failed = applyInboxHold('acct-1', [mailbox('inbox', 'inbox', 5)], null);
+		expect(failed.mailboxes[0].unreadEmails).toBe(3);
+		// Mail read meanwhile still brings it down.
+		expect(applyInboxHold('acct-1', [mailbox('inbox', 'inbox', 2)], null).mailboxes[0].unreadEmails).toBe(2);
+	});
+
+	it('keeps accounts apart', () => {
+		applyInboxHold('acct-1', [mailbox('inbox', 'inbox', 5)], { unread: 5, releaseAt: null });
+		expect(applyInboxHold('acct-2', [mailbox('inbox', 'inbox', 5)], null).mailboxes[0].unreadEmails).toBe(5);
+	});
+});

@@ -4,9 +4,9 @@ import type { JevAnswer, JevQuestion, JevResponse } from './types';
 
 /**
  * JEV_MOCK: answers produced locally from the facts we would have sent, so
- * the whole flow — worker, tabs, the "why" chip, the preview — runs without
- * an API key or sending mail anywhere. Every answer comes back marked
- * `mock`, and the UI says so; a mock pick is a rule of thumb, not Jev.
+ * the whole flow (the new-mail pass, tabs, the tab chip, the preview) runs
+ * without an API key or sending mail anywhere. Every answer comes back
+ * marked `mock`, and the UI says so; a mock pick is a rule of thumb, not Jev.
  */
 
 const PROMO_WORDS = /\b(?:sale|deals?|offers?|discount|save|free|coupon|reward|% off|limited time|upgrade)\b/i;
@@ -47,19 +47,19 @@ export function mockStatementProbability(statement: string, state: JevEmailState
  * The rules of thumb behind mock spam answers: spam follows Stalwart's own
  * verdict; phishing follows a sender that hides behind another domain.
  */
-export function mockSpamProbability(state: JevEmailState): number {
+function mockSpamProbability(state: JevEmailState): number {
 	const sec = state.facts.security;
 	if (sec?.stalwart_flagged) return 0.95;
 	return state.facts.has_list_unsubscribe ? 0.2 : 0.05;
 }
 
-export function mockPhishingProbability(state: JevEmailState): number {
+function mockPhishingProbability(state: JevEmailState): number {
 	const sec = state.facts.security;
 	return sec && (sec.display_name_mismatch || sec.reply_to_differs) ? 0.92 : 0.02;
 }
 
 /** TypeSafe's planning estimate: ~300 overhead + chars/4 + ~50 per question. */
-export function estimateInputTokens(state: unknown, questionCount: number): number {
+function estimateInputTokens(state: unknown, questionCount: number): number {
 	return Math.round(300 + JSON.stringify(state).length / 4 + 50 * questionCount);
 }
 

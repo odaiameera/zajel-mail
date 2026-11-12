@@ -449,7 +449,8 @@ export function toTableRules(stored: unknown[], now = Date.now()): Rule[] {
 				id: uniqueId(i === 0 ? base : `${base}~${i + 1}`),
 				position: out.length,
 				name: typeof rule.name === 'string' ? rule.name : '',
-				enabled: rule.enabled === true,
+				// As the old engine read it: any value but false, 0, '', null or none ran.
+				enabled: !!rule.enabled,
 				logic: rule.logic === 'anyof' ? 'anyof' : 'allof',
 				conditions: structuredClone(list(rule.conditions)) as RuleCondition[],
 				target,

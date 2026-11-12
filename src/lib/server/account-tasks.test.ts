@@ -88,7 +88,7 @@ describe('retire_sieve_script', () => {
 	it('switches off and deletes the script Zajel left, and is done', async () => {
 		const id = newAccount();
 		state.scripts = [{ id: 's1', name: 'mailrules', isActive: true }];
-		await runAccountTasks(auth, address);
+		await runAccountTasks(auth, id);
 		expect(state.scripts).toEqual([]);
 		expect(state.calls.filter(([name]) => name === 'SieveScript/set').map(([, args]) => args)).toEqual([
 			{ accountId: 'jmap', onSuccessDeactivateScript: true },
@@ -98,12 +98,12 @@ describe('retire_sieve_script', () => {
 	});
 
 	it('leaves another client’s active script alone', async () => {
-		newAccount();
+		const id = newAccount();
 		state.scripts = [
 			{ id: 's1', name: 'mailrules', isActive: false },
 			{ id: 's2', name: 'my-filters', isActive: true }
 		];
-		await runAccountTasks(auth, address);
+		await runAccountTasks(auth, id);
 		expect(state.scripts).toEqual([{ id: 's2', name: 'my-filters', isActive: true }]);
 		expect(state.calls.some(([, args]) => 'onSuccessDeactivateScript' in args)).toBe(false);
 	});
@@ -111,7 +111,7 @@ describe('retire_sieve_script', () => {
 	it('touches nothing when there is no script of ours', async () => {
 		const id = newAccount();
 		state.scripts = [{ id: 's2', name: 'my-filters', isActive: true }];
-		await runAccountTasks(auth, address);
+		await runAccountTasks(auth, id);
 		expect(state.calls.map(([name]) => name)).toEqual(['SieveScript/get']);
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(true);
 	});
@@ -119,7 +119,7 @@ describe('retire_sieve_script', () => {
 	it('is done at once on a server without Sieve', async () => {
 		const id = newAccount();
 		state.capabilities = {};
-		await runAccountTasks(auth, address);
+		await runAccountTasks(auth, id);
 		expect(state.calls).toEqual([]);
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(true);
 	});
@@ -129,28 +129,28 @@ describe('retire_sieve_script', () => {
 		const t0 = Date.parse('2026-11-20T12:00:00Z');
 		state.scripts = [{ id: 's1', name: 'mailrules', isActive: true }];
 		state.fail = true;
-		await expect(runAccountTasks(auth, address, t0)).resolves.toBeUndefined();
+		await expect(runAccountTasks(auth, id, t0)).resolves.toBeUndefined();
 		expect(state.attempts).toBe(1);
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(false);
 
 		state.fail = false;
-		await runAccountTasks(auth, address, t0 + MINUTE);
+		await runAccountTasks(auth, id, t0 + MINUTE);
 		expect(state.attempts).toBe(1);
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(false);
 
-		await runAccountTasks(auth, address, t0 + HOUR);
+		await runAccountTasks(auth, id, t0 + HOUR);
 		expect(state.attempts).toBe(2);
 		expect(state.scripts).toEqual([]);
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(true);
 	});
 
 	it('logs a failure that keeps happening once, and then at most once a day', async () => {
-		newAccount();
+		const id = newAccount();
 		const t0 = Date.parse('2026-11-20T12:00:00Z');
 		state.fail = true;
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		try {
-			for (let h = 0; h < 30; h++) await runAccountTasks(auth, address, t0 + h * HOUR);
+			for (let h = 0; h < 30; h++) await runAccountTasks(auth, id, t0 + h * HOUR);
 			expect(state.attempts).toBe(30);
 			// The first failure, and the one a day later.
 			expect(warn).toHaveBeenCalledTimes(2);
@@ -163,16 +163,16 @@ describe('retire_sieve_script', () => {
 		const id = newAccount();
 		state.scripts = [{ id: 's1', name: 'mailrules', isActive: false }];
 		state.refuse = true;
-		await runAccountTasks(auth, address);
+		await runAccountTasks(auth, id);
 		expect(isAccountTaskDone(id, 'retire_sieve_script')).toBe(false);
 	});
 
 	it('runs once', async () => {
-		newAccount();
-		await runAccountTasks(auth, address);
+		const id = newAccount();
+		await runAccountTasks(auth, id);
 		state.calls = [];
 		state.scripts = [{ id: 's9', name: 'mailrules', isActive: true }];
-		await runAccountTasks(auth, address);
+		await runAccountTasks(auth, id);
 		expect(state.calls).toEqual([]);
 		expect(state.scripts).toHaveLength(1);
 	});

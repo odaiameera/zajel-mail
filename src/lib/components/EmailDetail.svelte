@@ -3,6 +3,7 @@
 	import type { Email, Mailbox } from '$lib/jmap/types';
 	import { LABELS_CONTEXT, type Label, type LabelsContext } from '$lib/types/labels';
 	import { categoryOf, INBOX_CATEGORIES } from '$lib/types/categories';
+	import { tabChipFallback, tabReasonText, type TabWhy } from '$lib/tab-reason';
 	import { CATEGORY_ICON } from './category-icons';
 	import { openCompose } from '$lib/stores/compose';
 	import { goto, invalidateAll } from '$app/navigation';
@@ -183,8 +184,6 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		!sourceMailbox || sourceMailbox.role === 'inbox' ? '/inbox' : `/folder/${sourceMailbox.id}`
 	);
 	const backLabel = $derived(sourceMailbox?.name ?? 'Inbox');
-
-	// Jev's spam verdict for this email (from the "Why is this here?" chip).
 
 	// --- Spam classifier output (read-only for display + contextual button) ---
 	const spamScore = $derived.by<number | null>(() => {
@@ -529,6 +528,49 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		const key = categoryOf(email.keywords);
 		return key === 'important' ? null : INBOX_CATEGORIES.find((c) => c.key === key) ?? null;
 	});
+
+	// Why the message is in that tab: your choice, a pin or Jev, and any rule
+	// that matched it. Asked for once per message and tab, the first time the
+	// chip is hovered, focused or tapped, never just for opening the message.
+	// Until it is known (or if it can't be had), the chip says only which tab.
+	const tabReasons = new Map<string, Promise<string | null>>();
+	let tabReasonsKnown = $state<Record<string, string>>({});
+	const tabReasonKey = $derived(inboxTab ? `${email.id}:${inboxTab.key}` : null);
+	const tabChipText = $derived(
+		inboxTab ? ((tabReasonKey && tabReasonsKnown[tabReasonKey]) ?? tabChipFallback(inboxTab.key)) : ''
+	);
+
+	function askTabReason(): Promise<string | null> {
+		if (!inboxTab || !tabReasonKey) return Promise.resolve(null);
+		const key = tabReasonKey;
+		const tab = inboxTab.key;
+		let asked = tabReasons.get(key);
+		if (!asked) {
+			asked = fetch(`/api/jev/decision/${encodeURIComponent(email.id)}?tab=${tab}`)
+				.then(async (res) => {
+					if (!res.ok) throw new Error(`HTTP ${res.status}`);
+					const body = (await res.json()) as { why?: TabWhy | null; rules?: string[] };
+					if (!body.why) throw new Error('no reason');
+					const text = tabReasonText(tab, body.why, body.rules ?? []);
+					tabReasonsKnown = { ...tabReasonsKnown, [key]: text };
+					return text;
+				})
+				.catch(() => {
+					// Asked again next time: a failed request isn't the one answer.
+					tabReasons.delete(key);
+					return null;
+				});
+			tabReasons.set(key, asked);
+		}
+		return asked;
+	}
+
+	async function showTabReason() {
+		const tab = inboxTab?.key;
+		if (!tab) return;
+		const text = await askTabReason();
+		showToast({ message: text ?? `${tabChipFallback(tab)}.` });
+	}
 
 	// Calendar invitations arrive as a text/calendar MIME part (iMIP) or an
 	// .ics attachment — both are structured data, detected without guesswork.
@@ -1346,15 +1388,22 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 				</h1>
 
 					{#if inboxTab}
-						<!-- The Inbox tab, first among the labels; see `inboxTab`. The
-						     hidden words tell a screen reader it is a tab, not a label. -->
-						<span
+						<!-- The Inbox tab, first among the labels; see `inboxTab`. Its
+						     hover text and its name say why the message is there (which
+						     also tells a screen reader it is a tab, not a label); a tap
+						     says the same in a toast. -->
+						<button
+							type="button"
 							class="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-hover px-2 py-0.5 text-2xs font-medium leading-4 text-text-secondary"
-							title="In the {inboxTab.label} tab"
+							title={tabChipText}
+							aria-label={tabChipText}
+							onpointerenter={askTabReason}
+							onfocus={askTabReason}
+							onclick={showTabReason}
 						>
 							<Icon name={CATEGORY_ICON[inboxTab.key]} size={12} class="block" />
-							<span><span class="sr-only">In the&#32;</span>{inboxTab.label}<span class="sr-only">&#32;tab</span></span>
-						</span>
+							<span>{inboxTab.label}</span>
+						</button>
 					{/if}
 					<!-- Labels sit with the subject. Each chip's × takes it off; the + adds one. -->
 					{#each appliedLabels as label (label.id)}
@@ -1403,7 +1452,9 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 									</button>
 								{/each}
 								{#if allLabels.length === 0}
-									<p class="px-3 py-2 text-xs text-text-tertiary">No labels yet. Create one in Settings.</p>
+									<p class="px-3 py-2 text-xs text-text-tertiary">
+										No labels yet. <a href="/settings/folders-labels" class="text-accent-fg hover:underline">Create one in Settings</a>.
+									</p>
 								{/if}
 							</div>
 						{/if}

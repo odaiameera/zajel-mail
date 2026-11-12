@@ -6,6 +6,7 @@ import {
 	setIdentitySignature,
 	clearIdentitySignature
 } from '$lib/server/db/queries/identity-signatures';
+import { listSignatures } from '$lib/server/db/queries/signatures';
 
 export const GET: RequestHandler = ({ locals }) => {
 	if (!locals.auth) return json({ error: 'Unauthorized' }, { status: 401 });
@@ -22,6 +23,12 @@ export const PUT: RequestHandler = async ({ locals, request }) => {
 		| null;
 	if (!body || typeof body.identityId !== 'string' || typeof body.signatureId !== 'number') {
 		return json({ error: 'identityId and signatureId required' }, { status: 400 });
+	}
+
+	// Only one of this login's own signatures, and one that is still there
+	// (it may have been deleted while the choice waited for Save).
+	if (!listSignatures(email).some((sig) => sig.id === body.signatureId)) {
+		return json({ error: 'That signature no longer exists.' }, { status: 400 });
 	}
 
 	setIdentitySignature(email, body.identityId, body.signatureId);

@@ -9,7 +9,6 @@ let _stmts: ReturnType<typeof prepareStmts> | null = null;
 function prepareStmts() {
 	const db = getDb();
 	return {
-		accountId: db.prepare('SELECT id FROM mail_accounts WHERE email = ? COLLATE NOCASE'),
 		done: db.prepare('SELECT 1 FROM account_tasks WHERE account_id = ? AND name = ?'),
 		mark: db.prepare(
 			`INSERT INTO account_tasks (account_id, name, done_at) VALUES (?, ?, ?)
@@ -19,11 +18,6 @@ function prepareStmts() {
 }
 function stmts() {
 	return (_stmts ??= prepareStmts());
-}
-
-/** The row id of the linked mail account with this address, if there is one. */
-export function accountIdForEmail(email: string): string | null {
-	return (stmts().accountId.get(email) as { id: string } | undefined)?.id ?? null;
 }
 
 export function isAccountTaskDone(accountId: string, name: string): boolean {

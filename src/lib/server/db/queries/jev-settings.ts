@@ -28,14 +28,13 @@ export interface JevSettings {
 	 */
 	jevEnabled: boolean;
 	/**
-	 * ISO receivedAt new mail has been queued up to by the sorting pass.
-	 * Switching Jev off clears it, and switching it on sets it to that
-	 * moment, so Jev is never sent mail from before. With Jev off (or not
-	 * configured) the pass keeps one only while there are sender pins to
-	 * apply, never further back than the Inbox's hold, and clears it when
-	 * there is nothing to sort (see the worker).
+	 * When Jev was switched on (ISO): new mail received before it is never
+	 * sent to Jev. Switching Jev off clears it, and switching it on sets it
+	 * to that moment. The new-mail pass clears it too while Jev can't be
+	 * asked (switched on but not configured on the server), and sets it to
+	 * the moment it finds Jev can be asked again (see mail-pipeline/pass.ts).
 	 */
-	sortCursor: string | null;
+	jevSince: string | null;
 	/** Jev as the spam layer; only acted on while `jevEnabled`. */
 	spamMode: SpamMode;
 }
@@ -43,7 +42,7 @@ export interface JevSettings {
 export const DEFAULT_JEV_SETTINGS: JevSettings = {
 	inboxTabs: false,
 	jevEnabled: false,
-	sortCursor: null,
+	jevSince: null,
 	spamMode: 'off'
 };
 
@@ -58,21 +57,21 @@ function prepareStmts() {
 	const db = getDb();
 	return {
 		get: db.prepare(
-			'SELECT inbox_tabs, jev_enabled, sort_cursor, spam_mode FROM jev_settings WHERE account_id = ?'
+			'SELECT inbox_tabs, jev_enabled, jev_since, spam_mode FROM jev_settings WHERE account_id = ?'
 		),
 		upsert: db.prepare(
-			`INSERT INTO jev_settings (account_id, inbox_tabs, jev_enabled, sort_cursor, spam_mode, updated_at)
-			 VALUES (@accountId, @inboxTabs, @jevEnabled, @sortCursor, @spamMode, @now)
+			`INSERT INTO jev_settings (account_id, inbox_tabs, jev_enabled, jev_since, spam_mode, updated_at)
+			 VALUES (@accountId, @inboxTabs, @jevEnabled, @jevSince, @spamMode, @now)
 			 ON CONFLICT (account_id) DO UPDATE SET
 			   inbox_tabs = excluded.inbox_tabs,
 			   jev_enabled = excluded.jev_enabled,
-			   sort_cursor = excluded.sort_cursor,
+			   jev_since = excluded.jev_since,
 			   spam_mode = excluded.spam_mode,
 			   updated_at = excluded.updated_at`
 		),
-		advanceCursor: db.prepare(
-			`UPDATE jev_settings SET sort_cursor = ?, updated_at = ?
-			 WHERE account_id = ? AND sort_cursor = ?`
+		swapSince: db.prepare(
+			`UPDATE jev_settings SET jev_since = ?, updated_at = ?
+			 WHERE account_id = ? AND jev_since IS ?`
 		)
 	};
 }
@@ -82,22 +81,22 @@ function stmts() {
 
 export function getJevSettings(accountId: string): JevSettings {
 	const row = stmts().get.get(accountId) as
-		| { inbox_tabs: number; jev_enabled: number; sort_cursor: string | null; spam_mode: string }
+		| { inbox_tabs: number; jev_enabled: number; jev_since: string | null; spam_mode: string }
 		| undefined;
 	if (!row) return { ...DEFAULT_JEV_SETTINGS };
 	return {
 		inboxTabs: row.inbox_tabs === 1,
 		jevEnabled: row.jev_enabled === 1,
-		sortCursor: row.sort_cursor,
+		jevSince: row.jev_since,
 		spamMode: isSpamMode(row.spam_mode) ? row.spam_mode : 'off'
 	};
 }
 
 /**
  * Merge `patch` into the account's settings and persist the result.
- * Switching Jev on starts its cursor at `now`, so Jev only ever sees mail
- * that arrives from then on; switching it off clears the cursor. Either
- * switch also withdraws whatever was still queued.
+ * Switching Jev on sets `jevSince` to `now`, so Jev only ever sees mail
+ * that arrives from then on; switching it off clears it. Either switch
+ * also withdraws whatever was still queued.
  */
 export function updateJevSettings(
 	accountId: string,
@@ -106,14 +105,14 @@ export function updateJevSettings(
 ): JevSettings {
 	const current = getJevSettings(accountId);
 	const next = { ...current, ...patch };
-	if (patch.jevEnabled === true && !current.jevEnabled) next.sortCursor = now.toISOString();
-	if (patch.jevEnabled === false) next.sortCursor = null;
+	if (patch.jevEnabled === true && !current.jevEnabled) next.jevSince = now.toISOString();
+	if (patch.jevEnabled === false) next.jevSince = null;
 	getDb().transaction(() => {
 		stmts().upsert.run({
 			accountId,
 			inboxTabs: next.inboxTabs ? 1 : 0,
 			jevEnabled: next.jevEnabled ? 1 : 0,
-			sortCursor: next.sortCursor,
+			jevSince: next.jevSince,
 			spamMode: next.spamMode,
 			now: now.getTime()
 		});
@@ -123,16 +122,11 @@ export function updateJevSettings(
 }
 
 /**
- * Move the cursor on after a pass, from where that pass read it. If Jev was
- * switched off or on while the pass ran, the switch has already set the
- * cursor (to nothing, or to that moment) and this leaves it alone: only a
- * cursor still where the pass found it is moved.
+ * Set `jevSince` from `from` to `to`, only if it is still `from`: a switch
+ * made meanwhile in Settings has already set it, and wins. Returns whether
+ * it was changed.
  */
-export function advanceSortCursor(accountId: string, from: string, to: string, now = new Date()): void {
-	stmts().advanceCursor.run(to, now.getTime(), accountId, from);
+export function swapJevSince(accountId: string, from: string | null, to: string | null, now = new Date()): boolean {
+	return stmts().swapSince.run(to, now.getTime(), accountId, from).changes > 0;
 }
 
-/** Is sorting into tabs live for this account: tabs shown and Jev allowed to read? */
-export function sortingEnabled(settings: JevSettings): boolean {
-	return settings.inboxTabs && settings.jevEnabled;
-}

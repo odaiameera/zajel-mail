@@ -57,6 +57,8 @@ import Maximize2 from '@lucide/svelte/icons/maximize-2';
 import Menu from '@lucide/svelte/icons/menu';
 import Minimize2 from '@lucide/svelte/icons/minimize-2';
 import Minus from '@lucide/svelte/icons/minus';
+import MoveDown from '@lucide/svelte/icons/move-down';
+import MoveUp from '@lucide/svelte/icons/move-up';
 import Newspaper from '@lucide/svelte/icons/newspaper';
 import NotepadText from '@lucide/svelte/icons/notepad-text';
 import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
@@ -125,8 +127,9 @@ export const ICONS = {
 	/** A closed section; rotate it a quarter turn for open. */
 	expand: ChevronRight,
 	dropdown: ChevronDown,
-	'move-up': ChevronUp,
-	'move-down': ChevronDown,
+	/** Arrows, not chevrons: beside an open/close chevron, a chevron reads as a second one. */
+	'move-up': MoveUp,
+	'move-down': MoveDown,
 
 	// Folders and Inbox tabs
 	inbox: Inbox,

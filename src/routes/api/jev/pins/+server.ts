@@ -2,7 +2,7 @@ import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { listAccounts } from '$lib/server/auth/accounts';
 import { deletePin, normalizePinSender, setPin } from '$lib/server/db/queries/jev-learning';
-import { refreshJevWatchers } from '$lib/server/jev/stream';
+import { refreshPipeline } from '$lib/server/mail-pipeline';
 import { isInboxCategory } from '$lib/types/categories';
 
 /**
@@ -36,7 +36,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!isInboxCategory(body.category)) return json({ error: 'Pick a tab' }, { status: 400 });
 
 	setPin(account, sender, body.category);
-	refreshJevWatchers();
+	refreshPipeline();
 	return json({ success: true, pin: { sender, category: body.category } });
 };
 
@@ -48,6 +48,6 @@ export const DELETE: RequestHandler = async ({ request, locals }) => {
 	if (!sender) return json({ error: 'Give an email address or an @domain' }, { status: 400 });
 
 	deletePin(account, sender);
-	refreshJevWatchers();
+	refreshPipeline();
 	return json({ success: true });
 };

@@ -9,14 +9,16 @@
  * their unread counts, the Inbox's unread badge and new-mail notifications
  * leave a new message out until the pass has finished with it, which it
  * marks with JEV_SORTED_KEYWORD, whatever the outcome — "stays in
- * Important" included. (Which accounts that is: `inboxHoldOn`, on the
- * server.)
+ * Important" included. (Which accounts that is, and since when:
+ * `inboxHoldSince`, on the server.)
  *
  * The hold is only ever this short: a message older than INBOX_HOLD_MS
  * shows whether the pass got to it or not, so an unreachable, slow,
  * rate-limited or switched-off Jev can delay mail by at most that long and
- * never hide it. Mail from before the hold window is never held, so nothing already
- * in the Inbox disappears. Search, All Mail and every other view show held
+ * never hide it. Mail from before the hold window is never held, and nor is
+ * mail received before the hold was switched on for the account (`since`,
+ * kept by the server in `mail_pipeline.hold_since`), so nothing already in
+ * the Inbox disappears when a rule or the tabs switch the hold on. Search, All Mail and every other view show held
  * mail as usual; only the Inbox tabs wait.
  *
  * Only mail dated between INBOX_HOLD_MS ago and INBOX_HOLD_MS ahead is
@@ -39,9 +41,13 @@ export const JEV_SORTED_KEYWORD = '$jev_sorted';
  */
 export const INBOX_HOLD_MS = 2 * 60_000;
 
-/** The earliest receivedAt still held at `now`, in ms: a whole second. */
-export function holdBoundary(now: number): number {
-	return Math.ceil((now - INBOX_HOLD_MS) / 1000) * 1000;
+/**
+ * The earliest receivedAt still held at `now`, in ms: a whole second. Never
+ * before `since`, when the hold was switched on: mail received earlier was
+ * already showing.
+ */
+export function holdBoundary(now: number, since: number): number {
+	return Math.ceil(Math.max(now - INBOX_HOLD_MS, since) / 1000) * 1000;
 }
 
 /** The latest receivedAt still held at `now`, in ms: a whole second. */
@@ -54,21 +60,24 @@ function utcDate(ms: number): string {
 	return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-/** Dated outside the hold window: older than the hold, or too far ahead. */
-function outsideWindow(now: number): Record<string, unknown>[] {
-	return [{ before: utcDate(holdBoundary(now)) }, { after: utcDate(holdCeiling(now)) }];
+/** Dated outside the hold window: older than the hold (or than `since`), or too far ahead. */
+function outsideWindow(now: number, since: number): Record<string, unknown>[] {
+	return [{ before: utcDate(holdBoundary(now, since)) }, { after: utcDate(holdCeiling(now)) }];
 }
 
-/** Email/query condition for Inbox mail the hold lets through at `now` (AND it with the Inbox). */
-export function shownCondition(now: number): Record<string, unknown> {
-	return { operator: 'OR', conditions: [{ hasKeyword: JEV_SORTED_KEYWORD }, ...outsideWindow(now)] };
+/**
+ * Email/query condition for Inbox mail the hold lets through at `now` (AND
+ * it with the Inbox), for a hold switched on at `since` (ms).
+ */
+export function shownCondition(now: number, since: number): Record<string, unknown> {
+	return { operator: 'OR', conditions: [{ hasKeyword: JEV_SORTED_KEYWORD }, ...outsideWindow(now, since)] };
 }
 
 /** Email/query condition for Inbox mail still held at `now`: the exact complement of shownCondition. */
-export function heldCondition(now: number): Record<string, unknown> {
+export function heldCondition(now: number, since: number): Record<string, unknown> {
 	return {
 		operator: 'AND',
-		conditions: [{ notKeyword: JEV_SORTED_KEYWORD }, { operator: 'NOT', conditions: outsideWindow(now) }]
+		conditions: [{ notKeyword: JEV_SORTED_KEYWORD }, { operator: 'NOT', conditions: outsideWindow(now, since) }]
 	};
 }
 
@@ -77,11 +86,11 @@ interface HoldFields {
 	receivedAt: string;
 }
 
-/** Whether a message in the Inbox is still held at `now`. */
-export function isHeld(email: HoldFields, now: number): boolean {
+/** Whether a message in the Inbox is still held at `now`, by a hold switched on at `since` (ms). */
+export function isHeld(email: HoldFields, now: number, since: number): boolean {
 	if (email.keywords?.[JEV_SORTED_KEYWORD]) return false;
 	const at = Date.parse(email.receivedAt);
-	return at >= holdBoundary(now) && at <= holdCeiling(now);
+	return at >= holdBoundary(now, since) && at <= holdCeiling(now);
 }
 
 /** When a message received at `receivedAt` stops being held, if Jev never marks it. */
@@ -106,12 +115,13 @@ export function holdRecheckDelay(endsIn: number): number {
 export function splitHeld<T extends HoldFields & { mailboxIds?: Record<string, boolean> | null }>(
 	list: T[],
 	inboxId: string | null,
-	now: number
+	now: number,
+	since: number
 ): { ready: T[]; held: T[]; releaseAt: number | null } {
 	const ready: T[] = [];
 	const held: T[] = [];
 	for (const email of list) {
-		if (inboxId && email.mailboxIds?.[inboxId] && isHeld(email, now)) held.push(email);
+		if (inboxId && email.mailboxIds?.[inboxId] && isHeld(email, now, since)) held.push(email);
 		else ready.push(email);
 	}
 	const releaseAt = held.length ? Math.min(...held.map((e) => holdEndsAt(e.receivedAt))) : null;
