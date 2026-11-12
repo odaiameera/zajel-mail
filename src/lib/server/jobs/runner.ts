@@ -13,13 +13,15 @@ import { recordAudit } from '$lib/server/agent/store';
 import { escapeHtml, sendMessage, telegramConfigured, TelegramError } from '$lib/server/telegram/bot';
 import { markdownPieces, packMessages, plainPiece, type Piece } from '$lib/server/telegram/format';
 import { getLink } from '$lib/server/telegram/store';
+import { sendCard, sendDraftCard } from '$lib/server/telegram/chat';
 import { errorFields, logEvent } from '$lib/server/log';
 import type { AgentJob, JobStatus } from './store';
 
 /**
  * Running one job. Whatever its kind, it only ever does reversible things
  * to the account it was created in, and reports to the user's own
- * Telegram chat.
+ * Telegram chat. An instruction may also prepare an email, an invitation or
+ * a deletion, but only as a card on Telegram for the user to confirm.
  */
 
 const MAX_TOUCH = 200;
@@ -174,7 +176,10 @@ export async function runJob(job: AgentJob, nowMs = Date.now()): Promise<JobOutc
 		return { status: 'ok', result };
 	}
 
-	// An instruction for the agent: reversible tools only (toolsFor('job')).
+	// An instruction for the agent: reversible tools (toolsFor('job')), plus
+	// cards for sends, invitations and deletions only when they can reach the
+	// user with buttons: Telegram linked, and confirming there switched on.
+	const link = telegramLink(job);
 	const turn = await runAgentTurn({
 		auth,
 		userId: job.userId,
@@ -185,11 +190,27 @@ export async function runJob(job: AgentJob, nowMs = Date.now()): Promise<JobOutc
 		message: spec.instructions,
 		history: [],
 		timeZone: job.timeZone,
-		today: localDate(nowMs, job.timeZone)
+		today: localDate(nowMs, job.timeZone),
+		outward: !!link?.confirmInChat
 	});
+	// Cards and drafts follow the report: each its own message, with its buttons.
+	const followUps = async () => {
+		if (!link) return;
+		try {
+			for (const action of turn.pending) await sendCard(link, action);
+			for (const draft of turn.drafts) await sendDraftCard(link, account.id, draft);
+		} catch (err) {
+			// The drafts are in Drafts all the same; a card that didn't arrive
+			// expires unconfirmed, and the report said it was waiting.
+			logEvent('warn', 'jobs', 'cards_not_sent', { job: job.id, ...errorFields(err) });
+		}
+	};
 	// The agent was told it could stay quiet (stay_quiet): a watch that found
 	// nothing sends nothing. What it found is kept for Settings → Agent.
-	if (turn.quiet) return { status: 'ok', result: `Nothing sent: ${turn.message}`.slice(0, 300) };
+	if (turn.quiet) {
+		await followUps();
+		return { status: 'ok', result: `Nothing sent: ${turn.message}`.slice(0, 300) };
+	}
 	// The whole answer, as the agent wrote it, then what it changed: one line
 	// each, as plain text, since a change can quote a subject.
 	const changes = turn.done.slice(0, MAX_CHANGES).map((d, i) => plainPiece(`• ${d.replace(/\s+/g, ' ')}`, i > 0));
@@ -204,5 +225,7 @@ export async function runJob(job: AgentJob, nowMs = Date.now()): Promise<JobOutc
 		logEvent('warn', 'jobs', 'report_not_sent', { job: job.id, ...errorFields(err) });
 	}
 	if (!sent) return { status: 'ok', result: `Not sent to Telegram: ${turn.message}`.slice(0, 300) };
-	return { status: 'ok', result: turn.done.length ? turn.done.join('; ').slice(0, 300) : 'No changes' };
+	await followUps();
+	const waiting = turn.pending.length ? `${turn.pending.length} waiting for you on Telegram` : '';
+	return { status: 'ok', result: [...turn.done, waiting].filter(Boolean).join('; ').slice(0, 300) || 'No changes' };
 }

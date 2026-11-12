@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
 	runChat: vi.fn(async (_input: { messages: { content: string }[] }) => 'Dana needs the contract today.'),
 	runAgentTurn: vi.fn(),
 	logEvent: vi.fn(),
-	link: { chatId: '555', paused: false } as { chatId: string; paused: boolean } | null,
+	link: { chatId: '555', paused: false } as { chatId: string; paused: boolean; confirmInChat?: boolean } | null,
+	sendCard: vi.fn(async () => {}),
+	sendDraftCard: vi.fn(async () => {}),
 	needsReauth: 0
 }));
 vi.mock('$lib/jmap/auth', () => ({ createClient: () => ({}) }));
@@ -37,6 +39,7 @@ vi.mock('$lib/server/telegram/bot', async (importOriginal) => ({
 	sendMessage: mocks.sendMessage
 }));
 vi.mock('$lib/server/telegram/store', () => ({ getLink: () => mocks.link }));
+vi.mock('$lib/server/telegram/chat', () => ({ sendCard: mocks.sendCard, sendDraftCard: mocks.sendDraftCard }));
 vi.mock('$lib/server/log', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/server/log')>()),
 	logEvent: mocks.logEvent
@@ -411,27 +414,27 @@ describe('running a job', () => {
 		const agentJob = () => makeJob({ title: 'Bank check', spec: { kind: 'agent', instructions: 'Tell me if the bank wrote' } });
 
 		it('reports its answer and changes to Telegram', async () => {
-			mocks.runAgentTurn.mockResolvedValue({ message: 'The bank wrote <today>.', done: ['Archived 2'], pending: [] });
+			mocks.runAgentTurn.mockResolvedValue({ message: 'The bank wrote <today>.', done: ['Archived 2'], pending: [], drafts: [] });
 			expect(await runJob(agentJob(), SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Archived 2' });
 			expect(mocks.sendMessage).toHaveBeenCalledWith('555', '<b>Bank check</b>\nThe bank wrote &lt;today&gt;.\n\n• Archived 2');
 		});
 
 		it('keeps the answer when Telegram is off', async () => {
-			mocks.runAgentTurn.mockResolvedValue({ message: 'The bank wrote today.', done: [], pending: [] });
+			mocks.runAgentTurn.mockResolvedValue({ message: 'The bank wrote today.', done: [], pending: [], drafts: [] });
 			mocks.link = { chatId: '555', paused: true };
 			expect(await runJob(agentJob(), SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Not sent to Telegram: The bank wrote today.' });
 			expect(mocks.sendMessage).not.toHaveBeenCalled();
 		});
 
 		it('doesn’t count a failed report as a failed run once the work is done', async () => {
-			mocks.runAgentTurn.mockResolvedValue({ message: 'The bank wrote today.', done: ['Archived 2'], pending: [] });
+			mocks.runAgentTurn.mockResolvedValue({ message: 'The bank wrote today.', done: ['Archived 2'], pending: [], drafts: [] });
 			mocks.sendMessage.mockRejectedValueOnce(new TelegramError('Bad Gateway', 502));
 			expect(await runJob(agentJob(), SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Not sent to Telegram: The bank wrote today.' });
 			expect(mocks.logEvent).toHaveBeenCalledWith('warn', 'jobs', 'report_not_sent', expect.objectContaining({ status: 502 }));
 		});
 
 		it('sends its Markdown as Telegram formatting, not asterisks', async () => {
-			mocks.runAgentTurn.mockResolvedValue({ message: '**Elaine replied.** She can do `Thursday`:\n\n- viewing at 10\n- keys at 12', done: [], pending: [] });
+			mocks.runAgentTurn.mockResolvedValue({ message: '**Elaine replied.** She can do `Thursday`:\n\n- viewing at 10\n- keys at 12', done: [], pending: [], drafts: [] });
 			await runJob(agentJob(), SUNDAY_9AM_UTC);
 			expect(mocks.sendMessage).toHaveBeenCalledWith(
 				'555',
@@ -440,7 +443,7 @@ describe('running a job', () => {
 		});
 
 		it('lists each change on one line, as text, since a change can quote a subject', async () => {
-			mocks.runAgentTurn.mockResolvedValue({ message: 'Done.', done: ['Set a Telegram reminder for 2026-11-03 23:59: “Newsletters:\n1. *Sale*”'], pending: [] });
+			mocks.runAgentTurn.mockResolvedValue({ message: 'Done.', done: ['Set a Telegram reminder for 2026-11-03 23:59: “Newsletters:\n1. *Sale*”'], pending: [], drafts: [] });
 			await runJob(agentJob(), SUNDAY_9AM_UTC);
 			expect(mocks.sendMessage.mock.calls[0][1]).toBe('<b>Bank check</b>\nDone.\n\n• Set a Telegram reminder for 2026-11-03 23:59: “Newsletters: 1. *Sale*”');
 		});
@@ -451,7 +454,8 @@ describe('running a job', () => {
 			mocks.runAgentTurn.mockResolvedValue({
 				message: `It lists **30 newsletters**:\n\n${items.join('\n')}\n\nThat's all.`,
 				done: Array.from({ length: 40 }, (_, i) => `Moved message ${i}`),
-				pending: []
+				pending: [],
+				drafts: []
 			});
 			await runJob(agentJob(), SUNDAY_9AM_UTC);
 			const sent = mocks.sendMessage.mock.calls.map((call) => call[1] as string);
@@ -466,16 +470,34 @@ describe('running a job', () => {
 
 		it('counts a report as sent once its first message is, logging the rest that failed', async () => {
 			const items = Array.from({ length: 30 }, (_, i) => `${i + 1}. ${'what it says. '.repeat(12)}`);
-			mocks.runAgentTurn.mockResolvedValue({ message: items.join('\n'), done: ['Archived 2'], pending: [] });
+			mocks.runAgentTurn.mockResolvedValue({ message: items.join('\n'), done: ['Archived 2'], pending: [], drafts: [] });
 			mocks.sendMessage.mockResolvedValueOnce({}).mockRejectedValueOnce(new TelegramError('Too Many Requests', 429));
 			expect(await runJob(agentJob(), SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Archived 2' });
 			expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
 			expect(mocks.logEvent).toHaveBeenCalledWith('warn', 'jobs', 'report_cut', expect.objectContaining({ sent: 1, status: 429 }));
 		});
 
+		it('may prepare cards only when they can be confirmed on Telegram, and sends them after the report', async () => {
+			const card = { id: 'act-1', kind: 'send_email' };
+			const draft = { id: 'd1', to: ['dana@example.test'], subject: 'Re: Lunch', text: 'Yes.', replyToEmailId: 'e1' };
+			mocks.runAgentTurn.mockResolvedValue({ message: 'One reply is ready.', done: ['Saved a draft reply'], pending: [card], drafts: [draft] });
+			mocks.link = { chatId: '555', paused: false, confirmInChat: true };
+			expect(await runJob(agentJob(), SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Saved a draft reply; 1 waiting for you on Telegram' });
+			expect(mocks.runAgentTurn.mock.calls[0][0]).toMatchObject({ source: 'job', outward: true });
+			expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+			expect(mocks.sendCard).toHaveBeenCalledWith(mocks.link, card);
+			expect(mocks.sendDraftCard).toHaveBeenCalledWith(mocks.link, 'acct-1', draft);
+			// Confirming on Telegram off: no cards at all.
+			mocks.link = { chatId: '555', paused: false, confirmInChat: false };
+			mocks.runAgentTurn.mockResolvedValue({ message: 'Nothing.', done: [], pending: [], drafts: [] });
+			await runJob(agentJob(), SUNDAY_9AM_UTC);
+			expect(mocks.runAgentTurn.mock.calls[1][0].outward).toBe(false);
+			mocks.link = { chatId: '555', paused: false };
+		});
+
 		it('sends nothing when the agent stays quiet, and keeps what it found', async () => {
 			// The hourly watch said "So I didn't send a Telegram message", in a Telegram message.
-			mocks.runAgentTurn.mockResolvedValue({ message: 'Elaine hasn’t replied yet.', done: [], pending: [], quiet: true });
+			mocks.runAgentTurn.mockResolvedValue({ message: 'Elaine hasn’t replied yet.', done: [], pending: [], drafts: [], quiet: true });
 			expect(await runJob(agentJob(), SUNDAY_9AM_UTC)).toEqual({ status: 'ok', result: 'Nothing sent: Elaine hasn’t replied yet.' });
 			expect(mocks.sendMessage).not.toHaveBeenCalled();
 		});

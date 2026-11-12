@@ -10,7 +10,11 @@ export const TURN_LIMITS = {
 	/** Messages archived or moved to a folder. */
 	moved: 100,
 	/** Telegram reminders set. */
-	reminders: 3
+	reminders: 3,
+	/** Drafts saved: never sent from Drafts without the user, but a steered turn shouldn't fill the folder. */
+	drafts: 10,
+	/** Cards a scheduled job prepares for the user's confirmation (sends, invitations, deletions). */
+	proposals: 5
 } as const;
 
 export type TurnBudget = { -readonly [K in keyof typeof TURN_LIMITS]: number };
@@ -18,12 +22,20 @@ export type TurnBudget = { -readonly [K in keyof typeof TURN_LIMITS]: number };
 const WHAT: Record<keyof TurnBudget, string> = {
 	trashed: 'move to Trash',
 	moved: 'archive or move',
-	reminders: 'set'
+	reminders: 'set',
+	drafts: 'save',
+	proposals: 'prepare'
 };
-const UNIT: Record<keyof TurnBudget, string> = { trashed: 'messages', moved: 'messages', reminders: 'reminders' };
+const UNIT: Record<keyof TurnBudget, string> = {
+	trashed: 'messages',
+	moved: 'messages',
+	reminders: 'reminders',
+	drafts: 'drafts',
+	proposals: 'changes for confirmation'
+};
 
 export function newTurnBudget(): TurnBudget {
-	return { trashed: 0, moved: 0, reminders: 0 };
+	return { trashed: 0, moved: 0, reminders: 0, drafts: 0, proposals: 0 };
 }
 
 /** Use `n` of the turn's allowance for `kind`, or say why it can't. */

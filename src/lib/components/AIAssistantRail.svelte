@@ -2,6 +2,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import type { IconName } from '$lib/icons';
 	import { fetchWithStepUp } from '$lib/auth/step-up';
+	import { afterScheduling, type ScheduledSend } from '$lib/stores/outbox';
+	import type { ComposeData } from '$lib/stores/compose';
 	import { tick } from 'svelte';
 
 	type AgentAction =
@@ -466,9 +468,17 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ decision })
 			});
-			const data = (await response.json().catch(() => null)) as { message?: string; error?: string } | null;
+			const data = (await response.json().catch(() => null)) as {
+				message?: string;
+				error?: string;
+				scheduled?: ScheduledSend;
+				restore?: Omit<ComposeData, 'bcc'>;
+			} | null;
 			if (!response.ok) throw new Error(data?.error ?? 'That didn’t work');
 			setState(decision === 'confirm' ? 'done' : 'cancelled');
+			// Held for Undo send, as the composer's own sends are: the same
+			// Sending… toast, and Undo opens it in the composer.
+			if (data?.scheduled && data.restore) afterScheduling(data.scheduled, { ...data.restore, bcc: '' });
 		} catch (err) {
 			setState('failed');
 			error = err instanceof Error ? err.message : 'That didn’t work';

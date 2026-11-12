@@ -28,6 +28,7 @@
 		username: string | null;
 		urgent: boolean;
 		paused: boolean;
+		confirmInChat: boolean;
 		accounts: AccountReach[];
 	};
 	let telegram = $state<TelegramStatus | null>(null);
@@ -40,7 +41,7 @@
 		if (!res.ok) return;
 		telegram = await res.json();
 		// Its switches come in as saved; one already changed here keeps its choice.
-		if (telegram?.linked) draft.seed({ telegramUrgent: telegram.urgent, telegramPaused: telegram.paused });
+		if (telegram?.linked) draft.seed({ telegramUrgent: telegram.urgent, telegramPaused: telegram.paused, telegramConfirm: telegram.confirmInChat });
 	}
 
 	async function telegramAction(body: Record<string, unknown>) {
@@ -59,7 +60,8 @@
 	}
 
 	async function linkTelegram() {
-		const data = await telegramAction({ action: 'link' });
+		// The chat answers on this browser's clock.
+		const data = await telegramAction({ action: 'link', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
 		if (data?.url) telegramLink = data.url;
 	}
 
@@ -67,7 +69,7 @@
 		if (await telegramAction({ action: 'unlink' })) {
 			telegramLink = null;
 			// Its two switches are gone with it, saved or not.
-			draft.forget(['telegramUrgent', 'telegramPaused']);
+			draft.forget(['telegramUrgent', 'telegramPaused', 'telegramConfirm']);
 			await loadTelegram();
 		}
 	}
@@ -91,6 +93,7 @@
 		/** Telegram's switches, once it is linked. */
 		telegramUrgent?: boolean;
 		telegramPaused?: boolean;
+		telegramConfirm?: boolean;
 	};
 
 	/*
@@ -145,10 +148,11 @@
 					}
 				});
 			}
-			const flags: { urgent?: boolean; paused?: boolean } = {};
+			const flags: { urgent?: boolean; paused?: boolean; confirmInChat?: boolean } = {};
 			const telegramValues: Partial<Values> = {};
 			if (changed.telegramUrgent !== undefined) flags.urgent = telegramValues.telegramUrgent = changed.telegramUrgent;
 			if (changed.telegramPaused !== undefined) flags.paused = telegramValues.telegramPaused = changed.telegramPaused;
+			if (changed.telegramConfirm !== undefined) flags.confirmInChat = telegramValues.telegramConfirm = changed.telegramConfirm;
 			if (Object.keys(flags).length > 0) {
 				steps.push({
 					label: 'Telegram',
@@ -461,12 +465,24 @@
 					</SettingRow>
 				{/each}
 			{/if}
-			<SettingRow title="Paused">
+			<SettingRow title="Paused" description="Pauses urgent-mail alerts. You can still write to Zajel in the chat.">
 				{#snippet control()}
 					<Toggle
 						checked={draft.value.telegramPaused ?? telegram!.paused}
 						ariaLabel="Paused"
 						onChange={(next) => (draft.value.telegramPaused = next)}
+					/>
+				{/snippet}
+			</SettingRow>
+			<SettingRow
+				title="Confirm from Telegram"
+				description="Emails, invitations and deletions Zajel prepares in the chat, and its drafts, come with a button to send them there. Off, you confirm them in Zajel. Anyone holding your unlocked Telegram could press it."
+			>
+				{#snippet control()}
+					<Toggle
+						checked={draft.value.telegramConfirm ?? telegram!.confirmInChat}
+						ariaLabel="Confirm from Telegram"
+						onChange={(next) => (draft.value.telegramConfirm = next)}
 					/>
 				{/snippet}
 			</SettingRow>

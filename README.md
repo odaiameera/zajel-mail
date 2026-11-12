@@ -174,15 +174,29 @@ Zajel lives in the corner next to **+**. Ask it anything about your mail or cale
   - look at the calendar
 
   It stops as soon as it can answer.
-- **Draft replies** for you to review and send.
+- **Draft replies** for you to review and send. Each one quotes the original message underneath, the way the app's own Reply does. When Zajel summarises your mail, it drafts replies to the messages that need one and lists what it drafted. Where a reply needs a decision only you can make, it lists the message for you instead of guessing. It writes one draft per message: while a draft is still in Drafts, it doesn't write another.
 - **Calendar proposals.** Zajel proposes events, and even deletions, as cards that name the event and date. Nothing changes until you confirm. The card shows the calendar, the time, every invitee and the description that goes out.
 - **Persistent conversations** with history. Answers are rendered in Markdown.
 
 **On Claude, Zajel acts.** With `ANTHROPIC_API_KEY` set, Zajel runs on **Claude Opus 5.5** for the agent and **Claude Haiku 5.5** for writing, with native tool use.
-- **Your own mailbox:** it marks, stars, archives, moves, labels and snoozes mail, saves drafts addressed to you and sets Telegram reminders. These changes are reversible, happen straight away and are logged. One request can archive or move up to 100 messages, move up to 30 to Trash and set up to 3 reminders this way; for more, Zajel asks you.
-- **Anything that leaves your account or changes your calendar** (sending, a draft to someone else, adding or deleting an event, invitations, scheduling a job) becomes a card you confirm.
-- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications. It alerts you to urgent mail (Jev decides what's urgent), with **Mark read**, **Snooze 1h** and **Archive** buttons, and sends reminders. A reminder more than a week late is dropped rather than sent. It doesn't take typed messages.
-- **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools only. They run once, hourly, daily, on weekdays, on chosen days of the week, or weekly. An instruction's answer comes to Telegram in full, formatted, over several messages when it's long. A job that only watches for something ("tell me when Elaine replies") stays quiet until it happens.
+- **Your own mailbox:** it marks, stars, archives, moves, labels and snoozes mail, saves drafts (to anyone; a draft stays in Drafts until you send it) and sets Telegram reminders. These changes are reversible, happen straight away and are logged. Limits per request:
+  - archive or move: 100 messages
+  - move to Trash: 30 messages
+  - save: 10 drafts
+  - set: 3 reminders
+
+  For more, Zajel asks you.
+- **Anything that leaves your account or changes your calendar** (sending, adding or deleting an event, invitations, scheduling a job) becomes a card you confirm. Zajel never sends on its own. A send you confirm waits for your **Undo send** time (Settings → Composer), like one from the composer, with **Undo** on it.
+- **On Telegram:** Zajel has its own bot, linked in Settings → Notifications.
+  - **Chat with Zajel there** as in the app. It keeps one conversation, which shows as "Telegram" in the panel's history; `/new` starts another. It works in your first linked account and answers on your browser's clock.
+  - **Cards in the chat:** an email, invitation or deletion Zajel prepares comes as a card with **Send** (or **Add**, **Delete**) and **Cancel**. A draft it saves comes with **Send** and **Edit in Zajel**. A held send gets **Undo**.
+  - **Confirm from Telegram** (on by default) controls those buttons. Off, you confirm in the app. Switching it on needs a fresh sign-in check. Anyone holding your unlocked Telegram could press the buttons.
+  - **Urgent-mail alerts** (Jev decides what's urgent) come with **Mark read**, **Snooze 1h**, **Archive** and **Draft reply**. **Draft reply** has Zajel write the reply in the chat, saved to Drafts.
+  - **Reminders:** Zajel sends the reminders it sets. A reminder more than a week late is dropped rather than sent.
+  - **Limits:** only the linked private chat can talk to Zajel, one message at a time, up to 40 an hour. Scheduling jobs stays in the app.
+- **Scheduled jobs:** an unread digest, a tidy-up rule, or an instruction Zajel carries out with reversible tools, including drafting replies. They run once, hourly, daily, on weekdays, on chosen days of the week, or weekly.
+  - **Reports:** an instruction's answer comes to Telegram in full, formatted, over several messages when it's long. A job that only watches for something ("tell me when Elaine replies") stays quiet until it happens.
+  - **Cards:** with **Confirm from Telegram** on, an instruction may also prepare up to 5 emails, invitations or deletions per run. They arrive as cards after its report, and nothing goes out until you press. Its drafts arrive the same way.
 - **Choosing the AI:** Settings → Agent picks the provider, the models and the agent's effort, from the models each provider offers your key. **Check** sends a real request to the provider in use, and checks the fallback model when `ANTHROPIC_FALLBACK_MODEL` is set.
 
 **Only on Claude:** acting on your mailbox, Telegram reminders, and scheduled jobs, which only Zajel can set up (`schedule_job`). Telegram alerts for urgent mail come from Jev and work with any provider.

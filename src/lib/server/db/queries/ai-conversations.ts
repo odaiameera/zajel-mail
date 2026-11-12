@@ -112,9 +112,10 @@ export function titleFromMessage(message: string): string {
 	return firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine;
 }
 
-export function createConversation(userEmail: string, now = Date.now()): string {
+/** A new session; one given a `title` keeps it, otherwise its first message names it. */
+export function createConversation(userEmail: string, now = Date.now(), title = ''): string {
 	const id = randomUUID();
-	stmts().insertConversation.run(id, userEmail, '', now, now);
+	stmts().insertConversation.run(id, userEmail, title, now, now);
 	return id;
 }
 

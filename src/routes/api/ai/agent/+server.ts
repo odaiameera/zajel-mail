@@ -22,6 +22,7 @@ import {
 } from '$lib/server/db/queries/ai-conversations';
 import { errorFields, logEvent } from '$lib/server/log';
 import { heldOpen } from '$lib/server/held-open';
+import { noteTimeZone } from '$lib/server/telegram/store';
 
 const ACTIONS = new Set<MailAgentAction>([
 	'chat',
@@ -126,6 +127,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	);
 
 	const timeZone = safeTimeZone(body?.timeZone);
+	// The Telegram chat answers on the clock the web app last saw.
+	if (locals.user && timeZone !== 'UTC') noteTimeZone(locals.user.id, timeZone);
 	const currentEmailId =
 		typeof body?.currentEmailId === 'string' && body.currentEmailId.length <= 300 ? body.currentEmailId : null;
 

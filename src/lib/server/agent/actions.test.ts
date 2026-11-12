@@ -5,8 +5,20 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), 'ameera-actions-')), 'test.db');
 
-const mocks = vi.hoisted(() => ({ sendComposed: vi.fn(), saveComposedDraft: vi.fn() }));
-vi.mock('./compose', () => ({ sendComposed: mocks.sendComposed, saveComposedDraft: mocks.saveComposedDraft }));
+const mocks = vi.hoisted(() => ({
+	sendComposed: vi.fn(),
+	saveComposedDraft: vi.fn(),
+	holdComposed: vi.fn(),
+	/** Settings → Undo send, as stored. Off unless a test turns it on. */
+	prefs: { undo_send_seconds: '0' } as Record<string, string>
+}));
+vi.mock('./compose', () => ({
+	sendComposed: mocks.sendComposed,
+	saveComposedDraft: mocks.saveComposedDraft,
+	holdComposed: mocks.holdComposed,
+	composedHtml: (m: { text: string }) => `<p>${m.text}</p>`
+}));
+vi.mock('$lib/server/db/queries/app-prefs', () => ({ getPrefs: () => mocks.prefs }));
 vi.mock('$lib/server/auth/accounts', () => ({
 	getAccount: (id: string) => ({ id, user_id: id === 'acct-other' ? 'someone-else' : 'user-1', email: 'me@example.test' }),
 	authStateForAccount: (account: { id: string }) => ({ accountId: `jmap-${account.id}` })
@@ -47,11 +59,32 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.sendComposed.mockResolvedValue({ success: true });
 	mocks.saveComposedDraft.mockResolvedValue({ success: true });
+	mocks.holdComposed.mockResolvedValue({ success: true, emailId: 'held-1', sendAt: '2030-01-01T09:00:10.000Z' });
+	mocks.prefs = { undo_send_seconds: '0' };
 	getDb().prepare('DELETE FROM agent_actions').run();
 	getDb().prepare('DELETE FROM agent_audit').run();
 });
 
 describe('deciding a pending action', () => {
+	it('holds a send for the Undo send window, as the composer does, with what Undo reopens', async () => {
+		mocks.prefs = { undo_send_seconds: '10' };
+		const action = propose('acct-2', { ...message, cc: ['ops@example.test'], inReplyTo: 'abc@example.test' });
+		const result = await decidePendingAction(USER, action.id, 'confirm', 'telegram');
+		expect(mocks.sendComposed).not.toHaveBeenCalled();
+		expect(mocks.holdComposed).toHaveBeenCalledTimes(1);
+		expect(mocks.holdComposed.mock.calls[0][1]).toBe('acct-2');
+		const at = (mocks.holdComposed.mock.calls[0][4] as Date).getTime() - Date.now();
+		expect(at).toBeGreaterThan(8_000);
+		expect(at).toBeLessThanOrEqual(10_000);
+		expect(result).toEqual({
+			status: 200,
+			message: 'Sending to dana@example.test in 10 seconds',
+			scheduled: { emailId: 'held-1', sendAt: '2030-01-01T09:00:10.000Z', undo: true },
+			restore: { to: 'dana@example.test', cc: 'ops@example.test', subject: 'Re: Lunch?', body: '<p>Thursday works.</p>', inReplyTo: 'abc@example.test', references: '' }
+		});
+		expect(listAudit(USER)[0]).toMatchObject({ source: 'telegram', tool: 'send_email', outcome: 'done' });
+	});
+
 	it('sends a reply with the original it quoted when it was proposed', async () => {
 		const quoteHtml = '<blockquote><div><strong>From:</strong> Dana</div><p>Lunch?</p></blockquote>';
 		const action = propose('acct-1', { ...message, quoteHtml });

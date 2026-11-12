@@ -1,5 +1,7 @@
 import { authStateForAccount, getAccount, type MailAccountRow } from '$lib/server/auth/accounts';
-import { saveComposedDraft, sendComposed, type ComposedMessage } from './compose';
+import { composedHtml, holdComposed, saveComposedDraft, sendComposed, type ComposedMessage } from './compose';
+import { getPrefs } from '$lib/server/db/queries/app-prefs';
+import { parseUndoSendSeconds } from '$lib/server/compose-input';
 import { createDraftedEvent, deleteConfirmedEvent, describeWhen, type EventDraft } from './calendar-tools';
 import { describeSchedule, parseSchedule } from '$lib/server/jobs/schedule';
 import { describeSpec, parseSpec } from '$lib/server/jobs/specs';
@@ -22,7 +24,14 @@ import {
 
 export type Decision = 'confirm' | 'cancel';
 
-type Executor = (action: PendingAction) => Promise<{ success: boolean; message: string }>;
+/** A send held for the Undo send window, and what the composer reopens with if it's taken back. */
+export interface HeldSend {
+	scheduled: { emailId: string; sendAt: string; undo: true };
+	restore: { to: string; cc: string; subject: string; body: string; inReplyTo: string; references: string };
+}
+
+type ExecutorResult = { success: boolean; message: string } & Partial<HeldSend>;
+type Executor = (action: PendingAction) => Promise<ExecutorResult>;
 
 const ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 
@@ -73,6 +82,26 @@ const EXECUTORS: Record<string, Executor> = {
 		const message = asMessage(action.payload);
 		const account = ownAccount(action);
 		if (!message || !account) return { success: false, message: 'That message can no longer be sent' };
+		// Settings → Undo send covers Zajel's sends too: the message waits that
+		// long in Scheduled, and Undo puts it back in Drafts.
+		const undo = parseUndoSendSeconds(getPrefs(action.userId).undo_send_seconds);
+		if (undo > 0) {
+			const held = await holdComposed(authStateForAccount(account), account.id, account.email, message, new Date(Date.now() + undo * 1000));
+			if (!held.success) return { success: false, message: held.error };
+			return {
+				success: true,
+				message: `Sending to ${message.to.join(', ')} in ${undo} seconds`,
+				scheduled: { emailId: held.emailId, sendAt: held.sendAt, undo: true },
+				restore: {
+					to: message.to.join(', '),
+					cc: message.cc.join(', '),
+					subject: message.subject,
+					body: composedHtml(message),
+					inReplyTo: message.inReplyTo ?? '',
+					references: message.references ?? ''
+				}
+			};
+		}
 		const result = await sendComposed(authStateForAccount(account), account.email, message);
 		return result.success
 			? { success: true, message: `Sent to ${message.to.join(', ')}` }
@@ -135,8 +164,10 @@ const EXECUTORS: Record<string, Executor> = {
 export async function decidePendingAction(
 	userId: string,
 	id: string,
-	decision: Decision
-): Promise<{ status: number; message: string }> {
+	decision: Decision,
+	/** Where the click came from: the web app's card, or a button in the Telegram chat. */
+	source: 'chat' | 'telegram' = 'chat'
+): Promise<{ status: number; message: string } & Partial<HeldSend>> {
 	const action = getPendingAction(userId, id);
 	if (!action) return { status: 404, message: 'Unknown action' };
 	const executor = EXECUTORS[action.kind];
@@ -146,7 +177,7 @@ export async function decidePendingAction(
 	}
 
 	const audit = (summary: string, outcome: 'done' | 'refused' | 'failed') =>
-		recordAudit({ userId, accountId: action.accountId, source: 'chat', tool: action.kind, tier: 'outward', summary, outcome });
+		recordAudit({ userId, accountId: action.accountId, source, tool: action.kind, tier: 'outward', summary, outcome });
 
 	if (decision === 'cancel') {
 		audit(`Cancelled ${action.kind.replace('_', ' ')}`, 'refused');
@@ -156,7 +187,11 @@ export async function decidePendingAction(
 		const result = await executor(action);
 		finishPendingAction(id, result.success ? 'done' : 'failed', result.message);
 		audit(result.message, result.success ? 'done' : 'failed');
-		return { status: result.success ? 200 : 502, message: result.message };
+		return {
+			status: result.success ? 200 : 502,
+			message: result.message,
+			...(result.scheduled && result.restore && { scheduled: result.scheduled, restore: result.restore })
+		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message.slice(0, 200) : 'Failed';
 		finishPendingAction(id, 'failed', message);
