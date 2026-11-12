@@ -6,6 +6,7 @@
 	import Link from '@tiptap/extension-link';
 	import { TextStyle } from '@tiptap/extension-text-style';
 	import FontFamily from '@tiptap/extension-font-family';
+	import { BlockDirection, blockDirection } from '$lib/tiptap/block-direction';
 
 	let {
 		html = $bindable(''),
@@ -59,7 +60,7 @@
 
 	// Track which marks are active so the toolbar buttons can show pressed
 	// state. Bumped on every Tiptap transaction.
-	let activeMarks = $state({ bold: false, italic: false, link: false });
+	let activeMarks = $state({ bold: false, italic: false, link: false, rtl: false });
 	let activeFont = $state(FONT_OPTIONS[0].value);
 	let activeSize = $state(DEFAULT_SIZE);
 
@@ -85,7 +86,8 @@
 				Link.configure({ openOnClick: false, autolink: true }),
 				TextStyle,
 				FontFamily,
-				FontSize
+				FontSize,
+				BlockDirection
 			],
 			content: html || '<p></p>',
 			editable: !disabled,
@@ -100,7 +102,8 @@
 				charCount = e.getText().length;
 				refreshActive();
 			},
-			onSelectionUpdate: () => refreshActive()
+			// Every step, not only selection changes: switching direction is neither.
+			onTransaction: () => refreshActive()
 		});
 		charCount = editor.getText().length;
 		refreshActive();
@@ -130,7 +133,8 @@
 		activeMarks = {
 			bold: editor.isActive('bold'),
 			italic: editor.isActive('italic'),
-			link: editor.isActive('link')
+			link: editor.isActive('link'),
+			rtl: blockDirection(editor.state) === 'rtl'
 		};
 		const attrs = editor.getAttributes('textStyle') as {
 			fontFamily?: string;
@@ -159,6 +163,10 @@
 
 	function toggleItalic() {
 		editor?.chain().focus().toggleItalic().run();
+	}
+
+	function toggleDirection() {
+		editor?.chain().focus().toggleBlockDirection().run();
 	}
 
 	function toggleLink() {
@@ -273,6 +281,18 @@
 				{activeMarks.link ? 'bg-accent/15 text-accent-fg' : 'text-text-secondary hover:bg-surface-hover hover:text-text'}"
 		>
 			<Icon name="link" size={14} />
+		</button>
+		<button
+			type="button"
+			onclick={toggleDirection}
+			disabled={disabled || !editor}
+			aria-pressed={activeMarks.rtl}
+			aria-label="Right to left"
+			title="Right to left"
+			class="w-7 h-7 rounded-md flex items-center justify-center transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed
+				{activeMarks.rtl ? 'bg-accent/15 text-accent-fg' : 'text-text-secondary hover:bg-surface-hover hover:text-text'}"
+		>
+			<Icon name="direction-rtl" size={14} />
 		</button>
 		<div class="flex-1"></div>
 		<span class="text-2xs {counterClass}" aria-live="polite">{charCount} / {MAX_CHARS}</span>

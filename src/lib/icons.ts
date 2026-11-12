@@ -67,6 +67,7 @@ import PanelRight from '@lucide/svelte/icons/panel-right';
 import PanelsTopLeft from '@lucide/svelte/icons/panels-top-left';
 import Paperclip from '@lucide/svelte/icons/paperclip';
 import Pencil from '@lucide/svelte/icons/pencil';
+import PilcrowLeft from '@lucide/svelte/icons/pilcrow-left';
 import Plus from '@lucide/svelte/icons/plus';
 import Printer from '@lucide/svelte/icons/printer';
 import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -194,6 +195,7 @@ export const ICONS = {
 	'align-left': TextAlignStart,
 	'align-center': TextAlignCenter,
 	'align-right': TextAlignEnd,
+	'direction-rtl': PilcrowLeft,
 	'clear-formatting': RemoveFormatting,
 	more: Ellipsis,
 	link: Link,
