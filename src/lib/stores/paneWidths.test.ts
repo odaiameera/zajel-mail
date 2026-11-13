@@ -1,7 +1,17 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
-import { LIST_WIDTH, SIDEBAR_WIDTH, clampWidth, listWidth, nudgeWidth, parseWidth, sidebarWidth, startWidthDrag } from './paneWidths';
+import {
+	LIST_WIDTH,
+	SIDEBAR_WIDTH,
+	clampWidth,
+	leftColumnWidth,
+	listWidth,
+	nudgeWidth,
+	parseWidth,
+	sidebarWidth,
+	startWidthDrag
+} from './paneWidths';
 
 afterEach(() => {
 	sidebarWidth.set(SIDEBAR_WIDTH.fallback);
@@ -58,6 +68,20 @@ describe('pane widths', () => {
 		expect(document.cookie).toContain('pane_sidebar_width=300');
 		nudgeWidth(key('a'), sidebarWidth, SIDEBAR_WIDTH);
 		expect(get(sidebarWidth)).toBe(300);
+	});
+
+	it('give every app the one left column, so its edge stays put between them', () => {
+		// The width you dragged in Mail is the width of Calendar's, Contacts'
+		// and Settings' panel too: they once had a fixed 224px, so the
+		// island's edge slid back on every switch.
+		expect(leftColumnWidth('mail', 312)).toBe('312px');
+		expect(leftColumnWidth('app', 312)).toBe(leftColumnWidth('mail', 312));
+		// Only Mail's folders fold down to the icon strip.
+		expect(leftColumnWidth('mail', 312, true)).toBe('48px');
+		expect(leftColumnWidth('app', 312, true)).toBe('312px');
+		// A page with no panel keeps its gutter, whatever is saved.
+		expect(leftColumnWidth('none', 312)).toBe('8px');
+		expect(leftColumnWidth('none', 312, true)).toBe('8px');
 	});
 
 	it('reset to the default', () => {
