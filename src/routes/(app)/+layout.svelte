@@ -25,6 +25,7 @@
 	import { browser } from '$app/environment';
 	import {
 		SIDEBAR_WIDTH,
+		leftColumnWidth,
 		listWidth as listPane,
 		nudgeWidth,
 		sidebarWidth as sidebarPane,
@@ -125,13 +126,15 @@
 		inMail ? 'mail' : appPanel || panelRoute ? 'app' : 'none'
 	);
 	const railCollapsed = $derived(panelKind === 'mail' && sidebarCollapsed && !$sidebarIsDrawer);
-	// Only the mail sidebar collapses to an icon strip; app panels are
-	// always full width.
-	// The mail sidebar's width is yours to drag (its right edge, the side of
-	// the island). The stores live for the whole session; they are filled
-	// from the cookies once, in the browser only, since on the server a
-	// module's store would be shared by every request; the server draws from
-	// the page data instead.
+	// The left column's width is yours to drag (its right edge, the side of
+	// the island), and it is one width for every app: Mail's folders and the
+	// panels of Calendar, Contacts and Settings all take it, so the island's
+	// edge stays put when you move between them. Only the mail sidebar
+	// collapses to an icon strip; app panels are always full width. The
+	// stores live for the whole session; they are filled from the cookies
+	// once, in the browser only, since on the server a module's store would
+	// be shared by every request; the server draws from the page data
+	// instead.
 	if (browser) {
 		untrack(() => {
 			sidebarPane.set(data.paneSidebarWidth);
@@ -140,17 +143,21 @@
 	}
 	const sidebarPx = $derived(browser ? $sidebarPane : data.paneSidebarWidth);
 	let resizingSidebar = $state(false);
-	// Room for the island beside it: the list and a reading pane at their
-	// narrowest, plus the app rail.
+	// Room for the island beside it: Mail's list and a reading pane at their
+	// narrowest, plus the app rail. The other apps keep to the same cap, so
+	// a width set in one is never out of reach in another.
 	const sidebarMax = () => Math.min(SIDEBAR_WIDTH.max, window.innerWidth - 52 - 640);
-	const sidebarWidth = $derived(
+	const sidebarWidth = $derived(leftColumnWidth(panelKind, sidebarPx, sidebarCollapsed));
+	const resizeLabel = $derived(
 		panelKind === 'mail'
-			? sidebarCollapsed
-				? '48px'
-				: `${sidebarPx}px`
-			: panelKind === 'app'
-				? '224px'
-				: '8px'
+			? 'Resize the folder list'
+			: page.url.pathname.startsWith('/calendar')
+				? 'Resize the calendar list'
+				: page.url.pathname.startsWith('/contacts')
+					? 'Resize the contact lists'
+					: page.url.pathname.startsWith('/settings')
+						? 'Resize the settings list'
+						: 'Resize the side panel'
 	);
 	// Settings on a phone opens on its own section list (/settings), with a
 	// way back to it from every section, so the drawer has nothing to add.
@@ -597,16 +604,17 @@
 			onclickcapture={onDrawerClickCapture}
 		>
 			<div class="lg:col-start-1 lg:row-start-2 h-full min-h-0 overflow-hidden relative">
-				{#if panelKind === 'mail' && !sidebarCollapsed && !$sidebarIsDrawer}
-					<!-- The sidebar's edge, against the island: drag it to widen or
-					     narrow the folders. Nothing is drawn, only the cursor
-					     changes over it; a keyboard focus still shows. -->
+				{#if !railCollapsed && !$sidebarIsDrawer}
+					<!-- The column's edge, against the island: drag it to widen or
+					     narrow the folders, or whichever app's panel is here.
+					     Nothing is drawn, only the cursor changes over it; a
+					     keyboard focus still shows. -->
 					<!-- A focusable separator is ARIA's window splitter: an interactive control. -->
 					<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 					<div
 						role="separator"
 						aria-orientation="vertical"
-						aria-label="Resize the folder list"
+						aria-label={resizeLabel}
 						aria-valuemin={SIDEBAR_WIDTH.min}
 						aria-valuemax={SIDEBAR_WIDTH.max}
 						aria-valuenow={sidebarPx}

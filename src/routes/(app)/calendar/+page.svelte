@@ -284,8 +284,8 @@
 		if (result.imported === 1 && result.firstDay) navigate(data.view, fromDayKey(result.firstDay));
 	}
 
-	// The mini-month and the calendar list live in the shell's left column
-	// (the drawer on phones), where Mail keeps its folders.
+	// Import and the calendar list live in the shell's left column (the
+	// drawer on phones), where Mail keeps its folders.
 	hostAppPanel(calendarPanel);
 
 	// New event from the corner's + menu, here already or arriving now.
@@ -310,9 +310,6 @@
 {#snippet calendarPanel()}
 	<CalendarPanel
 		calendars={data.calendars}
-		selected={selectedDate}
-		{weekStart}
-		onSelectDate={(date) => navigate(data.view, date)}
 		onImport={openImport}
 	/>
 {/snippet}

@@ -1,11 +1,13 @@
 import { writable, type Writable } from 'svelte/store';
 
 /**
- * The two column widths you can drag in Mail: the sidebar (folders) and the
- * message list beside the reading pane. Kept for the whole session, so moving
- * between folders (each its own page, so a new list) keeps the width you set,
- * and saved in a cookie per browser, since the right width depends on the
- * screen; the server reads it back so the first paint already has it.
+ * The two column widths you can drag: the shell's left column (Mail's
+ * folders, and the panel Calendar, Contacts and Settings each put there)
+ * and Mail's message list beside the reading pane. Kept for the whole
+ * session, so moving between folders (each its own page, so a new list) or
+ * between apps keeps the width you set, and saved in a cookie per browser,
+ * since the right width depends on the screen; the server reads it back so
+ * the first paint already has it.
  */
 
 export interface PaneLimits {
@@ -22,6 +24,26 @@ export const MIN_READING_PANE = 360;
 
 export const SIDEBAR_COOKIE = 'pane_sidebar_width';
 export const LIST_COOKIE = 'pane_list_width';
+
+/** What the shell's left column is showing: Mail's folders, another app's panel, or nothing. */
+export type PanelKind = 'mail' | 'app' | 'none';
+
+/** Mail's folders folded down to an icon strip. */
+export const COLLAPSED_SIDEBAR = 48;
+/** The gutter left of the island on a page that hosts no panel. */
+export const NO_PANEL_GUTTER = 8;
+
+/**
+ * How wide the shell's left column is. Every app's panel gets the one width
+ * you dragged, so the island's edge stays where you put it when you move
+ * between Mail, Calendar, Contacts and Settings. Only Mail's folders fold
+ * down to the icon strip; a page with no panel keeps a gutter.
+ */
+export function leftColumnWidth(kind: PanelKind, saved: number, collapsed = false): string {
+	if (kind === 'none') return `${NO_PANEL_GUTTER}px`;
+	if (kind === 'mail' && collapsed) return `${COLLAPSED_SIDEBAR}px`;
+	return `${saved}px`;
+}
 
 export function clampWidth(value: number, limits: PaneLimits): number {
 	if (!Number.isFinite(value)) return limits.fallback;

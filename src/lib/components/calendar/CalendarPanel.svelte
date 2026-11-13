@@ -2,23 +2,15 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import { invalidateAll } from '$app/navigation';
 	import type { CalendarInfo } from '$lib/calendar/types';
-	import type { WeekStart } from '$lib/calendar/dates';
 	import { apiDeleteCalendar, apiUpdateCalendar } from '$lib/calendar/api';
 	import { showToast } from '$lib/stores/toast';
-	import MiniMonth from './MiniMonth.svelte';
 	import CalendarModal from './CalendarModal.svelte';
 
 	let {
 		calendars,
-		selected,
-		weekStart,
-		onSelectDate,
 		onImport
 	}: {
 		calendars: CalendarInfo[];
-		selected: Date;
-		weekStart: WeekStart;
-		onSelectDate: (date: Date) => void;
 		onImport: () => void;
 	} = $props();
 
@@ -63,11 +55,8 @@
 	<div class="px-3 pt-1.5 pb-1 shrink-0">
 		<button type="button" class="btn btn-secondary w-full" onclick={onImport}>Import</button>
 	</div>
-	<div class="p-3">
-		<MiniMonth {selected} {weekStart} onSelect={onSelectDate} />
-	</div>
 
-	<div class="px-3 pb-4 flex-1">
+	<div class="px-3 pt-3 pb-4 flex-1">
 		<div class="flex items-center justify-between mb-1 px-1">
 			<span class="text-xs font-semibold text-text-tertiary uppercase tracking-wide">My calendars</span>
 			<button
