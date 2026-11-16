@@ -19,7 +19,7 @@ import {
 	recordIpFailure,
 	recordSuccess
 } from '$lib/server/auth/rate-limit';
-import { MFA_COOKIE, MFA_COOKIE_OPTIONS, SESSION_COOKIE_OPTIONS } from '$lib/server/auth/sign-in';
+import { MFA_COOKIE, MFA_COOKIE_OPTIONS, SESSION_COOKIE_OPTIONS, takeReturn } from '$lib/server/auth/sign-in';
 
 /** The longest an email address can be (RFC 5321). */
 const MAX_EMAIL_LENGTH = 254;
@@ -32,7 +32,8 @@ function secondStep(userId: string) {
 function startSession(cookies: Cookies, request: Request, ip: string, userId: string, verified: boolean): never {
 	const sessionId = createAppSession(userId, request.headers.get('user-agent') ?? undefined, ip, verified);
 	cookies.set('session', sessionId, SESSION_COOKIE_OPTIONS);
-	redirect(303, '/inbox');
+	// The page they were sent here from, if there was one.
+	redirect(303, takeReturn(cookies));
 }
 
 export const load: PageServerLoad = async ({ locals, cookies, setHeaders }) => {

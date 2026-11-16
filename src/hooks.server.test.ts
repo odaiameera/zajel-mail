@@ -47,7 +47,7 @@ function stubEvent(path: string, init: RequestInit) {
 	};
 	return {
 		cookies,
-		event: { url, request: new Request(url, init), cookies, locals: {} } as unknown as Parameters<typeof handle>[0]['event']
+		event: { url, route: { id: null }, request: new Request(url, init), cookies, locals: {} } as unknown as Parameters<typeof handle>[0]['event']
 	};
 }
 
@@ -302,7 +302,7 @@ describe('the new-mail catch-up', () => {
 			const load = async (active: string) => {
 				const url = new URL('http://localhost/inbox');
 				const cookies = { get: (name: string) => (name === 'session' ? 's1' : name === 'active_account' ? active : undefined), set: vi.fn(), delete: vi.fn() };
-				const event = { url, request: new Request(url), cookies, locals: {} } as unknown as Parameters<typeof handle>[0]['event'];
+				const event = { url, route: { id: null }, request: new Request(url), cookies, locals: {} } as unknown as Parameters<typeof handle>[0]['event'];
 				await handle({ event, resolve: async () => new Response('ok') });
 			};
 
@@ -383,5 +383,38 @@ describe('preload hints', () => {
 		const second = await optionsFor('/calendar');
 		second.preload({ type: 'js', path: './second.js' });
 		expect(await second.transformPageChunk({ html: PAGE, done: true })).not.toContain('first.js');
+	});
+});
+
+// Signed out, the app's pages send to /login; the address asked for is kept
+// so that signing in leads there.
+describe('the page a signed-out visitor asked for', () => {
+	async function ask(path: string, routeId: string | null, signedIn = false, method = 'GET') {
+		mocks.session = signedIn ? { id: 's1', user_id: 'u1' } : null;
+		const url = new URL(`http://localhost${path}`);
+		const cookies = { get: () => (signedIn ? 's1' : undefined), set: vi.fn(), delete: vi.fn() };
+		const event = { url, route: { id: routeId }, request: new Request(url, { method }), cookies, locals: {} };
+		await handle({
+			event: event as unknown as Parameters<typeof handle>[0]['event'],
+			resolve: async () => new Response('page')
+		});
+		return cookies.set.mock.calls.filter(([name]) => name === 'return_to').map(([, value]) => value);
+	}
+
+	it('is remembered for the app\'s pages', async () => {
+		expect(await ask('/email/abc', '/(app)/email/[id]')).toEqual(['/email/abc']);
+		expect(await ask('/inbox?mailto=mailto%3Aa%40example.com', '/(app)/inbox')).toEqual([
+			'/inbox?mailto=mailto%3Aa%40example.com'
+		]);
+		expect(await ask('/calendar?date=2026-12-01', '/(app)/calendar')).toEqual(['/calendar?date=2026-12-01']);
+	});
+
+	it('is not kept for the plain inbox, other routes, writes, or someone signed in', async () => {
+		expect(await ask('/inbox', '/(app)/inbox')).toEqual([]);
+		expect(await ask('/login', '/login')).toEqual([]);
+		expect(await ask('/api/email/abc', '/api/email/[id]')).toEqual([]);
+		expect(await ask('/nothing-here', null)).toEqual([]);
+		expect(await ask('/email/abc', '/(app)/email/[id]', false, 'POST')).toEqual([]);
+		expect(await ask('/email/abc', '/(app)/email/[id]', true)).toEqual([]);
 	});
 });

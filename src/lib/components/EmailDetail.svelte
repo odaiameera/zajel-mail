@@ -6,6 +6,7 @@
 	import { tabChipFallback, tabReasonText, type TabWhy } from '$lib/tab-reason';
 	import { CATEGORY_ICON } from './category-icons';
 	import { openCompose } from '$lib/stores/compose';
+	import { composeFromMailto } from '$lib/utils/mailto';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
@@ -717,6 +718,38 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		</style>
 	</head><body>${display.html}</body></html>`);
 
+
+	// An address in the message that is a mail link: write to it here. Left
+	// alone, the link opens a new window and hands off to the system's mail
+	// app, which is this app again in a second window, or another one.
+	// The frame runs no script; this listens from outside it. A browser that
+	// doesn't deliver events from a frame without scripts keeps the old
+	// behaviour, as does a click meant for a new tab or window.
+	//
+	// An action, not onload: a message rendered on the server has loaded
+	// before the page's script attaches anything, and the inline handler
+	// Svelte would replay that with is refused by the app's CSP. So the
+	// document already there is taken, and each later one (the next message
+	// replaces srcdoc) as it loads.
+	function mailLinks(frame: HTMLIFrameElement) {
+		const watched = new WeakSet<Document>();
+		const watch = () => {
+			const doc = frame.contentDocument;
+			if (!doc || watched.has(doc)) return;
+			watched.add(doc);
+			doc.addEventListener('click', (click) => {
+				if (click.button !== 0 || click.metaKey || click.ctrlKey || click.shiftKey || click.altKey) return;
+				const link = (click.target as Element | null)?.closest?.('a[href], area[href]');
+				const href = link?.getAttribute('href')?.trim() ?? '';
+				if (!/^mailto:/i.test(href)) return;
+				click.preventDefault();
+				openCompose(composeFromMailto(href));
+			});
+		};
+		if (frame.contentDocument?.readyState === 'complete') watch();
+		frame.addEventListener('load', watch);
+		return { destroy: () => frame.removeEventListener('load', watch) };
+	}
 
 	// The message's own attachments, as the composer's blob references.
 	function attachmentRefs() {
@@ -1666,6 +1699,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			     device's dark mode. -->
 			<iframe
 				srcdoc={iframeContent}
+				use:mailLinks
 				sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
 				title="Email content"
 				class="w-full h-full border-none rounded-md bg-white scheme-only-light"

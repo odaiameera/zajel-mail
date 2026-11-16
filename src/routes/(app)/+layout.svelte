@@ -22,6 +22,7 @@
 	import { calendarNotify } from '$lib/stores/calendarNotify';
 	import { canNotify, showNotification, subscribePush } from '$lib/notifications';
 	import { showToast } from '$lib/stores/toast';
+	import { watchForSignOut } from '$lib/signed-out';
 	import { holdRecheckDelay } from '$lib/inbox-hold';
 	import { browser } from '$app/environment';
 	import {
@@ -168,6 +169,13 @@
 	// and it closes itself once you pick somewhere to go.
 	let drawerOpen = $state(false);
 	afterNavigate(() => { drawerOpen = false; });
+
+	// The search page with nothing searched for yet, which is where the
+	// installed app's Search shortcut lands: the box is ready to type in.
+	let searchInput = $state<{ focus: () => void }>();
+	afterNavigate(() => {
+		if (page.url.pathname === '/search' && !page.url.searchParams.get('q')) searchInput?.focus();
+	});
 
 	// A mailto: link this app was asked to handle (see routes/mailto): open
 	// the composer with what the link asks for. The link then comes off the
@@ -334,7 +342,21 @@
 		// not after a fresh handshake.
 		realtime.connect();
 
+		// The session ended while the app was open (signed out from another
+		// device, or expired): say so, and offer the way back. Loading this
+		// page again is that way: signed out, it leads to the sign-in form
+		// and then back here. Offered, not done: a message being written
+		// would be lost with the page.
+		const stopWatching = watchForSignOut(() => {
+			showToast({
+				message: 'You have been signed out.',
+				duration: 0,
+				action: { label: 'Sign in', onClick: () => location.reload() }
+			});
+		});
+
 		return () => {
+			stopWatching();
 			window.removeEventListener('resize', handler);
 			realtime.disconnect();
 			calendarNotify.stop();
@@ -521,7 +543,7 @@
 				{railCollapsed ? '' : 'zajel.'}
 			</h1>
 		</div>
-		<SearchInput bind:value={searchQuery} onSubmit={submitSearch} mailboxes={data.mailboxes} />
+		<SearchInput bind:this={searchInput} bind:value={searchQuery} onSubmit={submitSearch} mailboxes={data.mailboxes} />
 		<div class="flex items-center justify-end min-w-0">
 			<!-- 52px wrapper aligns avatar center with the AppRail column below -->
 			<div class="w-[52px] shrink-0 flex items-center justify-center">
