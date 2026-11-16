@@ -3,13 +3,15 @@
  * of a multipart/alternative message. HTML-only mail scores worse with spam
  * filters and is unreadable in text-only clients and notification previews.
  *
- * Deliberately small and DOM-free (it runs on the server): paragraphs and
- * line breaks become newlines, list items get bullets, links keep their URL,
+ * Deliberately small and DOM-free (it runs on the server): lines, paragraphs
+ * and line breaks become newlines, list items get bullets, links keep their URL,
  * and quoted replies (<blockquote>) get the usual "> " prefix per level.
  */
 
 const QUOTE_OPEN = '\u0001';
 const QUOTE_CLOSE = '\u0002';
+/** The start or end of a line that has no gap of its own (a <div>). */
+const LINE = '\u0003';
 
 const ENTITIES: Record<string, string> = {
 	nbsp: ' ',
@@ -30,8 +32,33 @@ function decodeEntities(text: string): string {
 	});
 }
 
+/**
+ * Turn each LINE mark into a line break where there is a line to end, and
+ * into nothing where the text is already at the start of one: so a <div>
+ * inside a <div>, or one after a <br>, adds no blank line of its own.
+ */
+function endLines(marked: string): string {
+	let out = '';
+	let lineHasText = false;
+	for (const ch of marked) {
+		if (ch === LINE) {
+			if (lineHasText) out += '\n';
+			lineHasText = false;
+		} else {
+			out += ch;
+			if (ch === '\n') lineHasText = false;
+			else if (ch !== QUOTE_OPEN && ch !== QUOTE_CLOSE && !/\s/.test(ch)) lineHasText = true;
+		}
+	}
+	return out;
+}
+
 export function htmlToText(html: string): string {
 	let s = html
+		// The three marks this uses for itself, should the text hold any.
+		.split(QUOTE_OPEN).join('')
+		.split(QUOTE_CLOSE).join('')
+		.split(LINE).join('')
 		.replace(/\r\n?/g, '\n')
 		.replace(/<(head|style|script)\b[\s\S]*?<\/\1>/gi, '')
 		.replace(/<!--[\s\S]*?-->/g, '')
@@ -42,23 +69,23 @@ export function htmlToText(html: string): string {
 			const url = href.replace(/^mailto:/i, '');
 			return !text || decodeEntities(text) === decodeEntities(url) ? url : `${text} (${url})`;
 		})
-		// The composer's paragraphs are lines: it sends them with no margin,
-		// and a blank line as a paragraph holding a <br> (see compose-html).
-		// As lines here too, or the text half would put a blank line after
-		// every line written. Any other <p> is a paragraph, with a gap.
-		.replace(
-			/<p\b[^>]*\bstyle\s*=\s*"[^"]*\bmargin\s*:\s*0(?![\d.])[^"]*"[^>]*>([\s\S]*?)<\/p>/gi,
-			(_m, inner: string) => (/^\s*<br\s*\/?>\s*$/i.test(inner) ? '<br><br>' : `${inner}<br>`)
-		)
 		.replace(/<blockquote\b[^>]*>/gi, `\n${QUOTE_OPEN}`)
 		.replace(/<\/blockquote>/gi, `${QUOTE_CLOSE}\n`)
 		.replace(/<br\s*\/?>/gi, '\n')
 		.replace(/<li\b[^>]*>/gi, '\n• ')
-		.replace(/<\/(p|div|h[1-6]|tr|ul|ol|table|pre)>/gi, '\n')
-		.replace(/<(p|div|h[1-6]|tr|ul|ol|table|pre)\b[^>]*>/gi, '\n')
+		// A <div> is a line: it starts on a new one and ends its own, with no
+		// gap. The composer writes one per line (and a blank line as a <div>
+		// holding a <br>), so read any other way the text half would put a
+		// blank line after every line written. A <p> with no margin is the
+		// same thing, from drafts of the editor before it.
+		.replace(/<p\b[^>]*\bstyle\s*=\s*"[^"]*\bmargin\s*:\s*0(?![\d.])[^"]*"[^>]*>([\s\S]*?)<\/p>/gi, `${LINE}$1${LINE}`)
+		.replace(/<\/?div\b[^>]*>/gi, LINE)
+		// These are paragraphs: a gap before and after.
+		.replace(/<\/(p|h[1-6]|tr|ul|ol|table|pre)>/gi, '\n')
+		.replace(/<(p|h[1-6]|tr|ul|ol|table|pre)\b[^>]*>/gi, '\n')
 		.replace(/<\/t[dh]>/gi, '\t')
 		.replace(/<[^>]+>/g, '');
-	s = decodeEntities(s);
+	s = decodeEntities(endLines(s));
 
 	// Walk the text once, tracking quote depth from the markers.
 	let entries: { depth: number; text: string }[] = [];

@@ -7,6 +7,9 @@
 	import { CATEGORY_ICON } from './category-icons';
 	import { openCompose } from '$lib/stores/compose';
 	import { composeFromMailto } from '$lib/utils/mailto';
+	import { BLANK_LINE, QUOTE_ID } from '$lib/editor/body-html';
+	import { textToLines } from '$lib/editor/text';
+	import { attachmentUrl } from '$lib/attachments/fetch';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
@@ -751,14 +754,57 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		return { destroy: () => frame.removeEventListener('load', watch) };
 	}
 
-	// The message's own attachments, as the composer's blob references.
+	// The message's own attachments, as the composer's blob references: the
+	// files it carries, not the pictures its body draws (those are inlineRefs).
 	function attachmentRefs() {
-		return (email.attachments ?? []).map((a) => ({
-			blobId: a.blobId,
-			name: a.name ?? 'attachment',
-			type: a.type,
-			size: a.size
-		}));
+		return (email.attachments ?? [])
+			.filter((a) => !display.inlineBlobIds.has(a.blobId))
+			.map((a) => ({
+				blobId: a.blobId,
+				name: a.name ?? 'attachment',
+				type: a.type,
+				size: a.size
+			}));
+	}
+
+	// The pictures the body draws by Content-ID. A reply, a forward and a
+	// reopened draft carry them as inline parts, so the quoted message keeps
+	// its pictures for whoever reads it next. They used to go as plain files
+	// on a forward and not at all on a reply, leaving the body's own
+	// references pointing at nothing.
+	function inlineRefs() {
+		return (email.attachments ?? [])
+			.filter((a) => a.cid && display.inlineBlobIds.has(a.blobId))
+			.map((a) => ({
+				blobId: a.blobId,
+				name: a.name ?? 'image',
+				type: a.type,
+				size: a.size,
+				cid: a.cid
+			}));
+	}
+
+	// Where the composer can show this message's pictures from while it is
+	// quoted: its inline parts, and pictures from the web only if they were
+	// allowed to load for this message.
+	function composeImages() {
+		const cid: Record<string, string> = {};
+		for (const a of email.attachments ?? []) {
+			if (a.cid) cid[a.cid.replace(/^<|>$/g, '')] = attachmentUrl(email.id, a.blobId, a.name ?? 'image', 'inline');
+		}
+		return { cid, remote: remoteAllowed };
+	}
+
+	// Which of your addresses a draft is from, as the identity to send it as.
+	function draftIdentity(): string | null {
+		const from = email.from?.[0]?.email?.trim().toLowerCase();
+		if (!from) return null;
+		return $userState.identities.find((i) => i.email.trim().toLowerCase() === from)?.jmapId ?? null;
+	}
+
+	function draftImportance(): 'high' | 'normal' | 'low' {
+		const value = email['header:importance:asText']?.trim().toLowerCase();
+		return value === 'high' || value === 'low' ? value : 'normal';
 	}
 
 	function handleEditDraft() {
@@ -774,7 +820,15 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			draftId: email.id,
 			inReplyTo: email.inReplyTo?.[0] ?? '',
 			references: email.references?.join(' ') ?? '',
-			attachments: attachmentRefs()
+			// The address it was being written from, and its importance. Both
+			// were saved with the draft and then forgotten here, so a draft
+			// from an alias, marked High, went out from the main address at
+			// normal importance.
+			fromIdentityId: draftIdentity(),
+			importance: draftImportance(),
+			attachments: attachmentRefs(),
+			inlineParts: inlineRefs(),
+			images: composeImages()
 		});
 	}
 
@@ -812,7 +866,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// Two empty lines to write in, then the original (shared with the agent's replies).
 	function getHtmlQuotedBlock(): string {
 		const quote = replyQuoteHtml(email, getBodyHtml());
-		return quote ? `<br><br>${quote}` : '';
+		return quote ? `${BLANK_LINE}${BLANK_LINE}${quote}` : '';
 	}
 
 	function handleAddSenderToContacts() {
@@ -834,6 +888,8 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			cc: addressList(cc),
 			subject: prefixedSubject(email.subject, 'reply'),
 			body: getHtmlQuotedBlock(),
+			inlineParts: inlineRefs(),
+			images: composeImages(),
 			...threadHeaders(email)
 		});
 	}
@@ -857,8 +913,10 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		// A forward carries the original's attachments, as mail clients do.
 		openCompose({
 			to: '', cc: '', subject: prefixedSubject(originalSubject, 'forward'), isForward: true,
-			body: `<br><br><div style="border-top: 1px solid #d1d9e0; padding-top: 1em; color: #59636e;"><div><strong>---------- Forwarded message ----------</strong></div><div><strong>From:</strong> ${fromStr}</div><div><strong>Date:</strong> ${dateStr}</div><div><strong>Subject:</strong> ${escapeHtml(originalSubject)}</div><div><strong>To:</strong> ${toStr}</div><br>${getBodyHtml()}</div>`,
-			attachments: attachmentRefs()
+			body: `${BLANK_LINE}${BLANK_LINE}<div id="${QUOTE_ID}" style="border-top: 1px solid #d1d9e0; padding-top: 1em; color: #59636e;"><div><strong>---------- Forwarded message ----------</strong></div><div><strong>From:</strong> ${fromStr}</div><div><strong>Date:</strong> ${dateStr}</div><div><strong>Subject:</strong> ${escapeHtml(originalSubject)}</div><div><strong>To:</strong> ${toStr}</div><br>${getBodyHtml()}</div>`,
+			attachments: attachmentRefs(),
+			inlineParts: inlineRefs(),
+			images: composeImages()
 		});
 	}
 
@@ -1046,30 +1104,22 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		}
 	}
 
-	function textToHtml(text: string): string {
-		const escaped = text
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			.replace(/"/g, '&quot;')
-			.replace(/'/g, '&#039;');
-		return escaped
-			.split(/\n{2,}/)
-			.map((paragraph) => `<p>${paragraph.replace(/\n/g, '<br>')}</p>`)
-			.join('');
-	}
-
 	function useAssistantDraft() {
 		const sender = email.from?.[0];
 		if (!sender || !assistantResult) return;
-		const originalSubject = email.subject ?? '';
+		// Addressed and threaded as Reply is: to Reply-To when the sender set
+		// one, and under the original's Message-ID. This used to pass the mail
+		// server's own id for the message, which is no Message-ID; the server
+		// dropped it and the reply went out as a new conversation.
+		const { to } = replyRecipients(email, myAddresses, false);
 		openCompose({
-			to: sender.email,
+			to: addressList(to),
 			cc: '',
-			subject: originalSubject.startsWith('Re:') ? originalSubject : `Re: ${originalSubject}`,
-			body: `${textToHtml(assistantResult)}${getHtmlQuotedBlock()}`,
-			inReplyTo: email.id,
-			references: email.id
+			subject: prefixedSubject(email.subject, 'reply'),
+			body: `${textToLines(assistantResult)}${getHtmlQuotedBlock()}`,
+			inlineParts: inlineRefs(),
+			images: composeImages(),
+			...threadHeaders(email)
 		});
 	}
 

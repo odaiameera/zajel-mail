@@ -104,7 +104,7 @@ Changes that remove code and make the next fix cheaper. Each should be its own p
 - One popover. Six menus each carry their own open, close, position and keyboard code; one `Popover` primitive (anchor, align, portal, Escape, outside click) removes about 300 lines and fixes the menus that lack Escape.
 - Split `ComposerShell.svelte` (draft lifecycle, attachments, formatting toolbar, send-later menu, editor setup) and `EmailDetail.svelte` (verification-code card, assistant panel, unsubscribe, spam verdict, body frame).
 - One of each helper: JMAP filter builders (3), address normalisers (3), IANA zone validators (3), add-a-day helpers (4), `parsePagination` (4 copies), `schema()`/`str()` tool helpers (3), `formatSize` (3), the mail-route regex (4), "does Jev read this account" (4).
-- Delete dead code: `RichTextEditor.svelte`, `queries/user-settings.ts`, `getFirstUser`, the `rules` context, `profilePhoto.hydrate()`, `readingPane.setFromViewport`, `forwardEmail`, `getReminder`, `queryAndFetchEmailsWithFilter`, `POST /api/ai/conversations`, `sortingEnabled`, `notifyUrgent`, the `/apps/[slug]` route.
+- Delete dead code: `queries/user-settings.ts`, `getFirstUser`, the `rules` context, `profilePhoto.hydrate()`, `readingPane.setFromViewport`, `forwardEmail`, `getReminder`, `queryAndFetchEmailsWithFilter`, `POST /api/ai/conversations`, `sortingEnabled`, `notifyUrgent`, the `/apps/[slug]` route.
 - Fix stale comments next to the code they describe (listed in the review), and rename the `ameera` leftovers in service-worker cache names, notification tags and the scheduled-send symbol. Keep `ameera.db` and the HKDF salt: they are load-bearing.
 
 ## Phase 5: features

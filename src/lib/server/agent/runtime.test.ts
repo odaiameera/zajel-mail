@@ -357,7 +357,7 @@ describe('runAgentTurn', () => {
 		expect(writer.messages[0].content).toContain('Also, can you bring the contract?');
 		const draft = (mocks.saveDraft.mock.calls[0] as unknown[])[3] as { body: string; inReplyTo: string };
 		expect(draft.inReplyTo).toBe('abc@example.test');
-		expect(draft.body).toMatch(/^<p>Thanks, Thursday works for me\.<\/p><br><blockquote /);
+		expect(draft.body).toMatch(/^<div>Thanks, Thursday works for me\.<\/div><div><br><\/div><blockquote /);
 		expect(draft.body).toContain('<strong>From:</strong> Dana &lt;dana@example.test&gt;');
 		expect(draft.body).toContain('<p>Also, can you bring the contract?</p></blockquote>');
 		expect(draft.body).not.toMatch(/script|steal|onclick/);

@@ -141,6 +141,8 @@ export interface Email {
 	htmlBody?: Array<{ partId: string; blobId: string; type: string; name: string | null }>;
 	textBody?: Array<{ partId: string; blobId: string; type: string; name: string | null }>;
 	attachments?: EmailAttachment[];
+	/** The Importance header, as written ("high", "low"); set on mail sent with one. */
+	'header:importance:asText'?: string | null;
 	/** Raw List-Unsubscribe value; RFC 8621 allows no Text form for this RFC 2369 header. */
 	'header:list-unsubscribe'?: string | null;
 	'header:list-unsubscribe-post:asText'?: string | null;
@@ -181,6 +183,11 @@ export interface ComposeAttachment {
 	name: string;
 	type: string;
 	size: number;
+	/**
+	 * Content-ID, for a picture the body draws as `cid:`. Such a part is sent
+	 * inline, so it shows in the message and not as a file beside it.
+	 */
+	cid?: string | null;
 }
 
 export interface ComposeEmail {

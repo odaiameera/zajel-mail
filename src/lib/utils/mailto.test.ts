@@ -69,13 +69,13 @@ describe('composeFromMailto', () => {
 			cc: 'c@example.com',
 			bcc: '',
 			subject: 'Hi',
-			body: '<p>One<br>Two</p><p>Three</p>'
+			body: '<div>One</div><div>Two</div><div><br></div><div>Three</div>'
 		});
 	});
 
 	it("never lets a link's body in as markup", () => {
 		expect(composeFromMailto('mailto:a@example.com?body=%3Cimg%20src=x%20onerror=alert(1)%3E').body).toBe(
-			'<p>&lt;img src=x onerror=alert(1)&gt;</p>'
+			'<div>&lt;img src=x onerror=alert(1)&gt;</div>'
 		);
 	});
 
