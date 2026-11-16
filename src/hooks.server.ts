@@ -1,4 +1,10 @@
-import { redirect, type Handle, type HandleServerError, type ServerInit } from '@sveltejs/kit';
+import {
+	redirect,
+	type Handle,
+	type HandleServerError,
+	type ResolveOptions,
+	type ServerInit
+} from '@sveltejs/kit';
 import { createHash } from 'node:crypto';
 import { building } from '$app/environment';
 import { runMigrations } from '$lib/server/db/migrate';
@@ -156,6 +162,38 @@ function sameSiteRetry(target: string): Response {
 	});
 }
 
+// SvelteKit lists every script and stylesheet a page needs in a `Link`
+// response header, so the browser can fetch them before it reads the page.
+// The inbox needs some fifty, which made that one header 3.4 KB and the whole
+// response head just over 4 KB as soon as a cookie went with it: more than
+// nginx reads from an upstream by default (proxy_buffer_size, one 4 KB page),
+// so it answered 502 Bad Gateway. The renewed session cookie goes with the
+// first page load after a minute away, which is every launch of the installed
+// app, and the list grows with each new chunk.
+//
+// The same hints go in the page instead, where length doesn't matter: the
+// stylesheets are already there as <link rel="stylesheet">, and the scripts
+// are added to <head> as <link rel="modulepreload">, as SvelteKit itself does
+// for a prerendered page.
+function preloadsInPage(): ResolveOptions {
+	const scripts: string[] = [];
+	let written = false;
+	return {
+		preload: ({ type, path }) => {
+			if (type === 'js') scripts.push(path);
+			return false;
+		},
+		transformPageChunk: ({ html }) => {
+			if (written || scripts.length === 0 || !html.includes('</head>')) return html;
+			written = true;
+			const tags = scripts
+				.map((path) => `<link rel="modulepreload" href="${escapeAttr(encodeURI(path))}">`)
+				.join('\n\t\t');
+			return html.replace('</head>', () => `\t${tags}\n\t</head>`);
+		}
+	};
+}
+
 // Fail fast on a missing/short WEBMAIL_SECRET: without it linked-account
 // passwords can't be encrypted or decrypted, and the breakage would
 // otherwise surface mid-flow as misleading "can't reach the mail server"
@@ -236,7 +274,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 			redirect(303, '/setup');
 		}
 		if (tooLargeForSignedOut(event.request)) return PAYLOAD_TOO_LARGE();
-		return resolve(event);
+		return resolve(event, preloadsInPage());
 	}
 
 	const sessionId = event.cookies.get('session');
@@ -308,7 +346,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	if (!event.locals.user && tooLargeForSignedOut(event.request)) return PAYLOAD_TOO_LARGE();
-	const response = await resolve(event);
+	const response = await resolve(event, preloadsInPage());
 	// A page another site opens now loads signed in (see sameSiteRetry), so it
 	// must not keep a handle on the window: through one it could count the
 	// open message's frames or navigate it under the reader's next click.

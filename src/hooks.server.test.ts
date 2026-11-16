@@ -325,3 +325,63 @@ describe('the new-mail catch-up', () => {
 		}
 	});
 });
+
+// A reverse proxy reads only so much of a response's head (nginx: 4 KB by
+// default) and answers 502 Bad Gateway past it, so the list of a page's
+// scripts must not travel as a `Link` header.
+describe('preload hints', () => {
+	type Options = NonNullable<Parameters<Parameters<typeof handle>[0]['resolve']>[1]>;
+
+	async function optionsFor(path: string): Promise<Required<Pick<Options, 'preload' | 'transformPageChunk'>>> {
+		mocks.session = { id: 's1', user_id: 'u1' };
+		const { event } = stubEvent(path, { method: 'GET' });
+		let seen: Options | undefined;
+		await handle({
+			event,
+			resolve: async (_event, opts) => {
+				seen = opts;
+				return new Response('page');
+			}
+		});
+		return seen as Required<Pick<Options, 'preload' | 'transformPageChunk'>>;
+	}
+
+	const PAGE = '<html>\n\t<head>\n\t\t<title>Inbox</title>\n\t</head>\n\t<body></body>\n</html>';
+
+	it('keeps every file out of the Link header', async () => {
+		const { preload } = await optionsFor('/inbox?source=pwa');
+		for (const type of ['js', 'css', 'font', 'asset'] as const) {
+			expect(preload({ type, path: `./_app/immutable/x.${type}` }), type).toBe(false);
+		}
+	});
+
+	it("names the page's scripts in its <head> instead", async () => {
+		const { preload, transformPageChunk } = await optionsFor('/inbox');
+		preload({ type: 'js', path: './_app/immutable/entry/start.abc.js' });
+		preload({ type: 'css', path: './_app/immutable/assets/0.abc.css' });
+		preload({ type: 'js', path: './_app/immutable/chunks/a"b.js' });
+		const html = await transformPageChunk({ html: PAGE, done: false });
+		expect(html).toContain('<link rel="modulepreload" href="./_app/immutable/entry/start.abc.js">');
+		expect(html).toContain('<link rel="modulepreload" href="./_app/immutable/chunks/a%22b.js">');
+		expect(html).not.toContain('0.abc.css');
+		expect(html?.indexOf('modulepreload')).toBeLessThan(html?.indexOf('</head>') ?? -1);
+		// Once only: a later chunk of a streamed page is passed on as it is.
+		expect(await transformPageChunk({ html: '</head>', done: true })).toBe('</head>');
+	});
+
+	it('leaves a page with no scripts, and a chunk with no head, as they are', async () => {
+		const none = await optionsFor('/inbox');
+		expect(await none.transformPageChunk({ html: PAGE, done: true })).toBe(PAGE);
+		const late = await optionsFor('/inbox');
+		late.preload({ type: 'js', path: './a.js' });
+		expect(await late.transformPageChunk({ html: '<p>chunk</p>', done: false })).toBe('<p>chunk</p>');
+	});
+
+	it('does not share one request\'s scripts with the next', async () => {
+		const first = await optionsFor('/inbox');
+		first.preload({ type: 'js', path: './first.js' });
+		const second = await optionsFor('/calendar');
+		second.preload({ type: 'js', path: './second.js' });
+		expect(await second.transformPageChunk({ html: PAGE, done: true })).not.toContain('first.js');
+	});
+});
