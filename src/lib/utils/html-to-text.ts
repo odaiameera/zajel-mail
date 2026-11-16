@@ -42,6 +42,14 @@ export function htmlToText(html: string): string {
 			const url = href.replace(/^mailto:/i, '');
 			return !text || decodeEntities(text) === decodeEntities(url) ? url : `${text} (${url})`;
 		})
+		// The composer's paragraphs are lines: it sends them with no margin,
+		// and a blank line as a paragraph holding a <br> (see compose-html).
+		// As lines here too, or the text half would put a blank line after
+		// every line written. Any other <p> is a paragraph, with a gap.
+		.replace(
+			/<p\b[^>]*\bstyle\s*=\s*"[^"]*\bmargin\s*:\s*0(?![\d.])[^"]*"[^>]*>([\s\S]*?)<\/p>/gi,
+			(_m, inner: string) => (/^\s*<br\s*\/?>\s*$/i.test(inner) ? '<br><br>' : `${inner}<br>`)
+		)
 		.replace(/<blockquote\b[^>]*>/gi, `\n${QUOTE_OPEN}`)
 		.replace(/<\/blockquote>/gi, `${QUOTE_CLOSE}\n`)
 		.replace(/<br\s*\/?>/gi, '\n')

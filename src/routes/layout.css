@@ -534,7 +534,8 @@ select.fc-select:not([multiple]):not([size]) {
 	height: auto;
 	/* The account's default composer font and size (Settings > Composer),
 	   set on the editor element; the same font wraps the sent body, so what
-	   you see is what they get. */
+	   you see is what they get. The spacing below goes out with the message
+	   too, as inline styles: keep $lib/utils/compose-html in step with it. */
 	font-family: var(--composer-font, Calibri, 'Segoe UI', Arial, sans-serif);
 	font-size: var(--composer-size, 12pt); line-height: 1.5; color: var(--color-text);
 }

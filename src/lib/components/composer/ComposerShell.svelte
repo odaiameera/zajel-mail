@@ -37,6 +37,7 @@
 		getSignatureById,
 		applySignature
 	} from '$lib/utils/signatures';
+	import { editableBody, outgoingBody } from '$lib/utils/compose-html';
 	import { compressImageForBody } from '$lib/utils/image-compress';
 	import { showToast } from '$lib/stores/toast';
 	import { afterScheduling, type ScheduledSend } from '$lib/stores/outbox';
@@ -401,11 +402,6 @@
 		return `${quoted}, ${generic}`;
 	}
 
-	// The body as sent: wrapped in the default font, so recipients see what
-	// the editor showed instead of their own client's default.
-	function outgoingBody(html: string): string {
-		return `<div style="font-family: ${composerFont}; font-size: ${composerFontSize};">${html}</div>`;
-	}
 
 	function buildPayload() {
 		return {
@@ -413,7 +409,10 @@
 			cc,
 			bcc,
 			subject,
-			body: outgoingBody(body),
+			// As sent: in the default font, and with the editor's spacing
+			// written into it, so recipients see what the editor showed and
+			// not their own mail client's defaults.
+			body: outgoingBody(body, composerFont, composerFontSize),
 			inReplyTo,
 			references,
 			draftId,
@@ -689,7 +688,7 @@
 		cc = s.cc;
 		bcc = s.bcc;
 		subject = s.subject;
-		body = s.body;
+		body = editableBody(s.body);
 		inReplyTo = s.inReplyTo ?? '';
 		references = s.references ?? '';
 		draftId = s.draftId;
