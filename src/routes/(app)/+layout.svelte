@@ -9,10 +9,11 @@
 	import ToastContainer from '$lib/components/ToastContainer.svelte';
 	import StepUpDialog from '$lib/components/StepUpDialog.svelte';
 	import SearchInput from '$lib/components/SearchInput.svelte';
-	import { goto, afterNavigate, invalidateAll, onNavigate } from '$app/navigation';
+	import { goto, afterNavigate, invalidateAll, onNavigate, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { PHONE_QUERY, sidebarIsDrawer } from '$lib/stores/viewport';
-	import { composer, setMode } from '$lib/stores/compose';
+	import { composer, openCompose, setMode } from '$lib/stores/compose';
+	import { MAILTO_PARAM, composeFromMailto } from '$lib/utils/mailto';
 	import { onMount, setContext, untrack, type Snippet } from 'svelte';
 	import { APP_PANEL, type AppPanelContext } from '$lib/app-panel';
 	import { createReadingPaneStore } from '$lib/stores/readingPane';
@@ -167,6 +168,19 @@
 	// and it closes itself once you pick somewhere to go.
 	let drawerOpen = $state(false);
 	afterNavigate(() => { drawerOpen = false; });
+
+	// A mailto: link this app was asked to handle (see routes/mailto): open
+	// the composer with what the link asks for. The link then comes off the
+	// address, so a refresh, or the back button, doesn't start the message
+	// over on top of whatever has been written since.
+	afterNavigate(() => {
+		const link = page.url.searchParams.get(MAILTO_PARAM);
+		if (link === null) return;
+		openCompose(composeFromMailto(link));
+		const rest = new URL(page.url);
+		rest.searchParams.delete(MAILTO_PARAM);
+		replaceState(rest, page.state);
+	});
 
 	// Dragging the open drawer (or the dimmed page beside it) to the left
 	// moves it with the finger. Let go past a third of its width, or with a
