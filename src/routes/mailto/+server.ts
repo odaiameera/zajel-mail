@@ -1,5 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { MAILTO_PARAM } from '$lib/utils/mailto';
 
 /**
  * Entry point for the `mailto:` protocol handler (see manifest.webmanifest and
@@ -7,43 +8,38 @@ import type { RequestHandler } from './$types';
  * treats this PWA as the default mail app, clicking a `mailto:` link opens
  *   /mailto?to=<url-encoded full mailto: URL>
  *
- * For now we simply land the user on the inbox (per product decision). The full
- * mailto URL is parsed below so upgrading to a prefilled composer later is a
- * small change: drop the parsed fields onto the redirect target / a store and
- * have the composer read them.
+ * The link goes on to the inbox as it came, where the (app) layout reads it
+ * and opens the composer with its recipients, subject and body. A link with
+ * nothing in it still opens an empty message: someone asked to write one.
  */
+
+// A redirect carries its target in a response header, and a reverse proxy
+// reads only so much of a response's head (nginx: 4 KB by default) before it
+// answers 502 Bad Gateway. A link with a long body goes in a page instead,
+// which sends the browser on the same way.
+const REDIRECT_LIMIT = 2000;
+
+function escapeAttr(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 export const GET: RequestHandler = ({ url }) => {
 	const raw = url.searchParams.get('to') ?? '';
-	// Parsed but intentionally unused while we open to the inbox only.
-	void parseMailto(raw);
-	redirect(303, '/inbox');
-};
+	const target = `/inbox?${MAILTO_PARAM}=${encodeURIComponent(raw)}`;
+	if (target.length <= REDIRECT_LIMIT) redirect(303, target);
 
-/** Parse a `mailto:` URL into composer-ready fields. */
-function parseMailto(raw: string): {
-	to: string[];
-	cc: string[];
-	bcc: string[];
-	subject: string;
-	body: string;
-} {
-	const result = { to: [] as string[], cc: [] as string[], bcc: [] as string[], subject: '', body: '' };
-	if (!raw) return result;
-	try {
-		// Accept either a full `mailto:a@b?...` string or a bare address.
-		const withScheme = raw.startsWith('mailto:') ? raw : `mailto:${raw}`;
-		const u = new URL(withScheme);
-		const splitAddrs = (s: string) =>
-			s.split(',').map((a) => decodeURIComponent(a.trim())).filter(Boolean);
-		if (u.pathname) result.to = splitAddrs(u.pathname);
-		const p = u.searchParams;
-		if (p.get('to')) result.to.push(...splitAddrs(p.get('to')!));
-		if (p.get('cc')) result.cc = splitAddrs(p.get('cc')!);
-		if (p.get('bcc')) result.bcc = splitAddrs(p.get('bcc')!);
-		if (p.get('subject')) result.subject = p.get('subject')!;
-		if (p.get('body')) result.body = p.get('body')!;
-	} catch {
-		// Malformed mailto — fall through to an empty result.
-	}
-	return result;
-}
+	const href = escapeAttr(target);
+	return new Response(
+		'<!doctype html><html><head><meta charset="utf-8">' +
+			'<meta name="color-scheme" content="dark light">' +
+			`<meta http-equiv="refresh" content="0;url=${href}"><title>Zajel Mail</title></head>` +
+			`<body><a href="${href}">Continue to Zajel Mail</a></body></html>`,
+		{
+			headers: {
+				'content-type': 'text/html; charset=utf-8',
+				'cache-control': 'no-store',
+				'content-security-policy': "default-src 'none'; frame-ancestors 'none'"
+			}
+		}
+	);
+};
