@@ -157,6 +157,14 @@ export function getDefaultSort(userId: string): MailSort {
 	return parseMailSort(getPrefs(userId).default_sort);
 }
 
+/**
+ * Settings → Messages → Conversation view: whether the messages of one
+ * thread are listed and read as one. On unless switched off.
+ */
+export function conversationsOn(userId: string): boolean {
+	return getPrefs(userId).conversations !== 'off';
+}
+
 /** Rows per page in the mail list. Stored as a string, like every preference. */
 export function getDefaultPageSize(userId: string): number {
 	const raw = getPrefs(userId).defaultPageSize;

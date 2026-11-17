@@ -6,6 +6,7 @@
 	import CategoryPicker from './CategoryPicker.svelte';
 	import { moveToCategory } from '$lib/categories/api';
 	import type { InboxCategory } from '$lib/types/categories';
+	import { actionIds, type ThreadSummary } from '$lib/threads';
 
 	let {
 		emailId,
@@ -13,7 +14,8 @@
 		sourceMailboxId,
 		hasReminder = false,
 		category = null,
-		trashIsPermanent = false
+		trashIsPermanent = false,
+		thread = null
 	}: {
 		emailId: string;
 		isUnread: boolean;
@@ -28,7 +30,18 @@
 		hasReminder?: boolean;
 		/** The row's Inbox tab; null when the list isn't a tabbed Inbox. */
 		category?: InboxCategory | null;
+		/**
+		 * The row's conversation, when the list is of conversations. Each
+		 * button then acts on the messages it reaches (see actionIds), not on
+		 * the one message the row is built on.
+		 */
+		thread?: ThreadSummary | null;
 	} = $props();
+
+	/** The messages an action reaches: the conversation's, or just this one. */
+	function idsFor(action: string): string[] {
+		return thread && thread.ids.length > 1 ? actionIds(thread, action) : [emailId];
+	}
 
 	let loading = $state<string>('');
 	let pickerOpen = $state(false);
@@ -40,7 +53,7 @@
 		if (loading || !category) return;
 		loading = 'setCategory';
 		try {
-			await moveToCategory([emailId], next, category);
+			await moveToCategory(idsFor('setCategory'), next, category);
 		} finally {
 			loading = '';
 		}
@@ -50,11 +63,21 @@
 		if (loading) return;
 		loading = action;
 		try {
-			const res = await fetch(`/api/email/${emailId}`, {
-				method: 'PATCH',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ action, ...(action === 'trash' && trashIsPermanent ? { permanent: true } : {}) })
-			});
+			const ids = idsFor(action);
+			const extra = action === 'trash' && trashIsPermanent ? { permanent: true } : {};
+			// One message goes to its own address; a conversation's go together.
+			const res =
+				ids.length === 1 && ids[0] === emailId
+					? await fetch(`/api/email/${emailId}`, {
+							method: 'PATCH',
+							headers: { 'content-type': 'application/json' },
+							body: JSON.stringify({ action, ...extra })
+						})
+					: await fetch('/api/email/bulk', {
+							method: 'POST',
+							headers: { 'content-type': 'application/json' },
+							body: JSON.stringify({ ids, action, ...extra })
+						});
 			if (!res.ok) {
 				const data = await res.json().catch(() => ({}));
 				showToast({ message: data.error ?? 'That didn’t work. Try again.' });
@@ -71,8 +94,13 @@
 		if (loading) return;
 		loading = 'unsnooze';
 		try {
-			const res = await fetch(`/api/reminders/${emailId}`, { method: 'DELETE' });
-			if (!res.ok) showToast({ message: await errorText(res, 'Could not cancel the reminder') });
+			// Every snoozed message of the conversation comes back together. One
+			// that wasn't snoozed has no reminder to cancel, which is no error.
+			const results = await Promise.all(
+				idsFor('snooze').map((id) => fetch(`/api/reminders/${id}`, { method: 'DELETE' }).then((res) => ({ id, res })))
+			);
+			const own = results.find((r) => r.id === emailId) ?? results[0];
+			if (own && !own.res.ok) showToast({ message: await errorText(own.res, 'Could not cancel the reminder') });
 			await invalidateAll();
 		} catch {
 			showToast({ message: 'Network error' });
@@ -86,12 +114,18 @@
 		if (loading) return;
 		loading = 'rml';
 		try {
-			const res = await fetch('/api/reminders', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ emailId, remindAt, sourceMailboxId })
-			});
-			if (!res.ok) showToast({ message: await errorText(res, 'Could not set the reminder') });
+			// A conversation is snoozed whole: every message of it in this list.
+			for (const id of idsFor('snooze')) {
+				const res = await fetch('/api/reminders', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ emailId: id, remindAt, sourceMailboxId })
+				});
+				if (!res.ok) {
+					showToast({ message: await errorText(res, 'Could not set the reminder') });
+					break;
+				}
+			}
 			await invalidateAll();
 		} catch {
 			showToast({ message: 'Network error' });

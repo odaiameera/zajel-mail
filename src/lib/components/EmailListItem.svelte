@@ -10,6 +10,9 @@
 	import { formatSendTime } from '$lib/utils/send-later';
 	import EmailRowActions from './EmailRowActions.svelte';
 	import SenderAvatar from './SenderAvatar.svelte';
+	import { page } from '$app/state';
+	import { userState } from '$lib/stores/userState';
+	import { participantLine, type ThreadSummary } from '$lib/threads';
 
 	const labelsContext = getContext<LabelsContext | undefined>(LABELS_CONTEXT);
 	const allLabels: Label[] = $derived(labelsContext?.current ?? []);
@@ -34,10 +37,22 @@
 		active?: boolean;
 	} = $props();
 
+	// The row's conversation, when the list is of conversations (see
+	// docs/conversations-plan.md). The row is still built on one message, the
+	// newest in this list; the summary adds who else wrote, how many messages,
+	// and what is unread among them.
+	const getThreads = getContext<(() => Record<string, ThreadSummary> | null) | undefined>('threads');
+	const thread = $derived(getThreads?.()?.[email.threadId] ?? null);
+	const messageCount = $derived(thread?.ids.length ?? 1);
+	const myAddresses = $derived([
+		...$userState.identities.map((i) => i.email),
+		...(page.data.userEmail ? [page.data.userEmail as string] : [])
+	]);
+
 	const wasReminded = $derived(getRemindedIds?.().has(email.id) ?? false);
 	const reminderAt = $derived(getReminderAt?.().get(email.id) ?? null);
 	const scheduledSend = $derived(getScheduledSends?.().get(email.id) ?? null);
-	const isUnread = $derived(!('$seen' in email.keywords));
+	const isUnread = $derived(thread ? thread.unreadIds.length > 0 : !('$seen' in email.keywords));
 	const sourceMailboxId = $derived(
 		listMailboxId?.() || Object.keys(email.mailboxIds)[0] || ''
 	);
@@ -46,7 +61,7 @@
 	// Opened from the Trash list, the message's own page knows it was (see EmailDetail).
 	const openHref = $derived(listIsTrash ? `/email/${email.id}?from=trash` : `/email/${email.id}`);
 
-	const isRead = $derived('$seen' in email.keywords);
+	const isRead = $derived(!isUnread);
 	// Which tab this row is in, when the list is a tabbed Inbox.
 	const category = $derived(getInboxTabs?.() ? categoryOf(email.keywords) : null);
 	const showRecipients = $derived(getShowRecipients?.() ?? false);
@@ -69,9 +84,17 @@
 	const preview = $derived(
 		!email.preview || /^[A-Z_]+$/.test(email.preview.trim()) ? '' : email.preview
 	);
+	// A conversation wears every label any of its messages has.
 	const appliedLabels = $derived(
-		allLabels.filter((l) => email.mailboxIds[l.id] === true)
+		allLabels.filter((l) => (thread?.mailboxIds ?? email.mailboxIds)[l.id] === true)
 	);
+	// Who wrote in the conversation, when more than one person did: "Dana,
+	// me, Sam", each bold while they have something unread. Not in Sent,
+	// where the row names who it went to.
+	const writers = $derived(
+		thread && !showRecipients && thread.participants.length > 1 ? participantLine(thread.participants, myAddresses) : null
+	);
+	const hasAttachment = $derived(thread?.hasAttachment ?? email.hasAttachment);
 
 	function textColorForBg(hex: string): string {
 		const r = parseInt(hex.slice(1, 3), 16);
@@ -119,11 +142,19 @@
 	async function markRead() {
 		if (!isUnread) return;
 		try {
-			await fetch(`/api/email/${email.id}`, {
-				method: 'PATCH',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ action: 'markRead', sourceMailboxId })
-			});
+			if (thread && thread.ids.length > 1) {
+				await fetch('/api/email/bulk', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ ids: thread.unreadIds, action: 'markRead' })
+				});
+			} else {
+				await fetch(`/api/email/${email.id}`, {
+					method: 'PATCH',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ action: 'markRead', sourceMailboxId })
+				});
+			}
 			await invalidateAll();
 		} catch {
 			// Best effort — a failed mark-read shouldn't disrupt the list.
@@ -199,7 +230,20 @@
 					{#if !isRead}
 						<span class="w-2 h-2 rounded-full bg-unread shrink-0" title="Unread"></span>
 					{/if}
-					<span class="truncate">{senderName}</span>
+					{#if writers}
+						<!-- Each name by itself, so only those with something unread are bold. -->
+						<span class="truncate font-normal">
+							{#each writers as writer, i}{#if i > 0}<span class="mr-1 text-text-tertiary">,</span>{/if}<span class={writer.unread ? 'font-semibold text-text' : 'text-text-secondary'}>{writer.text}</span>{/each}
+						</span>
+					{:else}
+						<span class="truncate">{senderName}</span>
+					{/if}
+					{#if messageCount > 1}
+						<span class="shrink-0 text-xs font-normal tabular-nums text-text-tertiary" title="{messageCount} messages" aria-label="{messageCount} messages">{messageCount}</span>
+					{/if}
+					{#if thread?.hasDraft}
+						<span class="shrink-0 text-xs font-medium text-danger">Draft</span>
+					{/if}
 				</span>
 				{#if scheduledSend?.status === 'failed'}
 					<span class="text-xs leading-5 text-danger whitespace-nowrap group-hover:invisible" title={scheduledSend.error ?? undefined}>Not sent</span>
@@ -217,7 +261,7 @@
 					</time>
 				{/if}
 			</div>
-			<EmailRowActions emailId={email.id} {isUnread} {sourceMailboxId} hasReminder={!!reminderAt} {category} trashIsPermanent={listIsTrash} />
+			<EmailRowActions emailId={email.id} {isUnread} {sourceMailboxId} hasReminder={!!reminderAt} {category} trashIsPermanent={listIsTrash} {thread} />
 		</div>
 		<div class="email-subject truncate text-sm {isRead ? 'text-text-secondary' : 'text-text font-medium'} mt-0.5 flex items-center gap-1.5">
 			{#if wasReminded}
@@ -235,7 +279,7 @@
 					Returns {formatReturnTime(reminderAt)}
 				</span>
 			{/if}
-			{#if email.hasAttachment}
+			{#if hasAttachment}
 				<Icon name="attachment" size={12} class="text-text-tertiary" aria-label="Has attachment" />
 			{/if}
 		</div>

@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { createClient } from '$lib/jmap/auth';
-import { queryAndFetchEmailsWithFilter } from '$lib/jmap/email';
+import { loadListPage } from '$lib/server/conversations';
 import { userEmailFromAuth } from '$lib/server/user';
 import { getDefaultPageSize, getDefaultSort } from '$lib/server/db/queries/app-prefs';
 import { listMarkedIds, listReminders } from '$lib/server/db/queries/reminders';
@@ -36,7 +36,9 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	const filter = { operator: 'AND', conditions };
 
 	const client = createClient(locals.auth);
-	const result = await queryAndFetchEmailsWithFilter(client, locals.auth.accountId, filter, {
+	const result = await loadListPage(client, locals.auth.accountId, locals.user?.id ?? '', mailboxes, {
+		mailbox: null,
+		filter,
 		position: (page - 1) * pageSize,
 		limit: pageSize,
 		sort: getDefaultSort(locals.user?.id ?? '')
@@ -52,6 +54,7 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	return {
 		emails: result.emails,
 		total: result.total,
+		threads: result.threads,
 		page,
 		pageSize,
 		totalPages,

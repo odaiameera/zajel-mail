@@ -2,6 +2,9 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import EmailListItem from './EmailListItem.svelte';
 	import EmailDetail from './EmailDetail.svelte';
+	import ConversationView from './ConversationView.svelte';
+	import { actionIds, type ThreadSummary } from '$lib/threads';
+	import type { OpenThread } from '$lib/jmap/threads';
 	import MailboxPicker from './MailboxPicker.svelte';
 	import ListFilterBar from './ListFilterBar.svelte';
 	import InboxTabs from './InboxTabs.svelte';
@@ -63,6 +66,28 @@
 	// EmailListItems so they can render per-row hover actions without a
 	// long prop chain.
 	setContext('listMailboxId', () => mailboxId);
+	// threadId → the row's conversation, when the list is of conversations
+	// (Conversation view on, and not Drafts, Scheduled or Search).
+	const threads = $derived((page.data.threads ?? null) as Record<string, ThreadSummary> | null);
+	setContext('threads', () => threads);
+
+	/**
+	 * The messages an action reaches for these rows. A row stands for a
+	 * conversation: Archive takes its messages in this list, Trash all of
+	 * them, Mark unread the latest (see actionIds). With Conversation view
+	 * off, a row is its one message.
+	 */
+	function reach(action: string, rowIds: string[]): string[] {
+		if (!threads) return rowIds;
+		const rows = new Map(emails.map((e) => [e.id, e]));
+		const ids = new Set<string>();
+		for (const rowId of rowIds) {
+			const summary = threads[rows.get(rowId)?.threadId ?? ''];
+			for (const id of summary ? actionIds(summary, action) : [rowId]) ids.add(id);
+		}
+		return [...ids];
+	}
+
 	// Rows offer "Move to tab" only while the list is a tabbed Inbox.
 	setContext('inboxTabs', () => inboxTabs);
 	// In Sent and Drafts every sender is you, so rows name the recipients
@@ -197,7 +222,7 @@
 		bulkLoading = 'setCategory';
 		try {
 			// Every selected row is in the active tab — the list shows no other.
-			await moveToCategory([...selectedIds], category, inboxTabs.active);
+			await moveToCategory(reach('setCategory', [...selectedIds]), category, inboxTabs.active);
 			selectedIds = new Set();
 		} finally {
 			bulkLoading = '';
@@ -211,9 +236,10 @@
 	 */
 	function handleRowDragStart(email: Email, e: DragEvent) {
 		if (!e.dataTransfer) return;
-		const ids = selectedIds.has(email.id) && selectedIds.size > 1
-			? [...selectedIds]
-			: [email.id];
+		const ids = reach(
+			'moveTo',
+			selectedIds.has(email.id) && selectedIds.size > 1 ? [...selectedIds] : [email.id]
+		);
 		e.dataTransfer.setData('application/x-email-ids', JSON.stringify(ids));
 		e.dataTransfer.effectAllowed = 'move';
 	}
@@ -227,7 +253,7 @@
 		showMovePicker = false;
 		bulkLoading = 'moveTo';
 		try {
-			await sendBulk({ ids: [...selectedIds], action: 'moveTo', targetMailboxId });
+			await sendBulk({ ids: reach('moveTo', [...selectedIds]), action: 'moveTo', targetMailboxId });
 			selectedIds = new Set();
 			await invalidateAll();
 		} finally {
@@ -317,8 +343,14 @@
 		if (selectedIds.size === 0) return;
 		bulkLoading = action;
 		try {
+			const ids = reach(action, [...selectedIds]);
+			// Nothing to do (Mark read on conversations with nothing unread).
+			if (ids.length === 0) {
+				selectedIds = new Set();
+				return;
+			}
 			await sendBulk({
-				ids: [...selectedIds],
+				ids,
 				action,
 				// Delete for good only in the Trash list itself.
 				...(action === 'trash' && listIsTrash ? { permanent: true } : {})
@@ -338,24 +370,74 @@
 	let previewReqId = 0;
 
 	let previewSelectedId = $state<string | null>(null);
+	// The open conversation, when the row clicked has more than one message.
+	// A conversation of one is just its message (previewEmail), as before.
+	let previewThread = $state<OpenThread | null>(null);
+	// From the layout's data (Settings → Messages → Conversation view).
+	const conversations = $derived(page.data.conversations === true);
 
 	async function handlePaneClick(email: Email) {
 		const reqId = ++previewReqId;
 		previewSelectedId = email.id;
 		const cached = previewCache.get(email.id);
-		if (cached) previewEmail = cached;
+		if (cached && !previewThread) previewEmail = cached;
 		loadingPreview = true;
 		try {
+			if (conversations) {
+				const res = await fetch(`/api/email/${email.id}/thread`);
+				if (!res.ok || reqId !== previewReqId) return;
+				const thread = (await res.json()) as OpenThread;
+				const own = thread.details[email.id];
+				if (own) previewCache.set(email.id, own);
+				if (thread.messages.length > 1) {
+					previewThread = thread;
+					previewEmail = own ?? null;
+				} else {
+					previewThread = null;
+					if (own) previewEmail = own;
+				}
+				return;
+			}
 			const res = await fetch(`/api/email/${email.id}/detail`);
 			if (res.ok && reqId === previewReqId) {
 				const detail = (await res.json()) as Email;
 				previewCache.set(email.id, detail);
+				previewThread = null;
 				previewEmail = detail;
 			}
 		} finally {
 			if (reqId === previewReqId) loadingPreview = false;
 		}
 	}
+
+	// The open conversation follows the list: a reply that arrives, or a
+	// message read or starred from the row, shows in the pane without a
+	// click. Read again only when the row's summary says something changed.
+	let threadShown = '';
+	$effect(() => {
+		const open = previewThread;
+		const summary = open && threads ? threads[open.threadId] : null;
+		const state = summary ? [summary.ids, summary.unreadIds, summary.flaggedIds].map((l) => l.join(',')).join('|') : '';
+		untrack(() => {
+			if (!open) {
+				threadShown = '';
+				return;
+			}
+			if (!summary || state === threadShown) return;
+			const first = threadShown === '';
+			threadShown = state;
+			// The first summary is the one it was opened with.
+			if (first) return;
+			const asked = previewSelectedId ?? open.messages[open.messages.length - 1]?.id;
+			if (!asked) return;
+			void fetch(`/api/email/${asked}/thread`)
+				.then((res) => (res.ok ? (res.json() as Promise<OpenThread>) : null))
+				.then((fresh) => {
+					if (fresh && previewThread?.threadId === fresh.threadId && fresh.messages.length > 1) previewThread = fresh;
+				})
+				.catch(() => {});
+		});
+	});
 
 	// The open message's place (its tab, its labels, read or starred) follows
 	// the list as the list refreshes. The pane holds its own copy, fetched
@@ -639,7 +721,20 @@
 				     underneath while the next one loads. -->
 				<div class="absolute top-0 left-0 right-0 h-0.5 bg-accent/70 animate-pulse z-20"></div>
 			{/if}
-			{#if previewEmail}
+			{#if previewThread}
+				{#key previewThread.threadId}
+					<ConversationView
+						thread={previewThread}
+						focusId={previewSelectedId}
+						compact
+						onRemoved={() => {
+							previewThread = null;
+							previewEmail = null;
+							previewSelectedId = null;
+						}}
+					/>
+				{/key}
+			{:else if previewEmail}
 				{#key previewEmail.id}
 					<EmailDetail
 						email={previewEmail}

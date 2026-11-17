@@ -14,6 +14,7 @@ export const PREFERENCES = [
 	{ key: 'mark_read_delay', description: 'Mark as read after, milliseconds' },
 	{ key: 'auto_load_images', description: 'Remote images' },
 	{ key: 'default_sort', description: 'List order' },
+	{ key: 'conversations', description: 'Conversation view on or off' },
 	{ key: 'trash_retention_days', description: 'Empty Trash after, days (0 = never)' },
 	{ key: 'otp_trash_after_copy', description: 'Trash sign-in code emails after copying' },
 	{ key: 'notifications', description: 'Browser notifications on or off' },

@@ -92,6 +92,8 @@ Three principles shape it:
 
 The inbox is built for getting through mail, not just reading it.
 
+**Conversations.** A message and its replies are one row in the list and one page when opened, your own replies from Sent included. The row names who wrote ("Dana, me, Sam") and how many messages there are; opened, the messages you've read fold to a line each and the new ones are open, with the text each reply quotes tucked behind "•••". Archive, Trash, Move and Mark as read act on the whole conversation; each message keeps its own Reply, Star and Trash. Turn it off in Settings → Messages → Conversation view to list every message by itself. The design is in [docs/conversations-plan.md](docs/conversations-plan.md).
+
 **Inbox tabs.** Messages split into **Important**, **Updates**, **Newsletters** and **Promotions**, each with its own unread count. A tab only changes where you see a message; it stays in your Inbox on the server. You can sort mail yourself:
 - drag a message onto a tab,
 - use **Move to tab**, or

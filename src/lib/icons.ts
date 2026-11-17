@@ -20,6 +20,8 @@ import ChevronDown from '@lucide/svelte/icons/chevron-down';
 import ChevronLeft from '@lucide/svelte/icons/chevron-left';
 import ChevronRight from '@lucide/svelte/icons/chevron-right';
 import ChevronUp from '@lucide/svelte/icons/chevron-up';
+import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
+import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
 import CircleAlert from '@lucide/svelte/icons/circle-alert';
 import CircleQuestionMark from '@lucide/svelte/icons/circle-question-mark';
 import Clock from '@lucide/svelte/icons/clock';
@@ -121,6 +123,9 @@ export const ICONS = {
 	settings: Settings,
 	menu: Menu,
 	back: ArrowLeft,
+	/** Every message of an open conversation, folded to its line or opened. */
+	'collapse-all': ChevronsDownUp,
+	'expand-all': ChevronsUpDown,
 	'collapse-sidebar': PanelLeftClose,
 	'expand-sidebar': PanelLeftOpen,
 	'reading-pane': PanelRight,

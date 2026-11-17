@@ -21,7 +21,13 @@ vi.mock('$lib/jmap/auth', () => ({
 	})
 }));
 vi.mock('$lib/server/user', () => ({ userEmailFromAuth: () => 'me@example.test' }));
-vi.mock('$lib/server/db/queries/app-prefs', () => ({ getDefaultPageSize: () => 50, getDefaultSort: () => 'date_desc' }));
+// Conversation view off: these are about which messages the Inbox asks for,
+// which is the same filter either way (see $lib/server/conversations.test).
+vi.mock('$lib/server/db/queries/app-prefs', () => ({
+	getDefaultPageSize: () => 50,
+	getDefaultSort: () => 'date_desc',
+	conversationsOn: () => false
+}));
 vi.mock('$lib/server/db/queries/reminders', () => ({ listMarkedIds: () => [] }));
 vi.mock('$lib/server/db/queries/jev-settings', () => ({ getJevSettings: () => ({ inboxTabs: state.tabs }) }));
 vi.mock('$lib/server/mail-pipeline/hold', () => ({ inboxHoldSince: () => (state.hold ? state.holdSince : null) }));

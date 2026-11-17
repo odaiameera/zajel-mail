@@ -12,6 +12,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		defaultSort?: string;
 		trashRetentionDays?: number;
 		otpTrashAfterCopy?: boolean;
+		conversations?: boolean;
 	};
 
 	const patch: Record<string, string> = {};
@@ -41,6 +42,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 	if (body.otpTrashAfterCopy !== undefined) {
 		patch.otp_trash_after_copy = body.otpTrashAfterCopy ? 'on' : 'off';
+	}
+	if (body.conversations !== undefined) {
+		patch.conversations = body.conversations ? 'on' : 'off';
 	}
 	writePreferences(locals.user.id, patch);
 	return json({ success: true });

@@ -58,6 +58,7 @@ export const load: LayoutServerLoad = async ({ cookies, locals, parent }) => {
 		defaultSort: parseMailSort(prefs.default_sort),
 		trashRetentionDays: parseTrashRetentionDays(prefs.trash_retention_days),
 		otpTrashAfterCopy: prefs.otp_trash_after_copy !== 'off',
+		conversations: prefs.conversations !== 'off',
 		// Notifications
 		notificationsEnabled: prefs.notifications === 'on',
 		notificationFolders,
