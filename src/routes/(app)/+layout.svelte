@@ -17,6 +17,7 @@
 	import { onMount, setContext, untrack, type Snippet } from 'svelte';
 	import { APP_PANEL, type AppPanelContext } from '$lib/app-panel';
 	import { createReadingPaneStore } from '$lib/stores/readingPane';
+	import { applyTheme } from '$lib/theme';
 	import { profilePhoto } from '$lib/stores/profilePhoto';
 	import { realtime } from '$lib/stores/realtime';
 	import { calendarNotify } from '$lib/stores/calendarNotify';
@@ -44,6 +45,18 @@
 	let { readingPaneDefault } = data;
 	const readingPane = createReadingPaneStore(readingPaneDefault);
 	setContext('readingPane', readingPane);
+	// After that it follows the saved setting whenever that changes (Settings
+	// → Appearance, another tab, Import, Reset). Only a change: every reload
+	// of `data` brings the same value again, and that must not undo a pane
+	// just switched from a list's own button, whose save is still on its way.
+	const savedReadingPane = $derived(data.readingPaneDefault);
+	$effect(() => readingPane.follow(savedReadingPane));
+	// The theme likewise. The first paint takes it from a cookie; this puts
+	// right a browser whose cookie is behind, and shows one brought in by
+	// Import or Reset. Only a change here too, so a theme being tried out in
+	// Settings before Save isn't taken back by new mail arriving.
+	const savedTheme = $derived(data.theme);
+	$effect(() => applyTheme(savedTheme));
 	// A getter, so consumers see the labels of the current page data (a new
 	// label, another account) rather than those of the first load.
 	setContext<LabelsContext>(LABELS_CONTEXT, {

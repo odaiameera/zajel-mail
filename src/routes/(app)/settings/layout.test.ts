@@ -21,8 +21,22 @@ import Harness from './SettingsHarness.svelte';
 import Calendar from './calendar/+page.svelte';
 import Appearance from './appearance/+page.svelte';
 import Backup from './backup/+page.svelte';
+import Messages from './messages/+page.svelte';
 
 const data = { calendarWeekStart: 1, theme: 'dark', density: 'comfortable', readingPane: 'on' };
+const messagesData = {
+	...data,
+	defaultSort: 'date_desc',
+	markReadDelay: 0,
+	autoLoadImages: 'contacts_only',
+	trashRetentionDays: 30,
+	otpTrashAfterCopy: true,
+	conversations: true,
+	composerFont: 'Calibri',
+	composerFontSize: '12',
+	autoSaveInterval: 10,
+	undoSendSeconds: 10
+};
 const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
 import { bar, barShown, barText, discardButton, saveButton } from '$lib/settings/save-bar.testing';
 
@@ -68,6 +82,24 @@ describe('the settings Save bar', () => {
 		await vi.waitFor(() => expect(barShown()).toBe(false), { timeout: 3000 });
 	});
 
+	it('says "Saved" with a tick, and with no buttons beside it', async () => {
+		render(Harness, { props: { page: Calendar, data } as never });
+		await fireEvent.change(screen.getByLabelText('Week starts on'), { target: { value: '0' } });
+		// While there is something to save, the pill is the one with the buttons.
+		expect(bar().querySelector('.saved')).toBeNull();
+		await fireEvent.click(saveButton()!);
+		await vi.waitFor(() => expect(barText()).toBe('Saved'));
+		const pill = bar().querySelector('.saved');
+		expect(pill).toBeTruthy();
+		expect(pill!.querySelector('.tick svg')).toBeTruthy();
+		expect(within(bar()).queryAllByRole('button')).toEqual([]);
+
+		// Changed again while it still says so: back to the buttons at once.
+		await fireEvent.change(screen.getByLabelText('Week starts on'), { target: { value: '6' } });
+		expect(bar().querySelector('.saved')).toBeNull();
+		expect(barText()).toBe('Unsaved changes');
+	});
+
 	it('stays away from a page that only has actions', () => {
 		render(Harness, { props: { page: Backup, data } as never });
 		expect(screen.getByRole('heading', { name: 'Backup & reset' })).toBeTruthy();
@@ -96,6 +128,38 @@ describe('the settings Save bar', () => {
 		expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
 			'/api/preferences/calendar',
 			'/api/preferences/reading-pane'
+		]);
+	});
+
+	it('goes on working when one page with settings follows another directly', async () => {
+		const { rerender } = render(Harness, { props: { page: Calendar, data } as never });
+		// Straight from one page with settings to the next, as a click in the
+		// menu does it: the new page is there before the old one is taken down.
+		await rerender({ page: Appearance, data } as never);
+		expect(barShown()).toBe(false);
+		await fireEvent.click(screen.getByRole('switch', { name: 'Reading pane' }));
+		expect(barShown()).toBe(true);
+		await fireEvent.click(saveButton()!);
+		expect(await screen.findByText('Saved')).toBeTruthy();
+		expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/preferences/reading-pane']);
+
+		// And back again.
+		await rerender({ page: Calendar, data } as never);
+		await fireEvent.change(screen.getByLabelText('Week starts on'), { target: { value: '0' } });
+		expect(barShown()).toBe(true);
+		expect(saveButton()?.disabled).toBe(false);
+	});
+
+	it('keeps every section of the next page: both of Messages & composer save after another page', async () => {
+		const { rerender } = render(Harness, { props: { page: Calendar, data } as never });
+		await rerender({ page: Messages, data: messagesData } as never);
+		await fireEvent.change(screen.getByLabelText('Default sort'), { target: { value: 'date_asc' } });
+		await fireEvent.change(screen.getByLabelText('Default font'), { target: { value: 'Georgia' } });
+		await fireEvent.click(saveButton()!);
+		expect(await screen.findByText('Saved')).toBeTruthy();
+		expect(fetchMock.mock.calls.map(([url]) => url).sort()).toEqual([
+			'/api/preferences/composer',
+			'/api/preferences/mail'
 		]);
 	});
 
@@ -238,5 +302,10 @@ describe('the settings Save bar', () => {
 		await rerender({ page: Calendar, data: { ...data, calendarWeekStart: 6, activeAccountId: 'acct-2' } } as never);
 		expect((screen.getByLabelText('Week starts on') as HTMLSelectElement).value).toBe('6');
 		expect(barShown()).toBe(false);
+
+		// The new account's page saves like any other.
+		await fireEvent.change(screen.getByLabelText('Week starts on'), { target: { value: '1' } });
+		expect(barShown()).toBe(true);
+		expect(saveButton()?.disabled).toBe(false);
 	});
 });
