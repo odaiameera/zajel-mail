@@ -20,11 +20,12 @@ import { startTelegramWorker } from '$lib/server/telegram/worker';
 import { startJobWorker } from '$lib/server/jobs/worker';
 import { startSearchIndexer } from '$lib/server/search/worker';
 import { getAppSession, verifiedAtMs } from '$lib/server/auth/app-session';
-import { SESSION_COOKIE_OPTIONS } from '$lib/server/auth/sign-in';
+import { SESSION_COOKIE_OPTIONS, rememberReturn } from '$lib/server/auth/sign-in';
 import { getUserById, hasAppUser } from '$lib/server/auth/user';
 import { authStateForAccount, listAccounts, toPublic } from '$lib/server/auth/accounts';
 import { assertCryptoReady } from '$lib/server/auth/crypto';
 import { errorFields, logEvent } from '$lib/server/log';
+import { SIGNED_OUT_HEADER } from '$lib/signed-out';
 
 // A crash still ends the process as before; this only records why, since
 // the container restarts and the console line scrolls away.
@@ -346,7 +347,23 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	if (!event.locals.user && tooLargeForSignedOut(event.request)) return PAYLOAD_TOO_LARGE();
+	// Signed out and asking for one of the app's pages: its load is about to
+	// send them to /login. Keep the address, so signing in leads to the
+	// message, search or mail link they asked for and not to the inbox.
+	if (!event.locals.user && event.request.method === 'GET' && event.route.id?.startsWith('/(app)')) {
+		rememberReturn(event.cookies, event.url);
+	}
 	const response = await resolve(event, preloadsInPage());
+	// The API answers 401 for more than a missing session (a wrong password
+	// on a re-check, a mail account to re-enter). Mark the ones that do mean
+	// it, so the open app can say "signed out" and offer the way back in.
+	if (!event.locals.user && response.status === 401 && event.route.id?.startsWith('/api/')) {
+		try {
+			response.headers.set(SIGNED_OUT_HEADER, '1');
+		} catch {
+			// Immutable headers: the app just isn't told this time.
+		}
+	}
 	// A page another site opens now loads signed in (see sameSiteRetry), so it
 	// must not keep a handle on the window: through one it could count the
 	// open message's frames or navigate it under the reader's next click.

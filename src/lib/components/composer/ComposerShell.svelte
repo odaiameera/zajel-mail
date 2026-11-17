@@ -3,24 +3,15 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { expoOut } from 'svelte/easing';
 	import { cornerWindow } from '$lib/transitions';
-	import { Editor } from '@tiptap/core';
-	import StarterKit from '@tiptap/starter-kit';
-	import Underline from '@tiptap/extension-underline';
-	import TextAlign from '@tiptap/extension-text-align';
-	import Link from '@tiptap/extension-link';
-	import { TextStyle, FontSize } from '@tiptap/extension-text-style';
-	import FontFamily from '@tiptap/extension-font-family';
-	import Color from '@tiptap/extension-color';
-	import Highlight from '@tiptap/extension-highlight';
-	import Subscript from '@tiptap/extension-subscript';
-	import Superscript from '@tiptap/extension-superscript';
-	import { Table } from '@tiptap/extension-table';
-	import TableRow from '@tiptap/extension-table-row';
-	import TableCell from '@tiptap/extension-table-cell';
-	import TableHeader from '@tiptap/extension-table-header';
-	import Image from '@tiptap/extension-image';
-	import { SignatureNode } from '$lib/tiptap/signature-node';
-	import { BlockDirection, blockDirection } from '$lib/tiptap/block-direction';
+	import { MailEditor, NO_FORMAT, type FormatFlags } from '$lib/editor/mail-editor';
+	import {
+		applySignature,
+		hasWrittenContent,
+		incomingBody,
+		inlineImageIds,
+		isLegacyDraft,
+		outgoingBody
+	} from '$lib/editor/body-html';
 	import type { IconName } from '$lib/icons';
 
 	import {
@@ -32,11 +23,7 @@
 		closeRequests
 	} from '$lib/stores/compose';
 	import { userState } from '$lib/stores/userState';
-	import {
-		resolveSignatureForIdentity,
-		getSignatureById,
-		applySignature
-	} from '$lib/utils/signatures';
+	import { resolveSignatureForIdentity, getSignatureById } from '$lib/utils/signatures';
 	import { compressImageForBody } from '$lib/utils/image-compress';
 	import { showToast } from '$lib/stores/toast';
 	import { afterScheduling, type ScheduledSend } from '$lib/stores/outbox';
@@ -83,6 +70,8 @@
 
 	// --- Attachments ---
 	let attachments = $state<ComposeAttachment[]>([]);
+	/** Inline parts of the quoted or forwarded message (see inlineAttachments). */
+	let inlineParts = $state<ComposeAttachment[]>([]);
 	let pendingUploads = $state<{ id: number; name: string; size: number }[]>([]);
 	let nextUploadId = 0;
 	let fileInputEl = $state<HTMLInputElement | undefined>();
@@ -112,13 +101,14 @@
 	}
 
 	let editorEl = $state<HTMLDivElement | undefined>();
-	let editor: Editor | null = $state(null);
-	// Bumped on every editor transaction; the toolbar reads it so its pressed
-	// states follow the cursor. Reassigning `editor` to itself used to stand
-	// in for this, but to Svelte 5 that is no change, so nothing re-ran.
-	let editorVersion = $state(0);
+	let editor: MailEditor | null = $state(null);
+	// What the toolbar shows as pressed, for the text at the cursor. Set on
+	// every change of content or selection.
+	let fmt = $state<FormatFlags>(NO_FORMAT);
 	let lastMode: 'popup' | 'fullscreen' | 'minimized' | 'closed' = 'closed';
-	let lastAppliedSignatureId: number | null | 'unset' = 'unset';
+	// The signature the body holds now: 'unset' until the first one is put in,
+	// 'kept' for a draft or an undone send, whose own signature stays.
+	let lastAppliedSignatureId: number | null | 'unset' | 'kept' = 'unset';
 
 	const EMOJIS = ['😀','😂','🙂','😊','😉','😍','🤔','😅','🙏','👍','👎','👏','🙌','💪','❤️','🎉','🔥','✨','✅','❌','⚠️','💡','🚀','⭐'];
 
@@ -128,122 +118,95 @@
 	let openedDraft = $state(false);
 	let displayTitle = $derived(subject || (inReplyTo ? 'Reply' : isForward ? 'Forward' : openedDraft ? 'Draft' : 'New message'));
 
-	onDestroy(() => editor?.destroy());
+	onDestroy(() => editor?.dispose());
 
-	// Build the Tiptap editor on first open. We deliberately keep the editor
-	// alive across mode switches (popup ↔ fullscreen ↔ minimized) so editing
-	// state — selection, history, scroll — survives.
+	// Build the editor on first open. It stays alive across mode switches
+	// (popup, full screen, minimized) so the selection, the undo history and
+	// the scroll position survive them.
 	function initEditor(initialContent: string) {
 		if (editor || !editorEl) return;
-		editor = new Editor({
-			element: editorEl,
-			extensions: [
-				StarterKit.configure({ link: false, underline: false }),
-				Underline,
-				TextAlign.configure({ types: ['heading', 'paragraph'] }),
-				Link.configure({ openOnClick: false }),
-				TextStyle,
-				// Registered so the size menu does something: setting a
-				// fontSize mark without it was silently dropped.
-				FontSize,
-				FontFamily,
-				Color,
-				Highlight.configure({ multicolor: false }),
-				Subscript,
-				Superscript,
-				Table.configure({ resizable: false }),
-				TableRow,
-				TableCell,
-				TableHeader,
-				Image.configure({ inline: false, allowBase64: true }),
-				SignatureNode,
-				BlockDirection
-			],
-			content: initialContent,
-			onTransaction: () => {
-				editorVersion++;
+		editor = new MailEditor(editorEl, {
+			html: initialContent,
+			fontFamily: composerFont,
+			fontSize: composerFontSize,
+			onChange: (html) => {
+				body = html;
 			},
-			onUpdate: ({ editor: e }) => {
-				body = e.getHTML();
-			}
+			onUpdate: () => {
+				fmt = editor?.format() ?? NO_FORMAT;
+				updateBubble();
+			},
+			onPasteImage: pastedImage
 		});
-
-		// Tiptap's default paste handler ignores image files. Intercept on the
-		// editor's DOM and re-route image pastes through our compressor.
-		editor.view.dom.addEventListener('paste', handlePaste);
-		editor.on('selectionUpdate', updateBubble);
-		editor.on('focus', updateBubble);
-		// After the click that blurred it has landed, so a click inside the
-		// menu (which keeps focus) doesn't close it.
-		editor.on('blur', () => setTimeout(updateBubble, 0));
+		// A reply is written on the first line, above what it answers.
+		editor.cursorToStart();
+		fmt = editor.format();
+		placeFocus();
 	}
 
-	async function handlePaste(e: ClipboardEvent) {
-		const items = Array.from(e.clipboardData?.items ?? []);
-		const imageItems = items.filter((i) => i.type.startsWith('image/'));
-		if (imageItems.length === 0) return; // let Tiptap handle text/HTML paste
-		e.preventDefault();
-		e.stopPropagation();
+	// Where typing starts when a message opens: in the body when it already
+	// has someone to go to (a reply, a mail link, a draft), in To when it
+	// doesn't (a new message, a forward).
+	function placeFocus() {
+		if (to.trim()) editor?.focus();
+		else shellEl?.querySelector<HTMLInputElement>('input[aria-label="To"]')?.focus();
+	}
 
-		for (const item of imageItems) {
-			const file = item.getAsFile();
-			if (!file) continue;
-			if (file.size > 15 * 1024 * 1024) {
-				showToast({ message: 'Image too large (15MB max)' });
-				continue;
-			}
-			try {
-				const dataUrl = await compressImageForBody(file);
-				editor?.chain().focus().setImage({ src: dataUrl }).run();
-			} catch (err) {
-				console.error('paste image compression failed', err);
-				showToast({ message: 'Could not paste image' });
-			}
+	// A picture pasted into the message: made small enough to send in the
+	// body rather than going in at the size the screenshot was taken.
+	async function pastedImage(file: File): Promise<string | null> {
+		if (file.size > 15 * 1024 * 1024) {
+			showToast({ message: 'Image too large (15MB max)' });
+			return null;
+		}
+		try {
+			return await compressImageForBody(file);
+		} catch (err) {
+			console.error('paste image compression failed', err);
+			showToast({ message: 'Could not paste image' });
+			return null;
 		}
 	}
 
-	function isActive(name: string, attrs?: Record<string, unknown>) {
-		void editorVersion;
-		return editor?.isActive(name, attrs) ?? false;
+	// The body as the editor has it this instant. `body` follows the editor
+	// a frame behind (see MailEditor), which is soon enough for the screen
+	// but not for a send or a save made right after the last keystroke.
+	function syncBody(): string {
+		if (editor) body = editor.getHTML();
+		return body;
 	}
 
-	function textColor(): string | undefined {
-		void editorVersion;
-		return editor?.getAttributes('textStyle').color as string | undefined;
-	}
-
-	// The direction of the paragraph at the cursor: what the direction button
-	// shows, and which side a paragraph with no alignment of its own sits on.
-	const isRtl = $derived.by(() => {
-		void editorVersion;
-		return !!editor && blockDirection(editor.state) === 'rtl';
-	});
+	// Which way the line at the cursor reads: what the direction button
+	// shows, and which side a line with no alignment of its own sits on.
+	const isRtl = $derived(fmt.direction === 'rtl');
 
 	function alignIcon(): IconName {
-		if (isActive('', { textAlign: 'center' })) return 'align-center';
-		if (isActive('', { textAlign: 'right' })) return 'align-right';
-		if (isActive('', { textAlign: 'left' })) return 'align-left';
+		if (fmt.align === 'center') return 'align-center';
+		if (fmt.align === 'right') return 'align-right';
+		if (fmt.align === 'left') return 'align-left';
 		return isRtl ? 'align-right' : 'align-left';
 	}
 
 	function openLinkPopover() {
-		linkUrl = (editor?.getAttributes('link').href as string) ?? '';
+		// Takes in the whole link when the cursor is in one, so it is the
+		// link that is changed and not a new one put inside it.
+		linkUrl = editor?.currentLink() ?? '';
 		openMenu = 'link';
 	}
 
 	function applyLink() {
 		const url = linkUrl.trim();
 		if (!url) {
-			editor?.chain().focus().extendMarkRange('link').unsetLink().run();
+			editor?.setLink(null);
 		} else {
 			const href = /^[a-z]+:|^\//i.test(url) ? url : `https://${url}`;
-			editor?.chain().focus().extendMarkRange('link').setLink({ href }).run();
+			editor?.setLink(href);
 		}
 		openMenu = null;
 	}
 
 	function insertEmoji(emoji: string) {
-		editor?.chain().focus().insertContent(emoji).run();
+		editor?.insertText(emoji);
 		openMenu = null;
 	}
 
@@ -286,28 +249,24 @@
 	] as const;
 
 	function setTextSize(size: string | null) {
-		const chain = editor?.chain().focus();
-		if (size) chain?.setFontSize(size).run();
-		else chain?.unsetFontSize().run();
+		editor?.setTextSize(size);
 		openMenu = null;
 	}
 
 	const TEXT_COLORS = ['#d1242f', '#bc4c00', '#9a6700', '#1a7f37', '#0969da', '#8250df', '#bf3989', '#6e7781'];
 
 	function setTextColor(color: string | null) {
-		const chain = editor?.chain().focus();
-		if (color) chain?.setColor(color).run();
-		else chain?.unsetColor().run();
+		editor?.setTextColor(color);
 		openMenu = null;
 	}
 
 	function setAlign(align: 'left' | 'center' | 'right') {
-		editor?.chain().focus().setTextAlign(align).run();
+		editor?.setAlign(align);
 		openMenu = null;
 	}
 
-	function run(command: (c: ReturnType<Editor['chain']>) => ReturnType<Editor['chain']>) {
-		if (editor) command(editor.chain().focus()).run();
+	function run(command: (e: MailEditor) => void) {
+		if (editor) command(editor);
 		openMenu = null;
 	}
 
@@ -318,19 +277,16 @@
 	let bubble = $state<{ x: number; y: number; below: boolean } | null>(null);
 
 	function updateBubble() {
-		if (!editor || !bodyEl) return (bubble = null);
-		const { from, to, empty } = editor.state.selection;
-		if (empty || !editor.view.hasFocus() || editor.isActive('image')) return (bubble = null);
-		const a = editor.view.coordsAtPos(from);
-		const b = editor.view.coordsAtPos(to);
+		const rect = bodyEl ? editor?.selectionRect() : null;
+		if (!rect || !bodyEl) return (bubble = null);
 		const box = bodyEl.getBoundingClientRect();
 		const half = 110;
-		const x = Math.min(Math.max((a.left + b.right) / 2 - box.left, half), box.width - half);
+		const x = Math.min(Math.max((rect.left + rect.right) / 2 - box.left, half), box.width - half);
 		// Above the selection, unless that would put it outside the scrolling
 		// body (the first lines), where it would be clipped; then below.
-		const top = Math.min(a.top, b.top) - box.top;
+		const top = rect.top - box.top;
 		const below = top < 48;
-		const y = below ? Math.max(a.bottom, b.bottom) - box.top + 6 : top - 6;
+		const y = below ? rect.bottom - box.top + 6 : top - 6;
 		bubble = { x, y: y + bodyEl.scrollTop, below };
 	}
 
@@ -401,24 +357,32 @@
 		return `${quoted}, ${generic}`;
 	}
 
-	// The body as sent: wrapped in the default font, so recipients see what
-	// the editor showed instead of their own client's default.
-	function outgoingBody(html: string): string {
-		return `<div style="font-family: ${composerFont}; font-size: ${composerFontSize};">${html}</div>`;
+
+	// The pictures the body still draws from the message it quotes or
+	// forwards, sent along as inline parts so they show for the reader too.
+	// One that was deleted from the body isn't sent.
+	function inlineAttachments(html: string): ComposeAttachment[] {
+		if (inlineParts.length === 0) return [];
+		const drawn = inlineImageIds(html);
+		return inlineParts.filter((p) => p.cid && drawn.has(p.cid));
 	}
 
 	function buildPayload() {
+		const html = syncBody();
 		return {
 			to,
 			cc,
 			bcc,
 			subject,
-			body: outgoingBody(body),
+			// As sent: wrapped in the default font and the editor's line
+			// height, so recipients see what the editor showed and not their
+			// own mail client's defaults.
+			body: outgoingBody(html, composerFont, composerFontSize),
 			inReplyTo,
 			references,
 			draftId,
 			fromIdentityId: $composer.fromIdentityId,
-			attachments,
+			attachments: [...attachments, ...inlineAttachments(html)],
 			importance
 		};
 	}
@@ -429,17 +393,11 @@
 
 	const isDirty = $derived(snapshot() !== lastSavedSnapshot);
 
-	// Typed text, not counting the signature: a fresh composer holding only
-	// the auto-inserted signature isn't worth a draft.
+	// What was written, not counting the signature or the quoted message: a
+	// fresh composer holding only the auto-inserted signature isn't worth a
+	// draft.
 	function bodyHasUserText(): boolean {
-		if (!editor) return body.replace(/<[^>]+>/g, '').trim().length > 0;
-		let found = false;
-		editor.state.doc.descendants((node) => {
-			if (found || node.type.name === 'signature') return false;
-			if (node.isText && node.text?.trim()) found = true;
-			return !found;
-		});
-		return found;
+		return hasWrittenContent(body);
 	}
 
 	function hasContent(): boolean {
@@ -531,10 +489,11 @@
 			cc,
 			bcc,
 			subject,
-			body,
+			body: syncBody(),
 			inReplyTo,
 			references,
 			attachments: [...attachments],
+			inlineParts: [...inlineParts],
 			importance,
 			fromIdentityId: $composer.fromIdentityId
 		};
@@ -689,7 +648,12 @@
 		cc = s.cc;
 		bcc = s.bcc;
 		subject = s.subject;
-		body = s.body;
+		// Cleaned before the editor sees it: a quoted message is someone
+		// else's HTML. A draft from the old editor opens with its spacing.
+		body = incomingBody(s.body, {
+			images: s.images,
+			legacyParagraphs: !!s.draftId && isLegacyDraft(s.body)
+		});
 		inReplyTo = s.inReplyTo ?? '';
 		references = s.references ?? '';
 		draftId = s.draftId;
@@ -700,13 +664,16 @@
 		error = '';
 		importance = s.importance ?? 'normal';
 		attachments = [...(s.attachments ?? [])];
+		inlineParts = [...(s.inlineParts ?? [])];
 		pendingUploads = [];
 		openMenu = null;
 		bubble = null;
 		confirmingDiscard = false;
 		saveStatus = 'idle';
 		savedAt = null;
-		lastAppliedSignatureId = 'unset';
+		// A draft, or a send being undone, comes with the signature it was
+		// written with; that one stays until another is picked.
+		lastAppliedSignatureId = s.draftId ? 'kept' : 'unset';
 		// What was opened counts as saved: an untouched reply or draft isn't
 		// written back just for being opened.
 		lastSavedSnapshot = snapshot();
@@ -727,20 +694,23 @@
 				});
 			}
 			loadFromStore();
-			editor?.commands.setContent(body, { emitUpdate: false });
+			editor?.setHTML(body);
+			placeFocus();
 		} else if (lastMode !== 'closed' && mode === 'closed') {
-			// Tear down Tiptap when the composer fully closes — its mount node
-			// is unmounted by the {#if}, so leaving the instance alive points
-			// it at a detached element and the next open won't re-init.
-			editor?.destroy();
+			// Tear the editor down when the composer fully closes: its mount
+			// node goes with the {#if}, so an instance left alive would point
+			// at a detached element and the next open wouldn't start one.
+			editor?.dispose();
 			editor = null;
+			fmt = NO_FORMAT;
+			bubble = null;
 		}
 		lastMode = mode;
 		lastSession = session;
 	});
 
-	// Spin up Tiptap as soon as the editor mount node exists. Re-fires on
-	// every open because we destroyed the editor on close.
+	// Start the editor as soon as its mount node exists. Re-fires on every
+	// open, because closing disposed of it.
 	$effect(() => {
 		if ($composer.mode === 'closed') return;
 		if (!editorEl) return;
@@ -771,41 +741,49 @@
 		if ($composer.mode === 'closed') return;
 		if (!$userState.loaded) return;
 		if ($composer.signatureManuallyChosen) return;
-		// New conversations only — don't bury an existing reply/draft body
-		// under an auto-signature.
-		if (inReplyTo || draftId || isForward) return;
+		// A new message, a reply and a forward all get one. A draft keeps
+		// the signature it was saved with.
+		if (draftId && lastAppliedSignatureId === 'kept') return;
 		const id = resolveSignatureForIdentity($composer.fromIdentityId);
 		if (id !== $composer.signatureId) setSignature(id, false);
 	});
 
-	// Whenever the resolved signatureId changes, rewrite the body so the
-	// signature block matches. Skip the very first apply if the body already
-	// contains a signature marker (e.g. an existing draft).
+	// Whenever the chosen signature changes, put it in the body in place of
+	// the one there: under what is being written, which in a reply or a
+	// forward is above the quoted message (see applySignature).
 	$effect(() => {
 		const sigId = $composer.signatureId;
+		const manual = $composer.signatureManuallyChosen;
 		if ($composer.mode === 'closed') return;
 		if (!editor) return;
 		if (sigId === lastAppliedSignatureId) return;
-		const sig = getSignatureById(sigId);
-		const next = applySignature(body, sig?.html ?? null);
-		if (next !== body) {
-			const wasClean = !isDirty;
-			editor.commands.setContent(next, { emitUpdate: false });
-			body = next;
-			// Inserted by the app, not typed: an untouched message stays clean.
-			if (wasClean) lastSavedSnapshot = snapshot();
-		}
-		lastAppliedSignatureId = sigId;
+		// A reopened draft has its signature already; leave it until one is
+		// picked from the menu. Applying "none" here used to strip it.
+		if (lastAppliedSignatureId === 'kept' && !manual) return;
+		untrack(() => {
+			if (!editor) return;
+			const sig = getSignatureById(sigId);
+			const current = syncBody();
+			const next = applySignature(current, sig?.html ?? null);
+			if (next !== current) {
+				const wasClean = !isDirty;
+				editor.setHTML(next);
+				body = editor.getHTML();
+				// Inserted by the app, not typed: an untouched message stays clean.
+				if (wasClean) lastSavedSnapshot = snapshot();
+			}
+			lastAppliedSignatureId = sigId;
+		});
 	});
 </script>
 
 <svelte:window onkeydown={handleKeydown} onpointerdown={closeMenusOnOutsideClick} />
 
 {#snippet markButtons()}
-	<button type="button" onclick={() => run((c) => c.toggleBold())} class="fc-btn {isActive('bold') ? 'fc-active' : ''}" title="Bold" aria-label="Bold" aria-pressed={isActive('bold')}><Icon name="bold" /></button>
-	<button type="button" onclick={() => run((c) => c.toggleItalic())} class="fc-btn {isActive('italic') ? 'fc-active' : ''}" title="Italic" aria-label="Italic" aria-pressed={isActive('italic')}><Icon name="italic" /></button>
-	<button type="button" onclick={() => run((c) => c.toggleUnderline())} class="fc-btn {isActive('underline') ? 'fc-active' : ''}" title="Underline" aria-label="Underline" aria-pressed={isActive('underline')}><Icon name="underline" /></button>
-	<button type="button" onclick={() => run((c) => c.toggleStrike())} class="fc-btn {isActive('strike') ? 'fc-active' : ''}" title="Strikethrough" aria-label="Strikethrough" aria-pressed={isActive('strike')}><Icon name="strikethrough" /></button>
+	<button type="button" onclick={() => run((e) => e.toggleBold())} class="fc-btn {fmt.bold ? 'fc-active' : ''}" title="Bold" aria-label="Bold" aria-pressed={fmt.bold}><Icon name="bold" /></button>
+	<button type="button" onclick={() => run((e) => e.toggleItalic())} class="fc-btn {fmt.italic ? 'fc-active' : ''}" title="Italic" aria-label="Italic" aria-pressed={fmt.italic}><Icon name="italic" /></button>
+	<button type="button" onclick={() => run((e) => e.toggleUnderline())} class="fc-btn {fmt.underline ? 'fc-active' : ''}" title="Underline" aria-label="Underline" aria-pressed={fmt.underline}><Icon name="underline" /></button>
+	<button type="button" onclick={() => run((e) => e.toggleStrike())} class="fc-btn {fmt.strike ? 'fc-active' : ''}" title="Strikethrough" aria-label="Strikethrough" aria-pressed={fmt.strike}><Icon name="strikethrough" /></button>
 {/snippet}
 
 {#if $composer.mode === 'fullscreen'}
@@ -913,7 +891,8 @@
 		>
 			<div
 				bind:this={editorEl}
-				class="min-h-full full-composer-editor"
+				class="min-h-full mail-editor composer-editor"
+				dir="auto"
 				style="--composer-font: {composerFont}; --composer-size: {composerFontSize};"
 			></div>
 
@@ -928,13 +907,13 @@
 				>
 					{@render markButtons()}
 					<div class="fc-sep"></div>
-					<button type="button" onclick={openLinkPopover} class="fc-btn {isActive('link') ? 'fc-active' : ''}" title="Link" aria-label="Link">
+					<button type="button" onclick={openLinkPopover} class="fc-btn {fmt.link ? 'fc-active' : ''}" title="Link" aria-label="Link">
 						<Icon name="link" size={16} />
 					</button>
-					<button type="button" onclick={() => run((c) => c.toggleHighlight())} class="fc-btn {isActive('highlight') ? 'fc-active' : ''}" title="Highlight" aria-label="Highlight">
+					<button type="button" onclick={() => run((e) => e.toggleHighlight())} class="fc-btn {fmt.highlight ? 'fc-active' : ''}" title="Highlight" aria-label="Highlight">
 						<Icon name="highlight" size={16} />
 					</button>
-					<button type="button" onclick={() => run((c) => c.clearNodes().unsetAllMarks())} class="fc-btn" title="Clear formatting" aria-label="Clear formatting">
+					<button type="button" onclick={() => run((e) => e.clearFormatting())} class="fc-btn" title="Clear formatting" aria-label="Clear formatting">
 						<Icon name="clear-formatting" size={16} />
 					</button>
 				</div>
@@ -977,7 +956,14 @@
 			class="shrink-0 flex items-center gap-0.5 flex-wrap px-2 py-1 border-t border-border"
 			class:hidden={$composer.mode === 'minimized'}
 			role="toolbar"
+			tabindex="-1"
 			aria-label="Formatting"
+			onmousedown={(e) => {
+				// A press on a button here must not take the cursor out of the
+				// text: the editor would have to put it back, and a format
+				// switched on for the next letters is forgotten when it does.
+				if ((e.target as Element).closest('button')) e.preventDefault();
+			}}
 		>
 			<div class="relative" data-menu-root>
 				<button type="button" onclick={() => toggleMenu('size')} class="fc-btn {openMenu === 'size' ? 'fc-active' : ''}" title="Text size" aria-label="Text size" aria-haspopup="menu" aria-expanded={openMenu === 'size'}>
@@ -997,7 +983,7 @@
 				<button type="button" onclick={() => toggleMenu('color')} class="fc-btn {openMenu === 'color' ? 'fc-active' : ''}" title="Text color" aria-label="Text color" aria-haspopup="menu" aria-expanded={openMenu === 'color'}>
 					<span class="flex flex-col items-center leading-none">
 						<Icon name="text-color" size={14} />
-						<span class="mt-0.5 h-0.5 w-3.5 rounded-full" style="background: {textColor() ?? 'currentColor'}"></span>
+						<span class="mt-0.5 h-0.5 w-3.5 rounded-full" style="background: {fmt.textColor ?? 'currentColor'}"></span>
 					</span>
 				</button>
 				{#if openMenu === 'color'}
@@ -1011,17 +997,17 @@
 					</div>
 				{/if}
 			</div>
-			<button type="button" onclick={() => run((c) => c.toggleHighlight())} class="fc-btn {isActive('highlight') ? 'fc-active' : ''}" title="Highlight" aria-label="Highlight" aria-pressed={isActive('highlight')}>
+			<button type="button" onclick={() => run((e) => e.toggleHighlight())} class="fc-btn {fmt.highlight ? 'fc-active' : ''}" title="Highlight" aria-label="Highlight" aria-pressed={fmt.highlight}>
 				<Icon name="highlight" size={16} />
 			</button>
 			<div class="fc-sep"></div>
-			<button type="button" onclick={() => run((c) => c.toggleBulletList())} class="fc-btn {isActive('bulletList') ? 'fc-active' : ''}" title="Bulleted list" aria-label="Bulleted list" aria-pressed={isActive('bulletList')}>
+			<button type="button" onclick={() => run((e) => e.toggleBulletList())} class="fc-btn {fmt.bulletList ? 'fc-active' : ''}" title="Bulleted list" aria-label="Bulleted list" aria-pressed={fmt.bulletList}>
 				<Icon name="bulleted-list" size={16} />
 			</button>
-			<button type="button" onclick={() => run((c) => c.toggleOrderedList())} class="fc-btn {isActive('orderedList') ? 'fc-active' : ''}" title="Numbered list" aria-label="Numbered list" aria-pressed={isActive('orderedList')}>
+			<button type="button" onclick={() => run((e) => e.toggleNumberedList())} class="fc-btn {fmt.numberedList ? 'fc-active' : ''}" title="Numbered list" aria-label="Numbered list" aria-pressed={fmt.numberedList}>
 				<Icon name="numbered-list" size={16} />
 			</button>
-			<button type="button" onclick={() => run((c) => c.toggleBlockquote())} class="fc-btn {isActive('blockquote') ? 'fc-active' : ''}" title="Quote" aria-label="Quote" aria-pressed={isActive('blockquote')}>
+			<button type="button" onclick={() => run((e) => e.toggleQuote())} class="fc-btn {fmt.quote ? 'fc-active' : ''}" title="Quote" aria-label="Quote" aria-pressed={fmt.quote}>
 				<Icon name="quote" size={16} />
 			</button>
 			<div class="relative" data-menu-root>
@@ -1036,11 +1022,11 @@
 					</div>
 				{/if}
 			</div>
-			<button type="button" onclick={() => run((c) => c.toggleBlockDirection())} class="fc-btn {isRtl ? 'fc-active' : ''}" title="Right to left" aria-label="Right to left" aria-pressed={isRtl}>
+			<button type="button" onclick={() => run((e) => e.toggleDirection())} class="fc-btn {isRtl ? 'fc-active' : ''}" title="Right to left" aria-label="Right to left" aria-pressed={isRtl}>
 				<Icon name="direction-rtl" size={16} />
 			</button>
 			<div class="fc-sep"></div>
-			<button type="button" onclick={() => run((c) => c.clearNodes().unsetAllMarks())} class="fc-btn" title="Clear formatting" aria-label="Clear formatting">
+			<button type="button" onclick={() => run((e) => e.clearFormatting())} class="fc-btn" title="Clear formatting" aria-label="Clear formatting">
 				<Icon name="clear-formatting" size={16} />
 			</button>
 			<div class="relative" data-menu-root>
@@ -1049,21 +1035,21 @@
 				</button>
 				{#if openMenu === 'more'}
 					<div class="absolute bottom-full mb-1 left-0 z-50 w-48 py-1 rounded-lg border border-border bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.35)] text-sm" role="menu">
-						{#if isActive('table')}
-							<button type="button" role="menuitem" onclick={() => run((c) => c.addRowAfter())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Add row</button>
-							<button type="button" role="menuitem" onclick={() => run((c) => c.addColumnAfter())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Add column</button>
-							<button type="button" role="menuitem" onclick={() => run((c) => c.deleteRow())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Delete row</button>
-							<button type="button" role="menuitem" onclick={() => run((c) => c.deleteColumn())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Delete column</button>
-							<button type="button" role="menuitem" onclick={() => run((c) => c.deleteTable())} class="w-full text-left px-3 py-1.5 text-danger hover:bg-danger/10 cursor-pointer">Delete table</button>
+						{#if fmt.inTable}
+							<button type="button" role="menuitem" onclick={() => run((e) => e.tableOperation('insertBelow'))} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Add row</button>
+							<button type="button" role="menuitem" onclick={() => run((e) => e.tableOperation('insertRight'))} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Add column</button>
+							<button type="button" role="menuitem" onclick={() => run((e) => e.tableOperation('deleteRow'))} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Delete row</button>
+							<button type="button" role="menuitem" onclick={() => run((e) => e.tableOperation('deleteColumn'))} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Delete column</button>
+							<button type="button" role="menuitem" onclick={() => run((e) => e.tableOperation('deleteTable'))} class="w-full text-left px-3 py-1.5 text-danger hover:bg-danger/10 cursor-pointer">Delete table</button>
 							<div class="my-1 h-px bg-border"></div>
 						{:else}
-							<button type="button" role="menuitem" onclick={() => run((c) => c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }))} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Insert table</button>
+							<button type="button" role="menuitem" onclick={() => run((e) => e.insertTable(3, 3))} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Insert table</button>
 						{/if}
-						<button type="button" role="menuitem" onclick={() => run((c) => c.setHorizontalRule())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Divider</button>
-						<button type="button" role="menuitem" onclick={() => run((c) => c.sinkListItem('listItem'))} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Indent</button>
-						<button type="button" role="menuitem" onclick={() => run((c) => c.liftListItem('listItem'))} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Outdent</button>
-						<button type="button" role="menuitem" onclick={() => run((c) => c.toggleSubscript())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Subscript</button>
-						<button type="button" role="menuitem" onclick={() => run((c) => c.toggleSuperscript())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Superscript</button>
+						<button type="button" role="menuitem" onclick={() => run((e) => e.insertDivider())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Divider</button>
+						<button type="button" role="menuitem" onclick={() => run((e) => e.indent())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Indent</button>
+						<button type="button" role="menuitem" onclick={() => run((e) => e.outdent())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Outdent</button>
+						<button type="button" role="menuitem" onclick={() => run((e) => e.toggleSubscript())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Subscript</button>
+						<button type="button" role="menuitem" onclick={() => run((e) => e.toggleSuperscript())} class="w-full text-left px-3 py-1.5 text-text hover:bg-surface-hover cursor-pointer">Superscript</button>
 					</div>
 				{/if}
 			</div>
@@ -1163,7 +1149,7 @@
 					<Icon name="attachment" size={16} />
 				</button>
 				<div class="relative" data-menu-root>
-					<button type="button" onclick={() => toggleMenu('link')} class="fc-btn {openMenu === 'link' || isActive('link') ? 'fc-active' : ''}" title="Link" aria-label="Link" aria-haspopup="dialog" aria-expanded={openMenu === 'link'}>
+					<button type="button" onclick={() => toggleMenu('link')} class="fc-btn {openMenu === 'link' || fmt.link ? 'fc-active' : ''}" title="Link" aria-label="Link" aria-haspopup="dialog" aria-expanded={openMenu === 'link'}>
 						<Icon name="link" size={16} />
 					</button>
 					{#if openMenu === 'link'}
@@ -1316,15 +1302,7 @@
 	/*
 	 * The .fc-* toolbar rules and the editor's own typography (including the
 	 * account's default font and size from Settings > Composer, via
-	 * --composer-font / --composer-size) live in routes/layout.css. They were
-	 * duplicated here as :global() overrides, which shipped in a second chunk
-	 * and silently won on some properties — a hard-coded Calibri 14px hid the
-	 * setting entirely. One definition now; only the image rule, which
-	 * layout.css lacks, stays here.
+	 * --composer-font / --composer-size) live in routes/layout.css, under
+	 * .mail-editor.
 	 */
-	:global(.full-composer-editor .ProseMirror img) {
-		max-width: 100%;
-		height: auto;
-		border-radius: 4px;
-	}
 </style>

@@ -40,7 +40,10 @@
 				passkeyError = 'Passkey sign-in failed';
 				return;
 			}
-			window.location.href = '/inbox';
+			// The server names where to go: the page that sent them here to
+			// sign in, or the inbox. Only ever a path on this site.
+			const { next } = (await verifyRes.json().catch(() => ({}))) as { next?: string };
+			window.location.href = typeof next === 'string' && /^\/(?![/\\])/.test(next) ? next : '/inbox';
 		} catch (err) {
 			// User dismissing the platform dialog throws — stay quiet for that.
 			if ((err as Error)?.name !== 'NotAllowedError') {

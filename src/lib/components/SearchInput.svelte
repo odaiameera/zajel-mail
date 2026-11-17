@@ -22,6 +22,11 @@
 	// can't know the platform, and a guess would flash the wrong key.
 
 	let inputEl = $state<HTMLInputElement | undefined>(undefined);
+
+	/** Put the cursor in the box. */
+	export function focus() {
+		inputEl?.focus();
+	}
 	let focused = $state(false);
 
 	// Recent searches, loaded lazily when the panel needs them so we always

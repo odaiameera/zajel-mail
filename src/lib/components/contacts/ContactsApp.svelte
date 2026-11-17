@@ -668,7 +668,18 @@
 										<h3 class="text-xs font-semibold uppercase tracking-wide text-text-tertiary mb-2">Email</h3>
 										<div class="space-y-2">
 											{#each contactEmails(selected) as email}
-												<a class="block text-sm text-accent-fg hover:underline" href={`mailto:${encodeURIComponent(email.address)}`}>{email.address}</a>
+												<!-- A real mail link, so it can be copied or opened elsewhere
+												     from its menu; a plain click writes to them here, where
+												     the link alone would hand off to the system's mail app. -->
+												<a
+													class="block text-sm text-accent-fg hover:underline"
+													href={`mailto:${encodeURIComponent(email.address)}`}
+													onclick={(e) => {
+														if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+														e.preventDefault();
+														openCompose({ to: email.address });
+													}}
+												>{email.address}</a>
 											{/each}
 										</div>
 									</div>

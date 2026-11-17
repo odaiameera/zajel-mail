@@ -177,6 +177,9 @@ export const load: LayoutServerLoad = async ({ locals, cookies }) => {
 			// Settings → Messages → "Mark as read after", in milliseconds: how
 			// long an open message waits before the reading view marks it read.
 			markReadDelay: parseMarkReadDelay(prefs.mark_read_delay),
+			// Settings → Messages → Conversation view: the messages of one
+			// thread listed and read as one. On unless switched off.
+			conversations: prefs.conversations !== 'off',
 			// Whether this account's Inbox is split into tabs — the message view
 			// then names the tab a message is in, beside its labels. Not
 			// `inboxTabs`: the Inbox page's own data has that name, for its tabs.

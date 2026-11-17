@@ -4,7 +4,7 @@ import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { verifyAuthentication } from '$lib/server/auth/webauthn';
 import { createAppSession } from '$lib/server/auth/app-session';
 import { deleteMfaChallenge } from '$lib/server/auth/mfa';
-import { MFA_COOKIE, SESSION_COOKIE_OPTIONS } from '$lib/server/auth/sign-in';
+import { MFA_COOKIE, SESSION_COOKIE_OPTIONS, takeReturn } from '$lib/server/auth/sign-in';
 
 export const POST: RequestHandler = async ({ url, request, cookies, getClientAddress }) => {
 	const response = (await request.json()) as AuthenticationResponseJSON;
@@ -32,5 +32,6 @@ export const POST: RequestHandler = async ({ url, request, cookies, getClientAdd
 		true
 	);
 	cookies.set('session', sessionId, SESSION_COOKIE_OPTIONS);
-	return json({ success: true });
+	// `next`: the page they were sent to sign in from, or the inbox.
+	return json({ success: true, next: takeReturn(cookies) });
 };

@@ -1,7 +1,9 @@
 import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { createClient } from '$lib/jmap/auth';
-import { countUnreadByCategory, queryAndFetchEmails } from '$lib/jmap/email';
+import { countUnreadByCategory } from '$lib/jmap/email';
+import { loadListPage } from '$lib/server/conversations';
+import type { ThreadSummary } from '$lib/threads';
 import { userEmailFromAuth } from '$lib/server/user';
 import { getDefaultPageSize, getDefaultSort } from '$lib/server/db/queries/app-prefs';
 import { getJevSettings } from '$lib/server/db/queries/jev-settings';
@@ -44,6 +46,7 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 			pageSize: 50,
 			totalPages: 1,
 			remindedIds: [],
+			threads: null as Record<string, ThreadSummary> | null,
 			filter: parseListFilter(url.searchParams.get('filter')),
 			inboxTabs: null as InboxTabsState | null
 		};
@@ -66,11 +69,12 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	const hold = holdSince !== null ? shownCondition(Date.now(), holdSince) : null;
 
 	const [result, tabUnread] = await Promise.all([
-		queryAndFetchEmails(client, locals.auth.accountId, inbox.id, {
+		loadListPage(client, locals.auth.accountId, locals.user?.id ?? '', mailboxes, {
+			mailbox: inbox,
+			filter: allOf(listFilterCondition(filter), category ? categoryCondition(category) : null, hold),
 			position: (page - 1) * pageSize,
 			limit: pageSize,
-			sort: getDefaultSort(locals.user?.id ?? ''),
-			extraFilter: allOf(listFilterCondition(filter), category ? categoryCondition(category) : null, hold)
+			sort: getDefaultSort(locals.user?.id ?? '')
 		}),
 		tabsOn ? countUnreadByCategory(client, locals.auth.accountId, inbox.id, hold) : null
 	]);
@@ -88,6 +92,7 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
 	return {
 		emails: result.emails,
 		total: result.total,
+		threads: result.threads,
 		mailboxId: inbox.id,
 		page,
 		pageSize,

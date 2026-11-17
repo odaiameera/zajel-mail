@@ -37,6 +37,7 @@
 		autoLoadImages: string;
 		trashRetentionDays: string;
 		otpTrashAfterCopy: boolean;
+		conversations: boolean;
 		pageSize: string;
 	};
 
@@ -47,6 +48,7 @@
 		autoLoadImages: 'Remote images',
 		trashRetentionDays: 'Empty Trash',
 		otpTrashAfterCopy: 'Trash sign-in codes after copying',
+		conversations: 'Conversation view',
 		pageSize: 'Messages per page'
 	};
 
@@ -59,6 +61,7 @@
 			autoLoadImages: data.autoLoadImages,
 			trashRetentionDays: String(data.trashRetentionDays),
 			otpTrashAfterCopy: data.otpTrashAfterCopy,
+			conversations: data.conversations,
 			pageSize: storedPageSize($userState.settings)
 		})),
 		// Only a value typed here is held to the limits, as for the composer below.
@@ -75,7 +78,7 @@
 				mail.markReadDelay = Math.round(seconds * 1000);
 				mailValues.markReadSeconds = seconds;
 			}
-			for (const key of ['defaultSort', 'autoLoadImages', 'otpTrashAfterCopy'] as const) {
+			for (const key of ['defaultSort', 'autoLoadImages', 'otpTrashAfterCopy', 'conversations'] as const) {
 				if (changed[key] === undefined) continue;
 				mail[key] = changed[key];
 				(mailValues as Record<string, unknown>)[key] = changed[key];
@@ -138,6 +141,16 @@
 					{ value: 'subject', label: 'Subject (A–Z)' },
 					{ value: 'from', label: 'Sender (A–Z)' }
 				]}
+			/>
+		{/snippet}
+	</SettingRow>
+
+	<SettingRow title="Conversation view" description="Replies are listed and read with the message they answer, as one conversation.">
+		{#snippet control()}
+			<Toggle
+				checked={draft.value.conversations}
+				ariaLabel="Conversation view"
+				onChange={(v) => (draft.value.conversations = v)}
 			/>
 		{/snippet}
 	</SettingRow>

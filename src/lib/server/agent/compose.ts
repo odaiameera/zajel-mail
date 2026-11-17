@@ -1,4 +1,5 @@
 import { createClient } from '$lib/jmap/auth';
+import { BLANK_LINE, textToLines } from '$lib/editor/text';
 import type { JMAPClient } from '$lib/jmap/client';
 import { getEmailDetail, saveDraft, sendEmail } from '$lib/jmap/email';
 import { getMailboxes } from '$lib/jmap/mailbox';
@@ -68,7 +69,11 @@ export async function composeReply(
 	const original = req.replyToEmailId
 		? await getEmailDetail(ctx.client, ctx.auth.accountId, req.replyToEmailId)
 		: null;
-	const to = req.to.length ? req.to : original?.from?.[0]?.email ? [original.from[0].email] : [];
+	// A reply with nobody named goes where the app's own Reply sends it: to
+	// Reply-To when the sender set one (a ticket system writing from
+	// noreply@), else to the sender.
+	const answerTo = original?.replyTo?.[0]?.email ?? original?.from?.[0]?.email;
+	const to = req.to.length ? req.to : answerTo ? [answerTo] : [];
 	if (to.length === 0) return { error: 'Say who the message is for' };
 	const bad = [...to, ...req.cc].find((address) => !ADDRESS.test(address));
 	if (bad) return { error: `“${bad}” is not an email address` };
@@ -90,21 +95,13 @@ export async function composeReply(
 	};
 }
 
-function escapeHtml(text: string): string {
-	return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-/** The composer writes HTML; plain paragraphs keep the agent's text as written. */
-function toHtml(text: string): string {
-	return text
-		.split(/\n{2,}/)
-		.map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`)
-		.join('');
-}
-
-/** The message's HTML body: the text, then (for a reply) the original, a line apart as the app's Reply leaves it. */
+/**
+ * The message's HTML body: the text as the composer would have written it (a
+ * line per line, so it opens there and arrives spaced as written), then, for
+ * a reply, the original a line below, as the app's Reply leaves it.
+ */
 export function composedHtml(message: ComposedMessage): string {
-	return toHtml(message.text) + (message.quoteHtml ? `<br>${message.quoteHtml}` : '');
+	return textToLines(message.text) + (message.quoteHtml ? `${BLANK_LINE}${message.quoteHtml}` : '');
 }
 
 function toCompose(message: ComposedMessage, from: { name: string | null; email: string }): ComposeEmail {

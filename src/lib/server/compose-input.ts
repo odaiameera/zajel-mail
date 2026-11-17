@@ -26,7 +26,9 @@ export function parseAttachments(input: unknown): ComposeAttachment[] {
 			blobId: a.blobId,
 			name: typeof a.name === 'string' ? a.name : 'attachment',
 			type: typeof a.type === 'string' ? a.type : 'application/octet-stream',
-			size: typeof a.size === 'number' ? a.size : 0
+			size: typeof a.size === 'number' ? a.size : 0,
+			// A Content-ID is a header value: nothing that could end the line.
+			...(typeof a.cid === 'string' && /^[^\s<>]{1,255}$/.test(a.cid) && { cid: a.cid })
 		}));
 }
 

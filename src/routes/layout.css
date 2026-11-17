@@ -528,36 +528,50 @@ select.fc-select:not([multiple]):not([size]) {
 	flex-shrink: 0;
 }
 
-.full-composer-editor .ProseMirror {
+/*
+ * The message editor (Rooster, $lib/editor/mail-editor): the composer's body
+ * and the signature editor.
+ *
+ * What is written here is sent as HTML to mail clients that know none of
+ * this app's styles, so inside the editor a tag looks the way a browser draws
+ * it with no stylesheet at all: a <p> has its gap, a list its bullets, a
+ * link its underline. The app's reset (Tailwind's preflight) flattens all of
+ * those, and an editor that showed them flattened would show something other
+ * than what arrives. The editor itself writes a <div> per line, with its
+ * formatting inline, so these rules are for what it is given: a quoted
+ * message, a pasted page, an older draft.
+ *
+ * Only the font, size and line height are the app's to set, and the sent
+ * body is wrapped in the same three ($lib/editor/body-html, outgoingBody).
+ */
+.mail-editor {
 	outline: none;
-	min-height: 300px;
-	height: auto;
-	/* The account's default composer font and size (Settings > Composer),
-	   set on the editor element; the same font wraps the sent body, so what
-	   you see is what they get. */
+	/* The account's default composer font and size (Settings > Composer). */
 	font-family: var(--composer-font, Calibri, 'Segoe UI', Arial, sans-serif);
-	font-size: var(--composer-size, 12pt); line-height: 1.5; color: var(--color-text);
+	font-size: var(--composer-size, 12pt);
+	line-height: 1.5;
+	color: var(--color-text);
+	overflow-wrap: anywhere;
 }
-.full-composer-editor .ProseMirror p { margin: 0; }
-.full-composer-editor .ProseMirror p:last-child { margin-bottom: 0; }
-.full-composer-editor .ProseMirror ul { list-style: disc; padding-inline-start: 1.5em; margin: 0.25em 0; }
-.full-composer-editor .ProseMirror ol { list-style: decimal; padding-inline-start: 1.5em; margin: 0.25em 0; }
-.full-composer-editor .ProseMirror h1 { font-size: 1.5em; font-weight: 700; margin: 0.5em 0; }
-.full-composer-editor .ProseMirror h2 { font-size: 1.25em; font-weight: 600; margin: 0.5em 0; }
-.full-composer-editor .ProseMirror h3 { font-size: 1.1em; font-weight: 600; margin: 0.5em 0; }
-.full-composer-editor .ProseMirror a { color: var(--color-accent); text-decoration: underline; }
-.full-composer-editor .ProseMirror blockquote {
-	/* The start side, not the left: a right-to-left quote has its bar on the right. */
-	border-inline-start: 3px solid var(--color-border); padding-inline-start: 1em; margin-inline-start: 0; color: var(--color-text-secondary);
-}
-.full-composer-editor .ProseMirror table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
-.full-composer-editor .ProseMirror td,
-.full-composer-editor .ProseMirror th { border: 1px solid var(--color-border); padding: 6px 10px; min-width: 60px; }
-.full-composer-editor .ProseMirror th { background: var(--color-surface-hover); font-weight: 600; }
-.full-composer-editor .ProseMirror .is-editor-empty:first-child::before {
-	content: attr(data-placeholder); color: var(--color-text-tertiary); pointer-events: none; float: left; height: 0;
-}
-
+.composer-editor { min-height: 300px; height: auto; }
+.mail-editor p { margin: 1em 0; }
+.mail-editor h1 { font-size: 2em; font-weight: bold; margin: 0.67em 0; }
+.mail-editor h2 { font-size: 1.5em; font-weight: bold; margin: 0.83em 0; }
+.mail-editor h3 { font-size: 1.17em; font-weight: bold; margin: 1em 0; }
+.mail-editor h4 { font-size: 1em; font-weight: bold; margin: 1.33em 0; }
+.mail-editor h5 { font-size: 0.83em; font-weight: bold; margin: 1.67em 0; }
+.mail-editor h6 { font-size: 0.67em; font-weight: bold; margin: 2.33em 0; }
+.mail-editor ul { list-style: disc; margin: 1em 0; padding-inline-start: 40px; }
+.mail-editor ol { list-style: decimal; margin: 1em 0; padding-inline-start: 40px; }
+.mail-editor ul ul, .mail-editor ul ol, .mail-editor ol ul, .mail-editor ol ol { margin: 0; }
+.mail-editor blockquote { margin: 1em 40px; }
+.mail-editor pre { margin: 1em 0; font-family: monospace; white-space: pre-wrap; }
+.mail-editor hr { margin: 0.5em auto; border-style: inset; border-width: 1px; color: gray; }
+.mail-editor a { color: var(--color-accent-fg, #0969da); text-decoration: underline; cursor: text; }
+.mail-editor b, .mail-editor strong { font-weight: bold; }
+.mail-editor img { display: inline; max-width: 100%; height: auto; }
+.mail-editor table { border-collapse: separate; text-indent: initial; }
+.mail-editor center { text-align: center; }
 /* Compose animations */
 @keyframes compose-modal-in {
 	from { opacity: 0; transform: translateY(20px) scale(0.95); }

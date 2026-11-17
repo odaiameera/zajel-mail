@@ -236,3 +236,32 @@ describe('scheduled messages', () => {
 		});
 	});
 });
+
+describe('pictures a message draws', () => {
+	it('sends a part with a Content-ID inline under that id, and the rest as files', async () => {
+		const { client, request } = clientReturning([
+			['Email/set', { created: { draft1: { id: 'M1' } } }, '0'],
+			['EmailSubmission/set', { created: { sub1: { id: 'S1' } } }, '1'],
+			['Email/set', { updated: { M1: null } }, '1']
+		]);
+		await sendEmail(
+			client,
+			'acct',
+			{
+				...compose,
+				body: '<div>See <img src="cid:logo@x"></div>',
+				attachments: [
+					{ blobId: 'B1', name: 'report.pdf', type: 'application/pdf', size: 10 },
+					{ blobId: 'B2', name: 'logo.png', type: 'image/png', size: 5, cid: 'logo@x' }
+				]
+			},
+			{ drafts: 'D', sent: 'S' },
+			{ id: 'I1', email: 'odai@example.test' }
+		);
+		const created = request.mock.calls[0][0][0][1].create.draft1;
+		expect(created.attachments).toEqual([
+			{ blobId: 'B1', type: 'application/pdf', name: 'report.pdf', size: 10, disposition: 'attachment' },
+			{ blobId: 'B2', type: 'image/png', name: 'logo.png', size: 5, cid: 'logo@x', disposition: 'inline' }
+		]);
+	});
+});

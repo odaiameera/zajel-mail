@@ -1,12 +1,8 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
 	import { onDestroy } from 'svelte';
-	import { Editor, Extension } from '@tiptap/core';
-	import StarterKit from '@tiptap/starter-kit';
-	import Link from '@tiptap/extension-link';
-	import { TextStyle } from '@tiptap/extension-text-style';
-	import FontFamily from '@tiptap/extension-font-family';
-	import { BlockDirection, blockDirection } from '$lib/tiptap/block-direction';
+	import { MailEditor } from '$lib/editor/mail-editor';
+	import { incomingBody, signatureLines, textLength } from '$lib/editor/body-html';
 
 	let {
 		html = $bindable(''),
@@ -28,126 +24,78 @@
 	const SIZE_OPTIONS = ['10', '11', '12', '14', '16', '18'];
 	const DEFAULT_SIZE = '12';
 
-	// Tiptap doesn't ship a font-size mark — we add the attribute to TextStyle
-	// so it serializes as `<span style="font-size: 14pt">`. Value pattern stays
-	// inside the sanitizer's allowed regex (`/^\d+(\.\d+)?(pt|px)$/`).
-	const FontSize = Extension.create({
-		name: 'fontSize',
-		addOptions() {
-			return { types: ['textStyle'] as string[] };
-		},
-		addGlobalAttributes() {
-			return [
-				{
-					types: this.options.types,
-					attributes: {
-						fontSize: {
-							default: null,
-							parseHTML: (el: HTMLElement) =>
-								(el.style.fontSize ?? '').trim() || null,
-							renderHTML: (attrs: { fontSize?: string | null }) =>
-								attrs.fontSize ? { style: `font-size: ${attrs.fontSize}` } : {}
-						}
-					}
-				}
-			];
-		}
-	});
-
 	let mountEl = $state<HTMLDivElement | undefined>();
-	let editor: Editor | null = $state(null);
+	let editor: MailEditor | null = $state(null);
 	let charCount = $state(0);
+	// The value of `html` the editor is showing: what it was last given, or
+	// last wrote back. Anything else arriving in `html` is the parent
+	// choosing another signature.
+	let shown = '';
 
-	// Track which marks are active so the toolbar buttons can show pressed
-	// state. Bumped on every Tiptap transaction.
+	// Which marks are on at the cursor, so the buttons can show as pressed.
 	let activeMarks = $state({ bold: false, italic: false, link: false, rtl: false });
 	let activeFont = $state(FONT_OPTIONS[0].value);
 	let activeSize = $state(DEFAULT_SIZE);
 
-	onDestroy(() => editor?.destroy());
+	onDestroy(() => editor?.dispose());
+
+	// A stored signature, ready for the editor: cleaned, and as lines (one
+	// written in the old editor is a <p> per line).
+	function forEditor(stored: string): string {
+		return incomingBody(signatureLines(stored));
+	}
 
 	$effect(() => {
 		if (!mountEl || editor) return;
-		editor = new Editor({
-			element: mountEl,
-			extensions: [
-				StarterKit.configure({
-					heading: false,
-					bulletList: false,
-					orderedList: false,
-					listItem: false,
-					blockquote: false,
-					codeBlock: false,
-					code: false,
-					horizontalRule: false,
-					strike: false,
-					link: false
-				}),
-				Link.configure({ openOnClick: false, autolink: true }),
-				TextStyle,
-				FontFamily,
-				FontSize,
-				BlockDirection
-			],
-			content: html || '<p></p>',
-			editable: !disabled,
-			editorProps: {
-				attributes: {
-					class:
-						'min-h-[120px] max-h-[280px] overflow-y-auto px-3 py-2 text-sm text-text outline-none signature-prose'
-				}
+		shown = html;
+		// No default font or size: a line that sets neither takes the font of
+		// the message the signature is put in.
+		editor = new MailEditor(mountEl, {
+			html: forEditor(html),
+			handles: false,
+			onChange: (next) => {
+				shown = next;
+				html = next;
+				charCount = textLength(next);
 			},
-			onUpdate: ({ editor: e }) => {
-				html = e.getHTML();
-				charCount = e.getText().length;
-				refreshActive();
-			},
-			// Every step, not only selection changes: switching direction is neither.
-			onTransaction: () => refreshActive()
+			onUpdate: refreshActive
 		});
-		charCount = editor.getText().length;
+		editor.setEditable(!disabled);
+		charCount = textLength(html);
 		refreshActive();
 	});
 
-	// Keep editor's content in sync when the parent swaps signatures
-	// (e.g. user clicks a different row in the list).
+	// Keep the editor in step when the parent swaps signatures (another row
+	// in the list, or the saved copy coming back from the server).
 	$effect(() => {
-		if (!editor) return;
-		const current = editor.getHTML();
-		if (html !== current) {
-			editor.commands.setContent(html || '<p></p>', { emitUpdate: false });
-			charCount = editor.getText().length;
-			refreshActive();
-		}
+		const next = html;
+		if (!editor || next === shown) return;
+		shown = next;
+		editor.setHTML(forEditor(next));
+		charCount = textLength(next);
+		refreshActive();
 	});
 
 	$effect(() => {
-		if (!editor) return;
-		if (editor.isEditable !== !disabled) {
-			editor.setEditable(!disabled);
-		}
+		editor?.setEditable(!disabled);
 	});
 
 	function refreshActive() {
 		if (!editor) return;
-		activeMarks = {
-			bold: editor.isActive('bold'),
-			italic: editor.isActive('italic'),
-			link: editor.isActive('link'),
-			rtl: blockDirection(editor.state) === 'rtl'
-		};
-		const attrs = editor.getAttributes('textStyle') as {
-			fontFamily?: string;
-			fontSize?: string;
-		};
-		activeFont = matchFont(attrs.fontFamily) ?? FONT_OPTIONS[0].value;
-		activeSize = matchSize(attrs.fontSize) ?? DEFAULT_SIZE;
+		const f = editor.format();
+		activeMarks = { bold: f.bold, italic: f.italic, link: f.link, rtl: f.direction === 'rtl' };
+		activeFont = matchFont(f.fontName ?? undefined) ?? FONT_OPTIONS[0].value;
+		activeSize = matchSize(f.fontSize ?? undefined) ?? DEFAULT_SIZE;
 	}
+
+	// A font as the browser reports it back may have lost or changed its
+	// quotes; compare the names alone.
+	const fontKey = (value: string) => value.replace(/['"]/g, '').replace(/\s*,\s*/g, ',').replace(/\s+/g, ' ').trim().toLowerCase();
 
 	function matchFont(value?: string): string | null {
 		if (!value) return null;
-		const normalized = value.replace(/\s+/g, ' ').trim();
-		return FONT_OPTIONS.find((o) => o.value === normalized)?.value ?? null;
+		const key = fontKey(value);
+		return FONT_OPTIONS.find((o) => fontKey(o.value) === key)?.value ?? null;
 	}
 
 	function matchSize(value?: string): string | null {
@@ -158,54 +106,37 @@
 	}
 
 	function toggleBold() {
-		editor?.chain().focus().toggleBold().run();
+		editor?.toggleBold();
 	}
 
 	function toggleItalic() {
-		editor?.chain().focus().toggleItalic().run();
+		editor?.toggleItalic();
 	}
 
 	function toggleDirection() {
-		editor?.chain().focus().toggleBlockDirection().run();
+		editor?.toggleDirection();
 	}
 
 	function toggleLink() {
 		if (!editor) return;
-		if (editor.isActive('link')) {
-			editor.chain().focus().unsetLink().run();
+		if (activeMarks.link) {
+			editor.currentLink();
+			editor.setLink(null);
 			return;
 		}
 		const url = window.prompt('Link URL', 'https://')?.trim();
-		if (!url) return;
-		// Tiptap's Link extension validates the scheme against allowedSchemes
-		// (defaults: http, https, ftp, mailto). Anything weird is silently
-		// dropped, so no extra guard needed here.
-		const { from, to } = editor.state.selection;
-		if (from === to) {
-			editor.chain().focus().insertContent(`<a href="${escapeAttr(url)}">${escapeText(url)}</a>`).run();
-		} else {
-			editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
-		}
+		// Only what a signature may link to; the server's cleaner holds the
+		// same line.
+		if (!url || !/^(https?:|mailto:)/i.test(url)) return;
+		editor.setLink(url);
 	}
 
 	function changeFont(e: Event) {
-		const value = (e.target as HTMLSelectElement).value;
-		if (!editor) return;
-		editor.chain().focus().setFontFamily(value).run();
+		editor?.setFont((e.target as HTMLSelectElement).value);
 	}
 
 	function changeSize(e: Event) {
-		const value = (e.target as HTMLSelectElement).value;
-		if (!editor) return;
-		editor.chain().focus().setMark('textStyle', { fontSize: `${value}pt` }).run();
-	}
-
-	function escapeAttr(s: string): string {
-		return s.replace(/"/g, '&quot;').replace(/</g, '&lt;');
-	}
-
-	function escapeText(s: string): string {
-		return s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]!);
+		editor?.setTextSize(`${(e.target as HTMLSelectElement).value}pt`);
 	}
 
 	const MAX_CHARS = 5000;
@@ -220,7 +151,15 @@
 </script>
 
 <div class="rounded-lg border border-border bg-surface-hover/40 overflow-hidden flex flex-col">
-	<div class="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-surface flex-wrap">
+	<!-- A press on a button here must not take the cursor out of the text: the
+	     editor would have to put it back, and a format switched on for the
+	     next letters (bold, on an empty line) is forgotten when it does. The
+	     two menus are left alone; they need the press to open. -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-surface flex-wrap"
+		onmousedown={(e) => { if ((e.target as Element).closest('button')) e.preventDefault(); }}
+	>
 		<select
 			value={activeFont}
 			onchange={changeFont}
@@ -297,7 +236,11 @@
 		<div class="flex-1"></div>
 		<span class="text-2xs {counterClass}" aria-live="polite">{charCount} / {MAX_CHARS}</span>
 	</div>
-	<div bind:this={mountEl}></div>
+	<div
+		bind:this={mountEl}
+		dir="auto"
+		class="mail-editor signature-editor min-h-[120px] max-h-[280px] overflow-y-auto px-3 py-2 text-sm text-text"
+	></div>
 </div>
 
 <style>
@@ -315,17 +258,10 @@
 		text-align: left;
 	}
 
-	:global(.signature-prose p) {
-		margin: 0 0 0.4em 0;
-	}
-	:global(.signature-prose p:last-child) {
-		margin-bottom: 0;
-	}
-	:global(.signature-prose a) {
-		color: var(--color-accent);
-		text-decoration: underline;
-	}
-	:global(.signature-prose strong) {
-		font-weight: 600;
+	/* The signature as it will sit in a message: the app's text size, not the
+	   composer's default, until a size is chosen for it. */
+	.signature-editor {
+		font-family: inherit;
+		font-size: 0.875rem;
 	}
 </style>

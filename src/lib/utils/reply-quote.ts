@@ -1,5 +1,8 @@
 import type { Email } from '$lib/jmap/types';
 
+/** Marks the quoted original in a reply. The same value as QUOTE_ID in $lib/editor/body-html, which the server can't import (it needs a browser). */
+export const QUOTE_ID = 'zajel-quote';
+
 /**
  * The original message under a reply: who wrote it, when, the subject, then
  * the message itself. The app's Reply and the agent's replies both quote it
@@ -40,7 +43,9 @@ export function replyQuoteHtml(
 	const from = sender.name ? `${escapeHtml(sender.name)} &lt;${escapeHtml(sender.email)}&gt;` : escapeHtml(sender.email);
 	const date = quoteDate(email.receivedAt, timeZone);
 	return (
-		'<blockquote style="margin: 0 0 0 0.8ex; border-left: 3px solid #0969da; padding-left: 1ex; color: #59636e;">' +
+		// The id marks where the quoted message starts, so the composer can
+		// put a signature above it (see $lib/editor/body-html).
+		`<blockquote id="${QUOTE_ID}" style="margin: 0 0 0 0.8ex; border-left: 3px solid #0969da; padding-left: 1ex; color: #59636e;">` +
 		`<div><strong>From:</strong> ${from}</div>` +
 		(date ? `<div><strong>Date:</strong> ${date}</div>` : '') +
 		`<div><strong>Subject:</strong> ${escapeHtml(email.subject ?? '')}</div><br>${bodyHtml}</blockquote>`

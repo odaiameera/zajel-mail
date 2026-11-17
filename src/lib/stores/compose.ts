@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import type { ComposeAttachment } from '$lib/jmap/types';
+import type { ImageSources } from '$lib/editor/body-html';
 
 export type ComposerMode = 'popup' | 'fullscreen' | 'minimized' | 'closed';
 
@@ -16,6 +17,14 @@ export interface ComposeData {
 	fromIdentityId?: string | null;
 	/** Blobs already on the server: a draft's attachments, or a forward's. */
 	attachments?: ComposeAttachment[];
+	/**
+	 * Inline parts of the message being quoted, forwarded or reopened: the
+	 * pictures its body draws by Content-ID. Sent along as inline parts while
+	 * the body still draws them.
+	 */
+	inlineParts?: ComposeAttachment[];
+	/** Where the body's pictures can be shown from while it is edited. */
+	images?: ImageSources;
 	importance?: 'high' | 'normal' | 'low';
 }
 

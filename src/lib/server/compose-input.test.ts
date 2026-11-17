@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	DEFAULT_UNDO_SEND_SECONDS,
+	parseAttachments,
 	parseDraftId,
 	parseImportance,
 	parseMessageIds,
@@ -69,5 +70,26 @@ describe('parseUndoSendSeconds', () => {
 		expect(parseUndoSendSeconds('')).toBe(DEFAULT_UNDO_SEND_SECONDS);
 		expect(parseUndoSendSeconds('7')).toBe(DEFAULT_UNDO_SEND_SECONDS);
 		expect(parseUndoSendSeconds('abc')).toBe(DEFAULT_UNDO_SEND_SECONDS);
+	});
+});
+
+describe('parseAttachments', () => {
+	it('keeps a blob reference, and a Content-ID only when it is one', () => {
+		expect(
+			parseAttachments([
+				{ blobId: 'B1', name: 'a.pdf', type: 'application/pdf', size: 3 },
+				{ blobId: 'B2', name: 'logo.png', type: 'image/png', size: 5, cid: 'logo@x' },
+				{ blobId: 'B3', cid: 'bad id\r\nBcc: x@example.test' },
+				{ blobId: 'B4', cid: '<angle@x>' },
+				{ name: 'no blob' },
+				null
+			])
+		).toEqual([
+			{ blobId: 'B1', name: 'a.pdf', type: 'application/pdf', size: 3 },
+			{ blobId: 'B2', name: 'logo.png', type: 'image/png', size: 5, cid: 'logo@x' },
+			{ blobId: 'B3', name: 'attachment', type: 'application/octet-stream', size: 0 },
+			{ blobId: 'B4', name: 'attachment', type: 'application/octet-stream', size: 0 }
+		]);
+		expect(parseAttachments('nope')).toEqual([]);
 	});
 });

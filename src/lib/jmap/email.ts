@@ -140,6 +140,8 @@ export async function getEmailDetail(
 					// header. Stalwart 1.0 rejects `:asText` here (0.15 let it pass).
 					// parseListUnsubscribe only reads the <...> entries, so the raw
 					// value's leading space and folded lines don't matter.
+					// A draft's importance, so reopening it keeps what was chosen.
+					'header:importance:asText',
 					'header:list-unsubscribe',
 					'header:list-unsubscribe-post:asText',
 					'header:x-spam-status:asText',
@@ -196,12 +198,16 @@ function buildEmailCreate(compose: ComposeEmail): Record<string, unknown> {
 	}
 
 	if (compose.attachments && compose.attachments.length > 0) {
+		// A part with a Content-ID is a picture the body draws (`cid:`): sent
+		// inline under that id, so it shows in the message. Before, a forward
+		// sent every such picture as a plain file, and the body's own
+		// reference to it pointed at nothing.
 		emailCreate.attachments = compose.attachments.map((a: ComposeAttachment) => ({
 			blobId: a.blobId,
 			type: a.type,
 			name: a.name,
 			size: a.size,
-			disposition: 'attachment'
+			...(a.cid ? { cid: a.cid, disposition: 'inline' } : { disposition: 'attachment' })
 		}));
 	}
 

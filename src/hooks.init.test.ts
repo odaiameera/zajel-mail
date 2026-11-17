@@ -37,8 +37,9 @@ describe('server start', () => {
 		await handle({
 			event: {
 				url: new URL('https://mail.example.test/inbox'),
+				route: { id: '/(app)/inbox' },
 				request: new Request('https://mail.example.test/inbox'),
-				cookies: { get: () => undefined, delete: vi.fn() },
+				cookies: { get: () => undefined, set: vi.fn(), delete: vi.fn() },
 				locals: {}
 			},
 			resolve: async () => new Response('ok')

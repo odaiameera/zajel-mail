@@ -6,6 +6,11 @@
 	import { tabChipFallback, tabReasonText, type TabWhy } from '$lib/tab-reason';
 	import { CATEGORY_ICON } from './category-icons';
 	import { openCompose } from '$lib/stores/compose';
+	import { composeFromMailto } from '$lib/utils/mailto';
+	import { splitQuoted } from '$lib/utils/quoted-text';
+	import { BLANK_LINE, QUOTE_ID } from '$lib/editor/body-html';
+	import { textToLines } from '$lib/editor/text';
+	import { attachmentUrl } from '$lib/attachments/fetch';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
@@ -48,13 +53,38 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	let {
 		email,
 		compact = false,
-		onRemoved
+		embedded = false,
+		onRemoved,
+		onChanged,
+		onCollapse
 	}: {
 		email: Email;
 		compact?: boolean;
+		/**
+		 * One message inside an open conversation (ConversationView). It takes
+		 * the height of its content instead of filling the pane, drops what the
+		 * conversation shows once for all its messages (the subject, the
+		 * labels, the way back) and what acts on the conversation as a whole
+		 * (Move, Archive, Spam), and hides the earlier messages it quotes
+		 * behind "•••", since they are on the page already.
+		 */
+		embedded?: boolean;
 		/** Called once this email has been moved out of the view (reading pane). */
 		onRemoved?: () => void;
+		/** Embedded: something about this message changed (read, starred, sent to Trash). */
+		onChanged?: (action: string) => void;
+		/** Embedded: the header was clicked, which in a conversation folds the message away. */
+		onCollapse?: () => void;
 	} = $props();
+
+	// For the conversation's own Reply, Reply all and Forward, which answer
+	// its last message.
+	export function replyToThis(all = false) {
+		reply(all);
+	}
+	export function forwardThis() {
+		handleForward();
+	}
 
 	$effect(() => {
 		const id = email.id;
@@ -236,7 +266,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	let headerOpen = $state<boolean | null>(null);
 	/** Between open and folded: the details still showing, out of the flow, while they fade. */
 	let headerClosing = $state(false);
-	const headerIsOpen = $derived(headerOpen ?? !(compact || $isPhone));
+	const headerIsOpen = $derived(embedded || (headerOpen ?? !(compact || $isPhone)));
 	/** What the header is becoming, which is what a screen reader is told as soon as you ask. */
 	const headerExpanded = $derived(headerIsOpen && !headerClosing);
 	let foldEl = $state<HTMLElement>();
@@ -458,7 +488,9 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// state the summary stays, invisible, over the details' top edge, so the
 	// fold can fade one into the other; while closing it is the other way round.
 	const summaryClass = $derived(
-		headerClosing
+		embedded
+			? 'hidden'
+			: headerClosing
 			? ''
 			: headerOpen === true
 				? 'absolute inset-x-0 top-0 opacity-0 pointer-events-none'
@@ -467,7 +499,9 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 					: 'md:absolute md:inset-x-0 md:top-0 md:opacity-0 md:pointer-events-none'
 	);
 	const detailsClass = $derived(
-		headerClosing
+		embedded
+			? ''
+			: headerClosing
 			? 'absolute inset-x-0 top-0 pointer-events-none'
 			: headerOpen === true
 				? ''
@@ -660,8 +694,15 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	 * recipients get the sender's original image URLs rather than links into
 	 * this webmail.
 	 */
+	// In a conversation, the earlier messages a reply quotes are hidden until
+	// asked for: they are on the page already. A forward, or a message that
+	// is all quote, is shown whole (see splitQuoted).
+	let showQuoted = $state(false);
+	const split = $derived(embedded ? splitQuoted(getBodyHtml()) : null);
+	const shownBodyHtml = $derived(split?.trimmed && !showQuoted ? split.main : getBodyHtml());
+
 	const display = $derived(
-		prepareEmailForReading(getBodyHtml(), {
+		prepareEmailForReading(shownBodyHtml, {
 			emailId: email.id,
 			attachments: email.attachments ?? [],
 			remote: remoteAllowed ? 'proxy' : 'block'
@@ -718,14 +759,126 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	</head><body>${display.html}</body></html>`);
 
 
-	// The message's own attachments, as the composer's blob references.
+	// An address in the message that is a mail link: write to it here. Left
+	// alone, the link opens a new window and hands off to the system's mail
+	// app, which is this app again in a second window, or another one.
+	// The frame runs no script; this listens from outside it. A browser that
+	// doesn't deliver events from a frame without scripts keeps the old
+	// behaviour, as does a click meant for a new tab or window.
+	//
+	// An action, not onload: a message rendered on the server has loaded
+	// before the page's script attaches anything, and the inline handler
+	// Svelte would replay that with is refused by the app's CSP. So the
+	// document already there is taken, and each later one (the next message
+	// replaces srcdoc) as it loads.
+	function mailLinks(frame: HTMLIFrameElement) {
+		const watched = new WeakSet<Document>();
+		const watch = () => {
+			const doc = frame.contentDocument;
+			if (!doc || watched.has(doc)) return;
+			watched.add(doc);
+			doc.addEventListener('click', (click) => {
+				if (click.button !== 0 || click.metaKey || click.ctrlKey || click.shiftKey || click.altKey) return;
+				const link = (click.target as Element | null)?.closest?.('a[href], area[href]');
+				const href = link?.getAttribute('href')?.trim() ?? '';
+				if (!/^mailto:/i.test(href)) return;
+				click.preventDefault();
+				openCompose(composeFromMailto(href));
+			});
+		};
+		if (frame.contentDocument?.readyState === 'complete') watch();
+		frame.addEventListener('load', watch);
+		return { destroy: () => frame.removeEventListener('load', watch) };
+	}
+
+	// In a conversation a message is as tall as what it says, and the
+	// conversation scrolls as one page: no scrolling inside each message.
+	// The frame runs no script, so its height is read from outside it, when
+	// it loads and whenever its content changes size (a picture arriving, the
+	// quoted text shown, the pane resized).
+	function fitContent(frame: HTMLIFrameElement, on: boolean) {
+		if (!on) return {};
+		let observer: ResizeObserver | null = null;
+		// `fresh`: a document that has just loaded, measured from nothing, so a
+		// shorter message than the last takes its own height. A change of size
+		// after that only grows the frame: measuring from nothing each time
+		// would chase a message whose body is set to fill its window.
+		const fit = (fresh: boolean) => {
+			const doc = frame.contentDocument;
+			if (!doc?.documentElement) return;
+			if (fresh) frame.style.height = '0px';
+			const height = Math.ceil(doc.documentElement.scrollHeight);
+			if (fresh || height > frame.offsetHeight + 1) frame.style.height = `${height}px`;
+		};
+		const watch = () => {
+			observer?.disconnect();
+			const body = frame.contentDocument?.body;
+			if (!body) return;
+			fit(true);
+			observer = new ResizeObserver(() => fit(false));
+			observer.observe(body);
+		};
+		if (frame.contentDocument?.readyState === 'complete') watch();
+		frame.addEventListener('load', watch);
+		return {
+			destroy: () => {
+				observer?.disconnect();
+				frame.removeEventListener('load', watch);
+			}
+		};
+	}
+
+	// The message's own attachments, as the composer's blob references: the
+	// files it carries, not the pictures its body draws (those are inlineRefs).
 	function attachmentRefs() {
-		return (email.attachments ?? []).map((a) => ({
-			blobId: a.blobId,
-			name: a.name ?? 'attachment',
-			type: a.type,
-			size: a.size
-		}));
+		return (email.attachments ?? [])
+			.filter((a) => !display.inlineBlobIds.has(a.blobId))
+			.map((a) => ({
+				blobId: a.blobId,
+				name: a.name ?? 'attachment',
+				type: a.type,
+				size: a.size
+			}));
+	}
+
+	// The pictures the body draws by Content-ID. A reply, a forward and a
+	// reopened draft carry them as inline parts, so the quoted message keeps
+	// its pictures for whoever reads it next. They used to go as plain files
+	// on a forward and not at all on a reply, leaving the body's own
+	// references pointing at nothing.
+	function inlineRefs() {
+		return (email.attachments ?? [])
+			.filter((a) => a.cid && display.inlineBlobIds.has(a.blobId))
+			.map((a) => ({
+				blobId: a.blobId,
+				name: a.name ?? 'image',
+				type: a.type,
+				size: a.size,
+				cid: a.cid
+			}));
+	}
+
+	// Where the composer can show this message's pictures from while it is
+	// quoted: its inline parts, and pictures from the web only if they were
+	// allowed to load for this message.
+	function composeImages() {
+		const cid: Record<string, string> = {};
+		for (const a of email.attachments ?? []) {
+			if (a.cid) cid[a.cid.replace(/^<|>$/g, '')] = attachmentUrl(email.id, a.blobId, a.name ?? 'image', 'inline');
+		}
+		return { cid, remote: remoteAllowed };
+	}
+
+	// Which of your addresses a draft is from, as the identity to send it as.
+	function draftIdentity(): string | null {
+		const from = email.from?.[0]?.email?.trim().toLowerCase();
+		if (!from) return null;
+		return $userState.identities.find((i) => i.email.trim().toLowerCase() === from)?.jmapId ?? null;
+	}
+
+	function draftImportance(): 'high' | 'normal' | 'low' {
+		const value = email['header:importance:asText']?.trim().toLowerCase();
+		return value === 'high' || value === 'low' ? value : 'normal';
 	}
 
 	function handleEditDraft() {
@@ -741,7 +894,15 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			draftId: email.id,
 			inReplyTo: email.inReplyTo?.[0] ?? '',
 			references: email.references?.join(' ') ?? '',
-			attachments: attachmentRefs()
+			// The address it was being written from, and its importance. Both
+			// were saved with the draft and then forgotten here, so a draft
+			// from an alias, marked High, went out from the main address at
+			// normal importance.
+			fromIdentityId: draftIdentity(),
+			importance: draftImportance(),
+			attachments: attachmentRefs(),
+			inlineParts: inlineRefs(),
+			images: composeImages()
 		});
 	}
 
@@ -750,9 +911,15 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// set). An $effect keyed on the email id (not onMount) because in the
 	// reading pane this component stays mounted while the user moves
 	// between messages.
+	// The message someone marked unread while it was open. Left alone: it
+	// used to be marked read again a second later, since it was still on
+	// screen and still unread, which is all this looked at.
+	let keptUnread = $state<string | null>(null);
+
 	$effect(() => {
 		const id = email.id;
 		if (email.keywords['$seen']) return;
+		if (keptUnread === id) return;
 		const delay = typeof page.data.markReadDelay === 'number' ? page.data.markReadDelay : DEFAULT_MARK_READ_DELAY;
 		const timer = setTimeout(async () => {
 			await fetch(`/api/email/${id}`, {
@@ -779,7 +946,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	// Two empty lines to write in, then the original (shared with the agent's replies).
 	function getHtmlQuotedBlock(): string {
 		const quote = replyQuoteHtml(email, getBodyHtml());
-		return quote ? `<br><br>${quote}` : '';
+		return quote ? `${BLANK_LINE}${BLANK_LINE}${quote}` : '';
 	}
 
 	function handleAddSenderToContacts() {
@@ -801,6 +968,8 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			cc: addressList(cc),
 			subject: prefixedSubject(email.subject, 'reply'),
 			body: getHtmlQuotedBlock(),
+			inlineParts: inlineRefs(),
+			images: composeImages(),
 			...threadHeaders(email)
 		});
 	}
@@ -824,13 +993,17 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		// A forward carries the original's attachments, as mail clients do.
 		openCompose({
 			to: '', cc: '', subject: prefixedSubject(originalSubject, 'forward'), isForward: true,
-			body: `<br><br><div style="border-top: 1px solid #d1d9e0; padding-top: 1em; color: #59636e;"><div><strong>---------- Forwarded message ----------</strong></div><div><strong>From:</strong> ${fromStr}</div><div><strong>Date:</strong> ${dateStr}</div><div><strong>Subject:</strong> ${escapeHtml(originalSubject)}</div><div><strong>To:</strong> ${toStr}</div><br>${getBodyHtml()}</div>`,
-			attachments: attachmentRefs()
+			body: `${BLANK_LINE}${BLANK_LINE}<div id="${QUOTE_ID}" style="border-top: 1px solid #d1d9e0; padding-top: 1em; color: #59636e;"><div><strong>---------- Forwarded message ----------</strong></div><div><strong>From:</strong> ${fromStr}</div><div><strong>Date:</strong> ${dateStr}</div><div><strong>Subject:</strong> ${escapeHtml(originalSubject)}</div><div><strong>To:</strong> ${toStr}</div><br>${getBodyHtml()}</div>`,
+			attachments: attachmentRefs(),
+			inlineParts: inlineRefs(),
+			images: composeImages()
 		});
 	}
 
 	async function doAction(action: string, extra: Record<string, unknown> = {}) {
 		actionLoading = action;
+		if (action === 'markUnread') keptUnread = email.id;
+		else if (action === 'markRead') keptUnread = null;
 		try {
 			await fetch(`/api/email/${email.id}`, {
 				method: 'PATCH',
@@ -841,7 +1014,12 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 					...(action === 'trash' && viewIsTrash ? { permanent: true } : {})
 				})
 			});
-			if (action === 'trash' || action === 'archive' || action === 'spam') {
+			if (embedded) {
+				// Still in its conversation: the list refreshes and the
+				// conversation is told, to drop the message or redraw it.
+				await invalidateAll();
+				onChanged?.(action);
+			} else if (action === 'trash' || action === 'archive' || action === 'spam') {
 				goto('/inbox');
 			} else {
 				await invalidateAll();
@@ -1013,30 +1191,22 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		}
 	}
 
-	function textToHtml(text: string): string {
-		const escaped = text
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			.replace(/"/g, '&quot;')
-			.replace(/'/g, '&#039;');
-		return escaped
-			.split(/\n{2,}/)
-			.map((paragraph) => `<p>${paragraph.replace(/\n/g, '<br>')}</p>`)
-			.join('');
-	}
-
 	function useAssistantDraft() {
 		const sender = email.from?.[0];
 		if (!sender || !assistantResult) return;
-		const originalSubject = email.subject ?? '';
+		// Addressed and threaded as Reply is: to Reply-To when the sender set
+		// one, and under the original's Message-ID. This used to pass the mail
+		// server's own id for the message, which is no Message-ID; the server
+		// dropped it and the reply went out as a new conversation.
+		const { to } = replyRecipients(email, myAddresses, false);
 		openCompose({
-			to: sender.email,
+			to: addressList(to),
 			cc: '',
-			subject: originalSubject.startsWith('Re:') ? originalSubject : `Re: ${originalSubject}`,
-			body: `${textToHtml(assistantResult)}${getHtmlQuotedBlock()}`,
-			inReplyTo: email.id,
-			references: email.id
+			subject: prefixedSubject(email.subject, 'reply'),
+			body: `${textToLines(assistantResult)}${getHtmlQuotedBlock()}`,
+			inlineParts: inlineRefs(),
+			images: composeImages(),
+			...threadHeaders(email)
 		});
 	}
 
@@ -1176,13 +1346,13 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	}
 </script>
 
-<div class="h-full flex flex-col relative overflow-hidden">
+<div class={embedded ? 'flex flex-col relative' : 'h-full flex flex-col relative overflow-hidden'}>
 	<!-- Ribbon. First, and 48px tall, so it lines up with the mail list's
 	     header across the divider (and with every other pane's top bar). On
 	     the full-page view it also carries the way back to the folder. -->
-	<div class="ribbon flex items-center justify-between h-12 shrink-0 border-b border-border {compact ? 'px-4' : 'px-6 max-md:px-2'}">
+	<div class="ribbon flex items-center justify-between shrink-0 {embedded ? 'order-2 h-9' : 'h-12 border-b border-border'} {compact ? 'px-4' : 'px-6 max-md:px-2'}">
 		<div class="flex items-center gap-1">
-			{#if !compact}
+			{#if !compact && !embedded}
 				<a href={backHref} class="btn btn-ghost btn-sm -ml-2 mr-1" title="Back to {backLabel}">
 					<Icon name="back" size={14} />
 					{backLabel}
@@ -1243,6 +1413,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 					<Icon name="mark-read" size={16} />
 				{/if}
 			</button>
+			{#if !embedded}
 			<button
 				bind:this={moveTriggerEl}
 				onclick={(e) => { e.stopPropagation(); showMovePicker = !showMovePicker; }}
@@ -1304,7 +1475,8 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 					<Icon name="spam" size={16} />
 				</button>
 			{/if}
-			<button onclick={() => doAction('trash')} title="Trash" disabled={actionLoading === 'trash'} class="p-1.5 rounded-md hover:bg-surface-hover text-text-secondary hover:text-danger transition-colors cursor-pointer disabled:opacity-50">
+			{/if}
+			<button onclick={() => doAction('trash')} title={embedded ? 'Trash this message' : 'Trash'} disabled={actionLoading === 'trash'} class="p-1.5 rounded-md hover:bg-surface-hover text-text-secondary hover:text-danger transition-colors cursor-pointer disabled:opacity-50">
 				<Icon name="delete" size={16} />
 			</button>
 			<div class="w-px h-4 bg-border mx-0.5"></div>
@@ -1363,7 +1535,23 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		them. The subject is what toggles it; folded, a click on the quiet line
 		opens it too.
 	-->
-	<header class="shrink-0 {compact ? 'px-4 pb-2.5' : 'px-6 pb-3 max-md:px-4'}">
+	<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+	<header
+		class="shrink-0 {embedded ? 'order-1 cursor-pointer' : ''} {compact ? 'px-4 pb-2.5' : 'px-6 pb-3 max-md:px-4'}"
+		onclick={(e) => {
+			// In a conversation, a click on a message's header folds it away
+			// (the keyboard has the conversation's Collapse all, and the
+			// folded line is a button). Not a click on something in the
+			// header, nor the end of selecting an address to copy.
+			if (!embedded || !onCollapse) return;
+			if ((e.target as Element).closest('a, button, input, [role="button"]')) return;
+			if (window.getSelection()?.toString()) return;
+			onCollapse();
+		}}
+	>
+		<!-- In a conversation the subject and labels are shown once, above
+		     every message, not on each. -->
+		{#if !embedded}
 		<div class="flex items-start gap-3 {compact ? 'pt-2.5' : 'pt-3'}">
 			<div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
 				<!-- The subject stays the page's heading, with the button inside it,
@@ -1459,6 +1647,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 					</span>
 			</div>
 		</div>
+		{/if}
 
 		<div bind:this={foldEl} class="relative">
 			<!-- Folded: one quiet line says who and when. It is plain text to a
@@ -1568,7 +1757,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 	     it folds or opens, holding its size meanwhile (see toggleHeader), and
 	     the root's overflow-hidden stops what hangs below the pane from making
 	     anything scroll. -->
-	<div bind:this={belowEl} class="flex min-h-0 flex-1 flex-col border-t border-border">
+	<div bind:this={belowEl} class={embedded ? 'order-3 flex flex-col' : 'flex min-h-0 flex-1 flex-col border-t border-border'}>
 		{#if otp}
 			<div class="{compact ? 'mx-4' : 'mx-6'} mt-3 shrink-0">
 				<div class="flex items-center gap-3 rounded-xl border border-border bg-surface px-3.5 py-2.5 relative overflow-hidden">
@@ -1655,7 +1844,7 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 		     email's content height — short emails no longer collapse the
 		     pane, and long ones scroll inside the iframe instead of the
 		     wrapper. -->
-		<div bind:this={frameBoxEl} class="flex-1 overflow-hidden {compact ? 'px-4 py-3' : 'px-6 py-4 max-md:px-2 max-md:py-2'}">
+		<div bind:this={frameBoxEl} class="{embedded ? '' : 'flex-1'} overflow-hidden {compact ? 'px-4 py-3' : 'px-6 py-4 max-md:px-2 max-md:py-2'}">
 			<!-- bg-white matches the document's background so swapping
 			     srcdoc (next/previous message) repaints white-on-white instead
 			     of flashing through the dark page background.
@@ -1666,10 +1855,24 @@ import { DEFAULT_MARK_READ_DELAY } from '$lib/mail-prefs';
 			     device's dark mode. -->
 			<iframe
 				srcdoc={iframeContent}
+				use:mailLinks
+				use:fitContent={embedded}
 				sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
 				title="Email content"
-				class="w-full h-full border-none rounded-md bg-white scheme-only-light"
+				class="w-full {embedded ? 'block' : 'h-full'} border-none rounded-md bg-white scheme-only-light"
 			></iframe>
+			{#if split?.trimmed}
+				<!-- The earlier messages this one quotes. Outside the frame, which
+				     runs no script and so can't hold a button of its own. -->
+				<button
+					type="button"
+					onclick={() => (showQuoted = !showQuoted)}
+					class="mt-2 inline-flex h-5 items-center rounded-md bg-surface-hover px-2 text-xs leading-none tracking-widest text-text-secondary hover:bg-border hover:text-text cursor-pointer"
+					title={showQuoted ? 'Hide quoted text' : 'Show quoted text'}
+					aria-label={showQuoted ? 'Hide quoted text' : 'Show quoted text'}
+					aria-expanded={showQuoted}
+				>•••</button>
+			{/if}
 		</div>
 	</div>
 

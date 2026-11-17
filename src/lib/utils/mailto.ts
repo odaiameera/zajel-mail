@@ -1,5 +1,5 @@
 import type { ComposeData } from '$lib/stores/compose';
-import { escapeHtml } from './reply';
+import { textToLines } from '$lib/editor/text';
 
 /**
  * `mailto:` links (RFC 6068), for when this app is the system's mail handler:
@@ -64,15 +64,6 @@ export function parseMailto(raw: string): MailtoFields {
 	return out;
 }
 
-// The link's body is plain text; the composer's is HTML. Escaped, so nothing
-// a link carries is read as markup.
-function textToHtml(text: string): string {
-	return text
-		.split(/\n{2,}/)
-		.map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`)
-		.join('');
-}
-
 /** What the composer opens with for a `mailto:` link. */
 export function composeFromMailto(raw: string): Partial<ComposeData> {
 	const m = parseMailto(raw);
@@ -81,6 +72,8 @@ export function composeFromMailto(raw: string): Partial<ComposeData> {
 		cc: m.cc.join(', '),
 		bcc: m.bcc.join(', '),
 		subject: m.subject,
-		body: m.body ? textToHtml(m.body) : ''
+		// Plain text in the link, lines in the composer; escaped, so nothing a
+		// link carries is read as markup.
+		body: m.body ? textToLines(m.body) : ''
 	};
 }
