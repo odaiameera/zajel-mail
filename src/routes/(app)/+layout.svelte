@@ -34,7 +34,7 @@
 		sidebarWidth as sidebarPane,
 		startWidthDrag
 	} from '$lib/stores/paneWidths';
-	import { loadUserState } from '$lib/stores/userState';
+	import { loadUserState, reloadUserState } from '$lib/stores/userState';
 	import { AI_ASSISTANT_CONTEXT, type AIAssistantContext } from '$lib/types/assistant';
 	import { LABELS_CONTEXT, type LabelsContext } from '$lib/types/labels';
 	import type { LayoutData } from './$types';
@@ -57,6 +57,20 @@
 	// Settings before Save isn't taken back by new mail arriving.
 	const savedTheme = $derived(data.theme);
 	$effect(() => applyTheme(savedTheme));
+	// Signatures, sending addresses and the per-account settings are loaded
+	// into a store when the app opens. They belong to the account in use, so
+	// switching account fetches them again: the composer went on offering
+	// the last account's signatures and From addresses, and Settings listed
+	// signatures that couldn't be saved. Before the page under this layout
+	// is redrawn for the new account, so it sees a store that isn't loaded
+	// yet and waits for it.
+	let stateOfAccount = untrack(() => data.activeAccountId);
+	$effect.pre(() => {
+		const id = data.activeAccountId;
+		if (id === stateOfAccount) return;
+		stateOfAccount = id;
+		void reloadUserState();
+	});
 	// A getter, so consumers see the labels of the current page data (a new
 	// label, another account) rather than those of the first load.
 	setContext<LabelsContext>(LABELS_CONTEXT, {

@@ -5,7 +5,10 @@ import { deleteSignature, updateSignature } from '$lib/server/db/queries/signatu
 import { sanitizeSignatureHtml } from '$lib/utils/sanitize-signature';
 
 const MAX_NAME = 80;
-const MAX_HTML = 10_000;
+// Markup, not text: the editor writes a font and a size on every line, so
+// a signature well inside the 5,000 characters its page allows can be
+// several times that long as HTML.
+const MAX_HTML = 60_000;
 
 function parseId(raw: string): number | null {
 	const id = Number.parseInt(raw, 10);
@@ -26,12 +29,12 @@ export const PATCH: RequestHandler = async ({ locals, params, request }) => {
 	const patch: { name?: string; html?: string; isDefault?: boolean } = {};
 	if (typeof body.name === 'string') {
 		const name = body.name.trim().slice(0, MAX_NAME);
-		if (name.length === 0) return json({ error: 'name required' }, { status: 400 });
+		if (name.length === 0) return json({ error: 'A signature needs a name.' }, { status: 400 });
 		patch.name = name;
 	}
 	if (typeof body.html === 'string') {
 		if (body.html.length > MAX_HTML) {
-			return json({ error: 'Signature HTML exceeds size limit' }, { status: 413 });
+			return json({ error: 'The signature is too long.' }, { status: 413 });
 		}
 		patch.html = sanitizeSignatureHtml(body.html);
 	}
@@ -40,7 +43,7 @@ export const PATCH: RequestHandler = async ({ locals, params, request }) => {
 	}
 
 	const updated = updateSignature(email, id, patch);
-	if (!updated) return json({ error: 'Not found' }, { status: 404 });
+	if (!updated) return json({ error: 'This signature no longer exists.' }, { status: 404 });
 	return json(updated);
 };
 
