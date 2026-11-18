@@ -85,6 +85,18 @@ export async function loadUserState(): Promise<void> {
 	});
 }
 
+/**
+ * The account in use changed: what the store holds (signatures, sending
+ * addresses, the per-address defaults, the page size) is the last
+ * account's. Until the new account's arrive the store reads as not loaded,
+ * so a page that waits for it (Settings → Messages) starts from the right
+ * values and not the old ones.
+ */
+export async function reloadUserState(): Promise<void> {
+	userState.update((s) => ({ ...s, loaded: false }));
+	await loadUserState();
+}
+
 export async function refreshIdentities(): Promise<IdentityValue[]> {
 	const res = await fetch('/api/identities/sync', { method: 'POST' });
 	if (!res.ok) throw new Error(`Sync failed (${res.status})`);
@@ -163,6 +175,13 @@ export async function updateSettings(patch: {
 	}));
 }
 
+/*
+ * A signature is kept as the server stored it, not as it was sent: the
+ * server trims the name and takes out of the markup whatever a signature
+ * may not carry, and what is on screen after a save must be what the next
+ * message gets. A refused change throws before the store is touched, so it
+ * can't read as saved here and be gone after a reload.
+ */
 export async function createSignature(
 	name: string,
 	html: string,
@@ -173,10 +192,11 @@ export async function createSignature(
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ name, html, isDefault })
 	});
+	await mustBeOk(res);
 	const sig = (await res.json()) as SignatureValue;
 	userState.update((s) => ({
 		...s,
-		signatures: isDefault
+		signatures: sig.isDefault
 			? [...s.signatures.map((x) => ({ ...x, isDefault: false })), sig]
 			: [...s.signatures, sig]
 	}));
@@ -186,24 +206,27 @@ export async function createSignature(
 export async function updateSignature(
 	id: number,
 	patch: { name?: string; html?: string; isDefault?: boolean }
-): Promise<void> {
-	await fetch(`/api/user-state/signatures/${id}`, {
+): Promise<SignatureValue> {
+	const res = await fetch(`/api/user-state/signatures/${id}`, {
 		method: 'PATCH',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(patch)
 	});
+	await mustBeOk(res);
+	const stored = (await res.json()) as SignatureValue;
 	userState.update((s) => ({
 		...s,
 		signatures: s.signatures.map((sig) => {
-			if (sig.id === id) return { ...sig, ...patch };
-			if (patch.isDefault === true) return { ...sig, isDefault: false };
+			if (sig.id === id) return stored;
+			if (stored.isDefault) return { ...sig, isDefault: false };
 			return sig;
 		})
 	}));
+	return stored;
 }
 
 export async function deleteSignature(id: number): Promise<void> {
-	await fetch(`/api/user-state/signatures/${id}`, { method: 'DELETE' });
+	await mustBeOk(await fetch(`/api/user-state/signatures/${id}`, { method: 'DELETE' }));
 	userState.update((s) => ({
 		...s,
 		signatures: s.signatures.filter((sig) => sig.id !== id)

@@ -9,6 +9,7 @@
 	import Toggle from '$lib/components/settings/Toggle.svelte';
 	import { useDraft } from '$lib/settings/draft.svelte';
 	import { saveEach, sendJson, type SaveStep } from '$lib/settings/send';
+	import { applyTheme } from '$lib/theme';
 	import type { LayoutData } from '../$types';
 
 	let { data }: { data: LayoutData } = $props();
@@ -22,11 +23,7 @@
 	 */
 	function preview(look: Look) {
 		if (typeof document === 'undefined') return;
-		document.documentElement.classList.toggle('light', look.theme === 'light');
-		// Keep the PWA/mobile browser bar on --color-surface for the theme.
-		document
-			.querySelector('meta[name=theme-color]')
-			?.setAttribute('content', look.theme === 'light' ? '#f6f8fa' : '#010409');
+		applyTheme(look.theme);
 		// Density is a class on the app shell that tightens the message rows.
 		document.querySelector('.app-shell')?.classList.toggle('density-compact', look.density === 'compact');
 	}

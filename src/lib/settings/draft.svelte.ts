@@ -259,6 +259,18 @@ export const SAVED_FLASH_MS = 2000;
  * settings registers nothing, and the bar never shows.
  */
 export class SaveHost {
+	/**
+	 * The drafts registered, kept twice: this plain list is the one that is
+	 * read, and `#drafts` is its copy for the bar to follow.
+	 *
+	 * When one settings page follows another, the new page registers before
+	 * the old one is taken down, and a component being taken down reads
+	 * state as it was before the change that removed it. Read from the
+	 * state, the old page's `unregister` saw the list without the new page's
+	 * draft and wrote that back: the page that had just opened lost its Save
+	 * bar, and nothing changed on it could be stored.
+	 */
+	#registered: RegisteredDraft[] = [];
 	#drafts = $state.raw<RegisteredDraft[]>([]);
 	#savedTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -280,12 +292,14 @@ export class SaveHost {
 
 	register(draft: RegisteredDraft): void {
 		this.#clearSaved();
-		this.#drafts = [...this.#drafts, draft];
+		this.#registered = [...this.#registered, draft];
+		this.#drafts = this.#registered;
 	}
 
 	unregister(draft: RegisteredDraft): void {
 		this.#clearSaved();
-		this.#drafts = this.#drafts.filter((d) => d !== draft);
+		this.#registered = this.#registered.filter((d) => d !== draft);
+		this.#drafts = this.#registered;
 	}
 
 	#pending: Promise<boolean> | null = null;
@@ -303,7 +317,7 @@ export class SaveHost {
 	}
 
 	async #saveAll(): Promise<boolean> {
-		const dirty = this.#drafts.filter((d) => d.dirty);
+		const dirty = this.#registered.filter((d) => d.dirty);
 		const results = await Promise.all(dirty.map((d) => d.save()));
 		const ok = results.every(Boolean) && !this.dirty;
 		// "Saved" only when something was: a save that found nothing to send
@@ -325,7 +339,7 @@ export class SaveHost {
 
 	discardAll(): void {
 		this.#clearSaved();
-		for (const draft of this.#drafts) draft.discard();
+		for (const draft of this.#registered) draft.discard();
 	}
 
 	#clearSaved(): void {

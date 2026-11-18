@@ -101,21 +101,34 @@
 		draftHtml = selectedSignature.html;
 	}
 
+	/** What didn't happen, with the server's reason when it gave one. */
+	function refusal(what: string, err: unknown): string {
+		const reason = err instanceof Error ? err.message : '';
+		return reason && reason !== 'Couldn’t save. Try again.' ? `${what}: ${reason}` : `${what}. Try again.`;
+	}
+
 	async function save() {
 		if (!canSave) return;
 		saving = true;
 		try {
+			let stored: SignatureValue | null = null;
 			if (isNew) {
-				const created = await createSignature(draftName.trim(), draftHtml, false);
-				selection = { kind: 'existing', id: created.id };
+				stored = await createSignature(draftName.trim(), draftHtml, false);
+				selection = { kind: 'existing', id: stored.id };
 				showToast({ message: 'Signature created' });
 			} else if (selection?.kind === 'existing') {
-				await updateSignature(selection.id, { name: draftName.trim(), html: draftHtml });
+				stored = await updateSignature(selection.id, { name: draftName.trim(), html: draftHtml });
 				showToast({ message: 'Signature saved' });
 			}
+			// The editor shows what was stored: the server takes out what a
+			// signature can't carry (a pasted colour, a picture), and that
+			// should be seen now, not found missing in the next message.
+			if (stored) {
+				draftName = stored.name;
+				draftHtml = stored.html;
+			}
 		} catch (err) {
-			console.error('signature save failed', err);
-			showToast({ message: 'Could not save signature' });
+			showToast({ message: refusal('Couldn’t save the signature', err) });
 		} finally {
 			saving = false;
 		}
@@ -126,8 +139,8 @@
 		try {
 			await updateSignature(selection.id, { isDefault: true });
 			showToast({ message: 'Default signature updated' });
-		} catch {
-			showToast({ message: 'Could not set default' });
+		} catch (err) {
+			showToast({ message: refusal('Couldn’t set the default', err) });
 		}
 	}
 
@@ -141,8 +154,8 @@
 			selection = null;
 			draftName = '';
 			draftHtml = '';
-		} catch {
-			showToast({ message: 'Could not delete signature' });
+		} catch (err) {
+			showToast({ message: refusal('Couldn’t delete the signature', err) });
 		}
 	}
 </script>

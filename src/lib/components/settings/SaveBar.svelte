@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
-	import type { SaveHost } from '$lib/settings/draft.svelte';
+	import { SAVED_FLASH_MS, type SaveHost } from '$lib/settings/draft.svelte';
 
 	/**
 	 * The Save pill at the foot of a settings page. Nothing on the page is
@@ -11,8 +11,17 @@
 	 * is unsaved (and for a moment after a save, to say "Saved"). The room
 	 * it takes is in the layout all along, so showing it moves nothing on
 	 * the page and the last row always ends above it.
+	 *
+	 * "Saved" is a pill of its own shape: a green tick and the word, the
+	 * same space on both sides, which settles in and fades out by itself
+	 * over the time the host keeps it. The bar goes at once when it goes:
+	 * its words and buttons leave with it, and fading it out left an empty
+	 * dark blob on the page for the length of the fade.
 	 */
 	let { host }: { host: SaveHost } = $props();
+
+	// Nothing to do and nothing wrong: the save went through.
+	const saved = $derived(host.justSaved && !host.dirty && !host.saving && !host.problem && !host.error);
 
 	const message = $derived(
 		host.problem
@@ -62,20 +71,28 @@
      it reads as lying on top of the page; a message about something wrong
      is marked by an icon, which stays legible on either. -->
 <div
-	class="save-bar sticky bottom-0 z-10 pointer-events-none transition-opacity duration-150 ease-out motion-reduce:transition-none
-		{host.visible ? 'opacity-100' : 'opacity-0'}"
+	class="save-bar sticky bottom-0 z-10 pointer-events-none
+		{host.visible ? 'opacity-100 transition-opacity duration-150 ease-out motion-reduce:transition-none' : 'opacity-0'}"
 	data-shown={host.visible}
 	data-testid="save-bar"
 >
 	<div class="save-bar-inner max-w-3xl px-8 max-md:px-4 pt-2 pb-4 max-md:pb-1 flex justify-center">
 		<div
-			class="max-w-full min-h-12 max-md:min-h-10 pl-5 pr-2 py-1.5 flex items-center gap-3 rounded-3xl bg-text text-bg
-				shadow-[0_8px_24px_rgba(0,0,0,0.35)] {host.visible ? 'pointer-events-auto' : ''}"
+			class="pill max-w-full min-h-12 max-md:min-h-10 py-1.5 flex items-center rounded-3xl bg-text text-bg
+				shadow-[0_8px_24px_rgba(0,0,0,0.35)] {saved ? 'saved pl-3.5 pr-5 gap-2.5' : 'pl-5 pr-2 gap-3'}
+				{host.visible ? 'pointer-events-auto' : ''}"
+			style:--saved-ms="{SAVED_FLASH_MS}ms"
 		>
 			{#if message?.wrong}
 				<Icon name="error" size={16} />
+			{:else if saved}
+				<!-- White on green in either theme: the pill under it is dark on a
+				     light page and light on a dark one. -->
+				<span class="tick grid place-items-center size-5 rounded-full bg-success text-white">
+					<Icon name="check" size={12} class="stroke-[3px]" />
+				</span>
 			{/if}
-			<p class="flex-1 min-w-0 py-1 text-[0.8125rem] break-words" role="status">
+			<p class="flex-1 min-w-0 py-1 text-[0.8125rem] break-words {saved ? 'font-medium' : ''}" role="status">
 				{message?.text ?? ''}
 			</p>
 			{#if host.dirty || host.saving}
@@ -104,6 +121,47 @@
 </div>
 
 <style>
+	/*
+	 * "Saved" settles in (it takes the place of the wider pill with the
+	 * buttons), stays, and is gone by the time the host lets the bar go.
+	 */
+	.pill.saved {
+		animation: saved var(--saved-ms) ease-out both;
+	}
+	.pill.saved .tick {
+		animation: tick 260ms cubic-bezier(0.2, 0.9, 0.3, 1.4) both;
+	}
+	@keyframes saved {
+		0% {
+			transform: scale(0.94);
+		}
+		8% {
+			transform: scale(1);
+		}
+		85% {
+			opacity: 1;
+			transform: translateY(0);
+		}
+		100% {
+			opacity: 0;
+			transform: translateY(0.375rem);
+		}
+	}
+	@keyframes tick {
+		from {
+			transform: scale(0.4);
+		}
+		to {
+			transform: scale(1);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.pill.saved,
+		.pill.saved .tick {
+			animation: none;
+		}
+	}
+
 	/*
 	 * The two round buttons in the window's corner (CornerActions) float over
 	 * the bottom-right of the pane. From `md` up they are level with this bar,
